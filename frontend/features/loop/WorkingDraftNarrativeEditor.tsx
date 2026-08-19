@@ -51,7 +51,15 @@ const STATUS_LABEL: Record<SaveStatus, string | null> = {
   conflict: "Resolve conflict",
 };
 
-export function WorkingDraftNarrativeEditor({ sessionId }: { sessionId: string }) {
+export function WorkingDraftNarrativeEditor({
+  sessionId,
+  locked = false,
+  embedded = false,
+}: {
+  sessionId: string;
+  locked?: boolean;
+  embedded?: boolean;
+}) {
   const queryClient = useQueryClient();
   const sessionQuery = useGetSessionApiLoopSessionsSessionIdGet(sessionId);
   const patchWorkingDraft = usePatchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatch();
@@ -126,7 +134,7 @@ export function WorkingDraftNarrativeEditor({ sessionId }: { sessionId: string }
   }
 
   function scheduleSave(nextText: string) {
-    if (!session || conflict) return;
+    if (!session || conflict || locked) return;
     const expectedVersion = session.version;
     const baseNarrative = asNarrative(session.working_draft_narrative);
     void queue
@@ -197,24 +205,12 @@ export function WorkingDraftNarrativeEditor({ sessionId }: { sessionId: string }
   }
 
   const interpretation = session.working_draft_node === WorkflowNode.idea_interpretation;
-
-  return (
-    <div>
-      <Card>
-        <CardHeader>
-          <CardTitle>Working Draft</CardTitle>
-          <CardDescription>
-            {interpretation
-              ? "Enter the research idea in the interpretation Working Draft. Creation does not store it."
-              : `Narrative for ${WORKFLOW_NODE_LABELS[session.working_draft_node]}. Unknown fields are preserved.`}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+  const editor = (
           <label className="grid gap-2 text-sm font-medium">
             Working Draft narrative
             <Textarea
-              disabled={status === "conflict"}
-              placeholder={interpretation ? "Enter the research idea" : "Working Draft narrative"}
+              disabled={locked || status === "conflict"}
+              placeholder={interpretation ? "Correct the grilling transcript" : "Working Draft narrative"}
               value={text}
               onChange={(event) => {
                 const nextText = event.target.value;
@@ -224,6 +220,9 @@ export function WorkingDraftNarrativeEditor({ sessionId }: { sessionId: string }
               }}
             />
           </label>
+  );
+  const statusBlock = (
+    <>
           {STATUS_LABEL[status] ? (
             <p
               className={`mt-3 text-sm ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
@@ -235,10 +234,10 @@ export function WorkingDraftNarrativeEditor({ sessionId }: { sessionId: string }
           {status === "failed" && patchWorkingDraft.error ? (
             <p className="mt-1 text-sm text-destructive">{getApiErrorMessage(patchWorkingDraft.error)}</p>
           ) : null}
-        </CardContent>
-      </Card>
+    </>
+  );
 
-      {conflict ? (
+  const conflictCard = conflict ? (
         <Card className="mt-6 border-pending" role="alert">
           <CardHeader>
             <CardTitle>Working Draft conflict</CardTitle>
@@ -280,7 +279,35 @@ export function WorkingDraftNarrativeEditor({ sessionId }: { sessionId: string }
             </div>
           </CardContent>
         </Card>
-      ) : null}
+  ) : null;
+
+  if (embedded) {
+    return (
+      <div>
+        {editor}
+        {statusBlock}
+        {conflictCard}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Working Draft</CardTitle>
+          <CardDescription>
+            {interpretation
+              ? "Correct the grilling transcript. Confirm freezes this text."
+              : `Narrative for ${WORKFLOW_NODE_LABELS[session.working_draft_node]}. Unknown fields are preserved.`}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {editor}
+          {statusBlock}
+        </CardContent>
+      </Card>
+      {conflictCard}
     </div>
   );
 }

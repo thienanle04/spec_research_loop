@@ -7,6 +7,8 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { GrillingExhaustedHint, GrillingWorkspace, generateIdea, isGrillingNode } from "@/features/idea";
+import type { GrillingAnswer } from "@/features/idea";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
@@ -21,10 +23,10 @@ import {
 import {
   LoopStage,
   NodeHeadStatus,
+  WorkflowNode,
   type LoopSessionResponse,
   type NodeHeadResponse,
   type OperationalError,
-  type WorkflowNode,
 } from "@/lib/api/generated/model";
 import { cn } from "@/lib/utils";
 
@@ -133,6 +135,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const [appliedSession, setAppliedSession] = useState<LoopSessionResponse | null>(null);
   const [transitionError, setTransitionError] = useState<OperationalError | null>(null);
   const [offerContinue, setOfferContinue] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generatePreview, setGeneratePreview] = useState("");
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [grillEditing, setGrillEditing] = useState(false);
+  const [grillDirty, setGrillDirty] = useState(false);
 
   const queriedSession = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
   const session = newerSession(queriedSession, appliedSession);
@@ -188,6 +195,9 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       })
     : [];
   const confirmDisabled =
+    generating ||
+    grillEditing ||
+    grillDirty ||
     status === "saving" ||
     status === "failed" ||
     status === "conflict" ||
@@ -253,6 +263,36 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     );
   }
 
+  async function runGenerate(
+    target: LoopSessionResponse,
+    payload?: { message?: string; answers?: GrillingAnswer[] },
+  ) {
+    setGenerating(true);
+    setGeneratePreview("");
+    setGenerateError(null);
+    try {
+      await queue.flush();
+      await generateIdea({
+        sessionId,
+        expectedVersion: target.version,
+        message: payload?.message,
+        answers: payload?.answers,
+        onToken: (text) => setGeneratePreview((current) => current + text),
+      });
+      const refreshed = await sessionQuery.refetch();
+      if (refreshed.data?.status === 200) {
+        queryClient.setQueryData(sessionKey, refreshed.data);
+        setAppliedSession(refreshed.data.data);
+      }
+    } catch (error) {
+      const typed = operationalError(error);
+      setGenerateError(typed?.detail ?? getApiErrorMessage(error));
+    } finally {
+      setGenerating(false);
+      setGeneratePreview("");
+    }
+  }
+
   function confirmWorkingDraft() {
     void applyTransition((version) =>
       confirmMutation.mutateAsync({
@@ -261,6 +301,16 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       }),
     ).then((next) => {
       if (!next) return;
+      const autoDecompose =
+        workingDraftNode === WorkflowNode.idea_interpretation &&
+        next.working_draft_node === WorkflowNode.idea_decomposition &&
+        next.node_heads.find((head) => head.node === WorkflowNode.idea_decomposition)
+          ?.status === NodeHeadStatus.empty;
+      if (autoDecompose) {
+        setOfferContinue(false);
+        void runGenerate(next);
+        return;
+      }
       const stage = stageForWorkflowNode(next.working_draft_node);
       const nextActions = deriveStageActions({
         stage,
@@ -332,14 +382,44 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         <LoopSessionTitleEditor sessionId={sessionId} />
         {editingWorkingDraft ? (
           <>
-            <WorkingDraftNarrativeEditor sessionId={sessionId} />
-            <WorkingDraftCardCanvas sessionId={sessionId} />
+            {isGrillingNode(workingDraftNode) ? (
+              <GrillingWorkspace
+                error={generateError}
+                generating={generating}
+                locked={generating}
+                preview={generatePreview}
+                saveBlocked={
+                  generating || status === "saving" || status === "failed" || status === "conflict"
+                }
+                session={session}
+                sessionId={sessionId}
+                showGenerateCards={
+                  workingDraftNode === WorkflowNode.idea_decomposition && session.cards.length === 0
+                }
+                onEditState={({ editing, dirty }) => {
+                  setGrillEditing(editing);
+                  setGrillDirty(dirty);
+                }}
+                onGenerate={(payload) => void runGenerate(session, payload)}
+              />
+            ) : (
+              <>
+                <WorkingDraftNarrativeEditor locked={generating} sessionId={sessionId} />
+                <WorkingDraftCardCanvas locked={generating} sessionId={sessionId} />
+              </>
+            )}
             <div className="grid gap-3">
               {warningStages.length > 0 ? (
                 <p role="note" className="text-sm text-pending">
                   {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
                   become Stale. Invalidation depends on whether this confirmation changes content.
                 </p>
+              ) : null}
+              {isGrillingNode(workingDraftNode) ? (
+                <GrillingExhaustedHint
+                  interpretation={workingDraftNode === WorkflowNode.idea_interpretation}
+                  narrative={session.working_draft_narrative as Record<string, unknown>}
+                />
               ) : null}
               <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
                 Confirm

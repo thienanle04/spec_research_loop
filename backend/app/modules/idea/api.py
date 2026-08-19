@@ -1,12 +1,16 @@
-"""Idea workflow HTTP API — includes SSE demo stream."""
+"""Idea workflow HTTP API — Grilling generate/SSE (ADR 0004, 0012, 0024)."""
 
-import asyncio
-import json
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import OperationalError
+from app.db.session import get_db
+from app.modules.idea.schemas import GenerateRequest
+from app.modules.idea.service import IdeaService
 from app.modules.identity.deps import get_current_account
 from app.modules.identity.models import Account
 
@@ -18,28 +22,35 @@ async def health() -> dict[str, str]:
     return {"module": "idea", "status": "ok"}
 
 
-async def _demo_event_stream(account: Account):
-    steps = [
-        {"type": "progress", "message": "Starting grilling demo…", "pct": 0},
-        {"type": "token", "text": "Restating your idea"},
-        {"type": "token", "text": " as a research question…"},
-        {"type": "progress", "message": "Waiting for human confirmation (simulated)", "pct": 50},
-        {"type": "progress", "message": "Demo stream complete", "pct": 100},
-        {"type": "done", "account_email": account.email},
-    ]
-    for step in steps:
-        payload = json.dumps(step, ensure_ascii=False)
-        yield f"event: message\ndata: {payload}\n\n"
-        await asyncio.sleep(0.4)
-
-
-@router.get("/demo/stream")
-async def demo_stream(
+@router.post(
+    "/sessions/{session_id}/generate",
+    responses={409: {"model": OperationalError}},
+)
+async def generate(
+    session_id: UUID,
+    body: GenerateRequest,
+    request: Request,
     account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StreamingResponse:
-    """In-request SSE demo (ADR 0004). Requires Bearer JWT."""
+    service = IdeaService(db)
+    run = await service.prepare_generate(
+        session_id=session_id,
+        account_id=account.id,
+        expected_version=body.expected_version,
+        message=body.message,
+        answers=(
+            [item.model_dump() for item in body.answers] if body.answers is not None else None
+        ),
+    )
     return StreamingResponse(
-        _demo_event_stream(account),
+        service.stream_generate(
+            session_id=session_id,
+            account_id=account.id,
+            expected_version=body.expected_version,
+            run=run,
+            request=request,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

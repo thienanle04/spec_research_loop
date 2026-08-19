@@ -29,6 +29,7 @@ from app.modules.loop.catalog import (
     upstream_of_stage,
 )
 from app.modules.loop.deps import get_stage_ports
+from app.modules.loop.interpretation_turns import apply_account_reply_patch
 from app.modules.loop.models import (
     Card,
     Decision,
@@ -178,7 +179,16 @@ class LoopService:
                 )
             next_node = node.value
         if narrative is not None:
-            next_narrative = narrative
+            if (
+                WorkflowNode(next_node) is WorkflowNode.IDEA_INTERPRETATION
+                and "turns" in session.working_draft_narrative
+            ):
+                next_narrative = apply_account_reply_patch(
+                    dict(session.working_draft_narrative),
+                    narrative,
+                )
+            else:
+                next_narrative = narrative
         updated = await self._db.execute(
             update(LoopSession)
             .where(
@@ -438,6 +448,63 @@ class LoopService:
         response = await self._to_response(session)
         await self._db.commit()
         return response
+
+    async def apply_idea_generate(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+        narrative: dict[str, Any],
+        card_texts: list[tuple[CardKind, str]] | None,
+    ) -> LoopSessionResponse:
+        session = await self._load_session(session_id, account_id)
+        await self._increment_session_version(
+            session,
+            session_id=session_id,
+            account_id=account_id,
+            expected_version=expected_version,
+        )
+        session.working_draft_narrative = narrative
+        if (
+            card_texts is not None
+            and session.working_draft_node == WorkflowNode.IDEA_DECOMPOSITION.value
+        ):
+            self._upsert_decomposition_cards(session, card_texts)
+        await self._db.commit()
+        return await self.get_session(session_id=session_id, account_id=account_id)
+
+    def _upsert_decomposition_cards(
+        self,
+        session: LoopSession,
+        card_texts: list[tuple[CardKind, str]],
+    ) -> None:
+        existing = sorted(session.cards, key=lambda card: (card.created_at, card.id))
+        by_kind: dict[CardKind, list[Card]] = {}
+        for card in existing:
+            by_kind.setdefault(card.kind_enum(), []).append(card)
+
+        incoming: dict[CardKind, list[str]] = {}
+        for kind, text in card_texts:
+            incoming.setdefault(kind, []).append(text)
+
+        singular = (CardKind.PROBLEM, CardKind.RESEARCH_QUESTION)
+        many = (CardKind.CONSTRAINT, CardKind.OPEN_QUESTION)
+        for kind in (*singular, *many):
+            texts = incoming.get(kind, [])
+            rows = by_kind.get(kind, [])
+            limit = 1 if kind in singular else len(texts)
+            for index, text in enumerate(texts[:limit]):
+                if index < len(rows):
+                    rows[index].body = {**dict(rows[index].body), "text": text}
+                else:
+                    card = Card(
+                        session_id=session.id,
+                        kind=kind.value,
+                        body={"text": text},
+                    )
+                    self._db.add(card)
+                    session.cards.append(card)
 
     async def project_context(self, *, session_id: UUID, account_id: UUID, node: WorkflowNode) -> dict[str, Any]:
         session = await self._load_session(session_id, account_id)
