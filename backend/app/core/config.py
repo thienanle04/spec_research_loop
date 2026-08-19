@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_base_url: str | None = None
     llm_default_model: str = "gpt-4o-mini"
+    llm_trace: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:

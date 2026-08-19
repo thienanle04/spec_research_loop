@@ -1,5 +1,6 @@
 """In-memory LlmPort for tests. Does not call a vendor."""
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 
@@ -13,8 +14,19 @@ class LlmCall:
 @dataclass
 class FakeLlm:
     response: str = "fake-completion"
+    chunks: list[str] | None = None
     calls: list[LlmCall] = field(default_factory=list)
 
-    async def complete(self, *, system: str, prompt: str, model: str | None = None) -> str:
+    async def stream(self, *, system: str, prompt: str, model: str | None = None) -> AsyncIterator[str]:
         self.calls.append(LlmCall(system=system, prompt=prompt, model=model))
-        return self.response
+        if self.chunks is not None:
+            for chunk in self.chunks:
+                yield chunk
+            return
+        yield self.response
+
+    async def complete(self, *, system: str, prompt: str, model: str | None = None) -> str:
+        parts: list[str] = []
+        async for token in self.stream(system=system, prompt=prompt, model=model):
+            parts.append(token)
+        return "".join(parts)
