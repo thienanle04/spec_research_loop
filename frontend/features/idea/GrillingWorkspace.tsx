@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { LoaderCircle, MessageSquare } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -105,9 +106,12 @@ export function GrillingWorkspace({
       {showTurns ? (
         <Card>
           <CardHeader>
-            <CardTitle className="font-serif text-navy">Transcript</CardTitle>
+            <CardTitle className="flex items-center gap-2 font-serif text-navy">
+              <MessageSquare aria-hidden="true" className="size-4" />
+              Transcript
+            </CardTitle>
             <CardDescription>
-              Grilling Questions are not Cards. Confirm freezes this turn list.
+              Account replies and Grilling Questions. Confirm freezes this turn list.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -145,19 +149,19 @@ export function GrillingWorkspace({
       {interpretation && cluster && !generating ? (
         <Card>
           <CardHeader>
-            <CardTitle className="font-serif text-navy">Send</CardTitle>
+            <CardTitle className="font-serif text-navy">Grilling Questions</CardTitle>
             <CardDescription>
               Answer every Grilling Question, then Send. Confirm when you have a shared understanding.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3">
+            <GenerateError error={error} />
             <GrillingClusterForm
               disabled={saveBlocked || editing}
               questions={cluster}
               submitLabel="Send"
               onSubmit={(answers) => onGenerate({ answers })}
             />
-            <GenerateError error={error} />
           </CardContent>
         </Card>
       ) : null}
@@ -171,7 +175,8 @@ export function GrillingWorkspace({
         />
       ) : null}
       {!interpretation && generating ? (
-        <p role="status" className="text-sm text-in-progress">
+        <p role="status" aria-busy="true" className="flex items-center gap-2 text-sm text-in-progress">
+          <LoaderCircle aria-hidden="true" className="size-4 animate-spin" />
           Generating Cards…
         </p>
       ) : null}
@@ -202,9 +207,11 @@ export function GrillingExhaustedHint({
     return null;
   }
   return (
-    <p role="status" className="text-sm text-pending">
-      The model thinks questioning is exhausted. Confirm is still your Decision.
-    </p>
+    <div role="status" className="rounded-md border border-pending bg-card p-3">
+      <p className="text-sm">
+        The model thinks questioning is exhausted. Confirm is still your Decision.
+      </p>
+    </div>
   );
 }
 

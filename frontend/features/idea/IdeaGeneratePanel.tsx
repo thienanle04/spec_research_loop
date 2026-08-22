@@ -1,11 +1,33 @@
 "use client";
 
 import { useState } from "react";
+import { LoaderCircle, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { WorkflowNode, type LoopSessionResponse } from "@/lib/api/generated/model";
+import { WorkflowNode } from "@/lib/api/generated/model";
+
+const MODE_COPY = {
+  idea: {
+    title: "Research idea",
+    description: "Paste the research idea, then Send.",
+    action: "Send",
+    pending: "Sending…",
+  },
+  recluster: {
+    title: "Next Grilling Questions",
+    description: "Send to generate the next Grilling Question cluster from the corrected turn list.",
+    action: "Send",
+    pending: "Sending…",
+  },
+  cards: {
+    title: "Generate Cards",
+    description: "Generate Cards from the confirmed interpretation.",
+    action: "Generate Cards",
+    pending: "Generating Cards…",
+  },
+} as const;
 
 export function isGrillingNode(node: WorkflowNode): boolean {
   return (
@@ -27,49 +49,53 @@ export function IdeaGeneratePanel({
   onGenerate: (message?: string) => void;
 }) {
   const [message, setMessage] = useState("");
+  const copy = MODE_COPY[mode];
   const idea = mode === "idea";
   const canSend = !generating && !saveBlocked && (!idea || Boolean(message.trim()));
-  const actionLabel = mode === "cards" ? "Generate Cards" : "Send";
+
+  function send() {
+    if (!canSend) return;
+    const trimmed = message.trim();
+    setMessage("");
+    onGenerate(idea ? trimmed : undefined);
+  }
 
   return (
-    <Card>
+    <Card aria-busy={generating || undefined}>
       <CardHeader>
-        <CardTitle className="font-serif text-navy">{actionLabel}</CardTitle>
-        <CardDescription>
-          {mode === "idea"
-            ? "Paste the research idea, then Send."
-            : mode === "recluster"
-              ? "Send to generate the next Grilling Question cluster from the corrected turn list."
-              : "Generate Cards from the confirmed interpretation."}
-        </CardDescription>
+        <CardTitle className="font-serif text-navy">{copy.title}</CardTitle>
+        <CardDescription>{copy.description}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
+        <GenerateError error={error} />
         {idea ? (
-          <label className="grid gap-2 text-sm font-medium">
-            Your idea
+          <div className="grid gap-2">
+            <label htmlFor="grilling-idea" className="text-sm font-medium">
+              Your idea
+            </label>
             <Textarea
+              id="grilling-idea"
+              aria-describedby="grilling-idea-hint"
               disabled={generating}
               placeholder="Describe the research idea"
               value={message}
               onChange={(event) => setMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  send();
+                }
+              }}
             />
-          </label>
+            <p id="grilling-idea-hint" className="text-sm text-muted-foreground">
+              Ctrl+Enter or Cmd+Enter to Send.
+            </p>
+          </div>
         ) : null}
-        <Button
-          disabled={!canSend}
-          onClick={() => {
-            const trimmed = message.trim();
-            setMessage("");
-            onGenerate(idea ? trimmed : undefined);
-          }}
-        >
-          {actionLabel}
+        <Button disabled={!canSend} onClick={send}>
+          {generating ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : <Send aria-hidden="true" />}
+          {generating ? copy.pending : copy.action}
         </Button>
-        {error ? (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        ) : null}
       </CardContent>
     </Card>
   );
@@ -78,8 +104,9 @@ export function IdeaGeneratePanel({
 export function GenerateError({ error }: { error: string | null }) {
   if (!error) return null;
   return (
-    <p role="alert" className="text-sm text-destructive">
-      {error}
-    </p>
+    <div role="alert" className="rounded-md border border-destructive bg-card p-3">
+      <p className="text-sm font-medium text-destructive">There is a problem</p>
+      <p className="mt-1 text-sm">{error}</p>
+    </div>
   );
 }
