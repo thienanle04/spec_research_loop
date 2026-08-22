@@ -380,6 +380,55 @@ async def test_reopening_current_workflow_node_increments_version(client: AsyncC
 
 
 @pytest.mark.asyncio
+async def test_reopening_research_inputs_restores_confirmed_narrative(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    session_id = created["id"]
+    interpreted = await _confirm(
+        client, session_id, "idea_interpretation", created["version"]
+    )
+    decomposed = await _confirm(
+        client, session_id, "idea_decomposition", interpreted["version"]
+    )
+    research_draft = await _prepare(
+        client, session_id, "related_work", decomposed["version"]
+    )
+    saved_inputs = {
+        "keywords": ["claim-level verification", "evidence-grounded feedback"],
+        "preferred_sources": {
+            "peer_reviewed": True,
+            "official_proceedings": True,
+        },
+    }
+    patched = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=research_draft["version"],
+        narrative=saved_inputs,
+    )
+    confirmed = await _confirm(
+        client, session_id, "research_inputs", patched.json()["version"]
+    )
+    related_work = await _prepare(
+        client, session_id, "related_work", confirmed["version"]
+    )
+    assert related_work["working_draft_narrative"] == {}
+
+    reopened = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=related_work["version"],
+        node="research_inputs",
+    )
+
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["working_draft_node"] == "research_inputs"
+    assert reopened.json()["working_draft_narrative"] == saved_inputs
+
+
+@pytest.mark.asyncio
 async def test_confirm_requires_expected_version(client: AsyncClient) -> None:
     await _auth_client(client)
     created = await _create_session(client)
@@ -836,7 +885,7 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
         ("related_work", "research_inputs"),
         ("related_work", "related_work"),
         ("related_work", "gap"),
-        ("contribution", "contribution"),
+            ("related_work", "contribution"),
         ("claims_evidence", "claims"),
         ("claims_evidence", "evidence"),
         ("experiment_planning", "experiment_plan"),

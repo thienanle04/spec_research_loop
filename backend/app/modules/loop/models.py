@@ -20,7 +20,9 @@ from app.modules.loop.catalog import (
 class LoopSession(Base):
     __tablename__ = "loop_sessions"
 
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     account_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("accounts.id"),
@@ -28,11 +30,19 @@ class LoopSession(Base):
         index=True,
     )
     title: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     working_draft_node: Mapped[str] = mapped_column(String(64), nullable=False)
-    working_draft_narrative: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    produced_spec_version_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
-    valid_spec_version_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    working_draft_narrative: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    produced_spec_version_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    valid_spec_version_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -47,7 +57,9 @@ class LoopSession(Base):
 
     cards: Mapped[list["Card"]] = relationship(back_populates="session")
     node_heads: Mapped[list["NodeHead"]] = relationship(back_populates="session")
-    stage_revisions: Mapped[list["StageRevision"]] = relationship(back_populates="session")
+    stage_revisions: Mapped[list["StageRevision"]] = relationship(
+        back_populates="session"
+    )
     decisions: Mapped[list["Decision"]] = relationship(back_populates="session")
     spec_versions: Mapped[list["SpecVersion"]] = relationship(back_populates="session")
 
@@ -55,7 +67,9 @@ class LoopSession(Base):
 class Card(Base):
     __tablename__ = "loop_cards"
 
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     session_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("loop_sessions.id", ondelete="CASCADE"),
@@ -85,7 +99,9 @@ class Card(Base):
 class StageRevision(Base):
     __tablename__ = "loop_stage_revisions"
 
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     session_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("loop_sessions.id", ondelete="CASCADE"),
@@ -108,9 +124,13 @@ class StageRevision(Base):
 
 class NodeHead(Base):
     __tablename__ = "loop_node_heads"
-    __table_args__ = (UniqueConstraint("session_id", "node", name="uq_loop_node_heads_session_node"),)
+    __table_args__ = (
+        UniqueConstraint("session_id", "node", name="uq_loop_node_heads_session_node"),
+    )
 
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     session_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("loop_sessions.id", ondelete="CASCADE"),
@@ -118,7 +138,9 @@ class NodeHead(Base):
         index=True,
     )
     node: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default=NodeHeadStatus.EMPTY)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=NodeHeadStatus.EMPTY
+    )
     stage_revision_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("loop_stage_revisions.id"),
@@ -137,16 +159,22 @@ class NodeHead(Base):
 class Decision(Base):
     __tablename__ = "loop_decisions"
 
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     session_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("loop_sessions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    kind: Mapped[str] = mapped_column(String(16), nullable=False, default=DecisionKind.CONFIRM)
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=DecisionKind.CONFIRM
+    )
     node: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    stage_revision_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    stage_revision_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -159,7 +187,9 @@ class Decision(Base):
 class SpecVersion(Base):
     __tablename__ = "loop_spec_versions"
 
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     session_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("loop_sessions.id", ondelete="CASCADE"),

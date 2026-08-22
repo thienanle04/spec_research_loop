@@ -37,7 +37,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.5",
-    "jsdom": "^30.0.1",
+    "jsdom": "^26.1.0",
     "orval": "^8.24.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.10"

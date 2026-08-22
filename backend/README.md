@@ -36,6 +36,34 @@ uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Requires `docker compose up -d` from the repo root (Postgres + MinIO). Schema is applied **only** via Alembic — the app does not `create_all`.
 
+## OpenAlex scholarly search
+
+Create a free API key at `https://openalex.org/settings/api`, then configure:
+
+```dotenv
+RESEARCH_SOURCE_PROVIDER=openalex
+OPENALEX_API_KEY=your-openalex-api-key
+OPENALEX_MAILTO=you@example.com
+```
+
+Restart the backend after changing `.env`. OpenAlex search errors are returned
+as a terminal stream error when every generated query fails; partial query
+failures remain warnings while successful results continue to be analyzed.
+
+## FIT@HCMUS WebUI LLM
+
+Personal API keys from the FIT WebUI use the OpenAI-compatible Chat Completions
+endpoint. Add the following to `.env` (never commit the real key):
+
+```dotenv
+RESEARCH_LLM_PROVIDER=fit_webui
+RESEARCH_LLM_MODEL=Qwen3.6-27B
+FIT_WEBUI_API_KEY=sk-your-personal-key
+FIT_WEBUI_BASE_URL=https://ai-fit.hcmus.edu.vn/openai
+FIT_WEBUI_TIMEOUT_SECONDS=120
+FIT_WEBUI_MAX_TOKENS=2000
+```
+
 ## Migrations
 
 After changing SQLAlchemy models:

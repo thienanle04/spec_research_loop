@@ -1,3 +1,4 @@
+import * as React from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -58,6 +59,39 @@ vi.mock("./WorkingDraftCardCanvas", () => ({
   WorkingDraftCardCanvas: ({ sessionId }: { sessionId: string }) => (
     <p>Working Draft Card canvas for {sessionId}</p>
   ),
+}));
+
+vi.mock("@/features/research", () => ({
+  ResearchStageContainer: ({
+    sessionId,
+    onRunningChange,
+    onConfirmabilityChange,
+  }: {
+    sessionId: string;
+    onRunningChange?: (running: boolean) => void;
+    onConfirmabilityChange?: (confirmable: boolean) => void;
+  }) => {
+    React.useEffect(() => {
+      onRunningChange?.(false);
+      onConfirmabilityChange?.(true);
+    }, [onConfirmabilityChange, onRunningChange]);
+    return <p>Working Draft narrative editor for {sessionId}</p>;
+  },
+  ContributionStageContainer: ({
+    sessionId,
+    onRunningChange,
+    onConfirmabilityChange,
+  }: {
+    sessionId: string;
+    onRunningChange?: (running: boolean) => void;
+    onConfirmabilityChange?: (confirmable: boolean) => void;
+  }) => {
+    React.useEffect(() => {
+      onRunningChange?.(false);
+      onConfirmabilityChange?.(true);
+    }, [onConfirmabilityChange, onRunningChange]);
+    return <p>Contribution Direction editor for {sessionId}</p>;
+  },
 }));
 
 vi.mock("./loop-session-save", () => ({
@@ -180,14 +214,13 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
   });
 
-  it("shows all seven canonical Loop Stages in order, including Contribution", () => {
+  it("shows Contribution Direction within the six navigable Loop Stages", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
 
     expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
       expect.stringContaining("Grilling"),
       expect.stringContaining("Related work"),
-      expect.stringContaining("Contribution"),
       expect.stringContaining("Claims/evidence"),
       expect.stringContaining("Experiment planning"),
       expect.stringContaining("Independent judges"),
@@ -215,15 +248,13 @@ describe("LoopSessionWorkbench", () => {
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
     const grilling = within(nav).getByRole("link", { name: /Grilling/ });
     const relatedWork = within(nav).getByRole("link", { name: /Related work/ });
-    const contribution = within(nav).getByRole("link", { name: /Contribution/ });
 
     expect(grilling).toHaveTextContent("Complete");
     expect(grilling).toHaveTextContent("Editing");
     expect(relatedWork).toHaveTextContent("Needs work");
     expect(relatedWork).not.toHaveTextContent("Unavailable");
     expect(relatedWork).not.toHaveTextContent("Editing");
-    expect(contribution).toHaveTextContent("Unavailable");
-    expect(contribution).not.toHaveTextContent("Editing");
+    expect(within(nav).queryByRole("link", { name: /^Contribution/ })).not.toBeInTheDocument();
   });
 
   it("selects a Loop Stage only through the query string and issues no mutations", async () => {
@@ -232,20 +263,27 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync: prepare, error: null });
     patchHook.mockReturnValue({ mutateAsync: patch, error: null });
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const contribution = screen.getByRole("link", { name: /Contribution/ });
+    const claimsEvidence = screen.getByRole("link", { name: /Claims\/evidence/ });
 
-    expect(contribution).toHaveAttribute("href", "/sessions/session-1?stage=contribution");
-    await userEvent.click(contribution);
+    expect(claimsEvidence).toHaveAttribute("href", "/sessions/session-1?stage=claims_evidence");
+    await userEvent.click(claimsEvidence);
     expect(prepare).not.toHaveBeenCalled();
     expect(patch).not.toHaveBeenCalled();
   });
 
-  it("offers Start on an empty available Loop Stage", () => {
+  it("warns instead of continuing when the current work has not been confirmed", async () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    const prepare = vi.fn();
+    prepareHook.mockReturnValue({ mutateAsync: prepare, error: null });
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const overview = screen.getByRole("region", { name: "Grilling overview" });
 
-    expect(within(overview).getByRole("button", { name: "Start" })).toBeInTheDocument();
+    await userEvent.click(within(overview).getByRole("button", { name: "Continue" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This work has not been confirmed. Select Confirm to save it before continuing.",
+    );
+    expect(prepare).not.toHaveBeenCalled();
     expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
     expect(within(overview).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
@@ -271,7 +309,7 @@ describe("LoopSessionWorkbench", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const overview = screen.getByRole("region", { name: "Grilling overview" });
 
-    expect(within(overview).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
     expect(within(overview).getByRole("button", { name: "Recompute" })).toBeInTheDocument();
     expect(within(overview).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
   });
@@ -297,18 +335,18 @@ describe("LoopSessionWorkbench", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const overview = screen.getByRole("region", { name: "Grilling overview" });
 
-    expect(within(overview).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
     expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
     expect(within(overview).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
     expect(within(overview).getByRole("button", { name: "Edit Idea decomposition" })).toBeInTheDocument();
   });
 
-  it("does not offer Start, Recompute, or Edit on an unavailable Loop Stage", () => {
+  it("does not offer Continue, Recompute, or Edit on an unavailable Loop Stage", () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const overview = screen.getByRole("region", { name: "Related work overview" });
 
-    expect(within(overview).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
     expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
     expect(within(overview).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
@@ -347,7 +385,7 @@ describe("LoopSessionWorkbench", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const overview = screen.getByRole("region", { name: "Related work overview" });
     expect(screen.queryByText(/Working Draft narrative editor/)).not.toBeInTheDocument();
-    await userEvent.click(within(overview).getByRole("button", { name: "Start" }));
+    await userEvent.click(within(overview).getByRole("button", { name: "Continue" }));
 
     expect(mutateAsync).toHaveBeenCalledWith({
       sessionId: "session-1",
@@ -469,6 +507,9 @@ describe("LoopSessionWorkbench", () => {
         data: session({
           version: 1,
           working_draft_narrative: { text: "Local idea" },
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          }),
         }),
       },
       isLoading: false,
@@ -485,7 +526,7 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("version conflict");
     expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
@@ -533,7 +574,7 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("not current");
     expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
@@ -547,7 +588,7 @@ describe("LoopSessionWorkbench", () => {
         status: 200,
         data: session({
           version: 2,
-          working_draft_node: WorkflowNode.idea_decomposition,
+          working_draft_node: WorkflowNode.idea_interpretation,
           node_heads: heads({
             [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
             [WorkflowNode.idea_decomposition]: NodeHeadStatus.empty,
@@ -567,10 +608,10 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("already current");
-    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
+    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
   });
 
@@ -821,11 +862,61 @@ describe("LoopSessionWorkbench", () => {
 
     expect(confirmMutate).toHaveBeenCalledTimes(1);
     expect(prepareMutate).not.toHaveBeenCalled();
+    expect(
+      screen.getByText("Saved. Select Continue to proceed to the next step."),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(prepareMutate).toHaveBeenCalledWith({
       sessionId: "session-1",
       data: { stage: LoopStage.related_work, expected_version: 9 },
     });
+  });
+
+  it("does not offer Continue after confirming Contribution Direction", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 12,
+          working_draft_node: WorkflowNode.contribution,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 13,
+      working_draft_node: WorkflowNode.contribution,
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+        [WorkflowNode.related_work]: NodeHeadStatus.current,
+        [WorkflowNode.gap]: NodeHeadStatus.current,
+        [WorkflowNode.contribution]: NodeHeadStatus.current,
+      }),
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    const prepareMutate = vi.fn();
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(screen.getByRole("status")).toHaveTextContent("Saved.");
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(prepareMutate).not.toHaveBeenCalled();
   });
 
   it("explains a Confirm version conflict without changing local Working Draft content", async () => {

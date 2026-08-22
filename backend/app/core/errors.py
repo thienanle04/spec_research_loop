@@ -31,6 +31,8 @@ class OperationalErrorException(Exception):
 
 async def operational_error_handler(
     _request: Request,
-    exc: OperationalErrorException,
+    exc: Exception,
 ) -> JSONResponse:
+    if not isinstance(exc, OperationalErrorException):
+        raise exc
     return JSONResponse(status_code=exc.status_code, content=exc.error.model_dump())

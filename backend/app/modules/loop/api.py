@@ -160,7 +160,9 @@ async def list_decisions(
     account: Annotated[Account, Depends(get_current_account)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[DecisionResponse]:
-    return await _service(db).list_decisions(session_id=session_id, account_id=account.id)
+    return await _service(db).list_decisions(
+        session_id=session_id, account_id=account.id
+    )
 
 
 @router.post(

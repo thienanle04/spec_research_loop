@@ -8,7 +8,7 @@ vi.mock("@/features/identity", () => ({
 }));
 
 describe("HomePage", () => {
-  it("sends the product CTA to Loop Sessions and lists all seven Loop Stages", () => {
+  it("sends the product CTA to Loop Sessions and lists all six Loop Stages", () => {
     render(<HomePage />);
 
     expect(screen.getByRole("link", { name: "Start a Loop Session" })).toHaveAttribute(
@@ -20,7 +20,6 @@ describe("HomePage", () => {
     ).toEqual([
       "Grilling",
       "Related work",
-      "Contribution",
       "Claims/evidence",
       "Experiment planning",
       "Independent judges",

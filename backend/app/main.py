@@ -1,5 +1,6 @@
 """SpecResearch Loop API — modular monolith entrypoint."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -14,9 +15,16 @@ from app.modules.idea.api import router as idea_router
 from app.modules.identity.api import router as identity_router
 from app.modules.judgement.api import router as judgement_router
 from app.modules.loop.api import router as loop_router
-from app.modules.loop.deps import bind_stage_ports, default_stage_ports
+from app.modules.loop.catalog import WorkflowNode
+from app.modules.loop.deps import (
+    bind_stage_port_factories,
+    default_stage_port_factories,
+)
 from app.modules.research.api import router as research_router
+from app.modules.research.stage_port import ResearchStagePort
 from app.modules.spec.api import router as spec_router
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -25,9 +33,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     storage = get_object_storage()
     try:
         await storage.ensure_bucket()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - storage startup must not block the API
         # MinIO may still be starting; API can retry puts later.
-        pass
+        logger.warning("Object storage bucket is not ready: %s", exc)
     yield
     await dispose_engine()
 
@@ -49,7 +57,14 @@ def create_app() -> FastAPI:
     app.include_router(research_router, prefix="/api/research", tags=["research"])
     app.include_router(spec_router, prefix="/api/spec", tags=["spec"])
     app.include_router(judgement_router, prefix="/api/judgement", tags=["judgement"])
-    bind_stage_ports(default_stage_ports())
+    stage_port_factories = default_stage_port_factories()
+    for node in (
+        WorkflowNode.RESEARCH_INPUTS,
+        WorkflowNode.RELATED_WORK,
+        WorkflowNode.GAP,
+    ):
+        stage_port_factories[node.value] = ResearchStagePort
+    bind_stage_port_factories(stage_port_factories)
 
     @app.get("/health")
     async def root_health() -> dict[str, str]:

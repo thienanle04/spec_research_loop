@@ -42,6 +42,22 @@ pnpm codegen
 
 Smoke paths: register/login at `/register` and `/login`, then `/demo` for authenticated SSE.
 
+### Research frontend demo
+
+To test Research without using the unfinished Idea UI, sign in and open:
+
+```text
+http://localhost:3000/research-demo
+```
+
+Choose **Create and open Research demo**. The frontend creates and confirms a
+deterministic Idea fixture through the real Loop API, prepares `research_inputs`,
+and redirects to the Related work Loop Stage. The default scholarly-source and
+LLM providers are fake, so Citation search and Gap generation need no external
+API key. For live research, set `RESEARCH_SOURCE_PROVIDER=openalex` and
+`RESEARCH_LLM_PROVIDER=fit_webui`, then provide `OPENALEX_API_KEY` and
+`FIT_WEBUI_API_KEY` in `backend/.env`.
+
 **Port notes:** compose maps Postgres to **55432** and MinIO to **9010/9011** so they do not collide with common local services on 5432/9000. Adjust `backend/.env` if you change compose ports.
 
 ## Backend modules
