@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     fit_webui_base_url: str = "https://ai-fit.hcmus.edu.vn/openai"
     fit_webui_timeout_seconds: float = 120.0
     fit_webui_max_tokens: int = 2_000
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_default_model: str = "gpt-4o-mini"
+    llm_trace: bool = False
 
     @property
     def cors_origin_list(self) -> list[str]:

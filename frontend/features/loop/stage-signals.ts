@@ -1,5 +1,6 @@
 import { LoopStage, NodeHeadStatus, WorkflowNode } from "@/lib/api/generated/model";
 import type { LoopSessionResponse, NodeHeadResponse } from "@/lib/api/generated/model";
+import { clustersAnswered, parseTurns } from "@/features/idea/turns";
 
 import {
   LOOP_STAGE_CATALOG,
@@ -119,6 +120,10 @@ function fieldText(value: unknown): string {
 export function hasConfirmableWorkingDraft(
   session: Pick<LoopSessionResponse, "working_draft_node" | "working_draft_narrative" | "cards">,
 ): boolean {
+  const narrative = session.working_draft_narrative as Record<string, unknown>;
+  if (Array.isArray(narrative.turns)) {
+    return clustersAnswered(parseTurns(narrative));
+  }
   if (fieldText(session.working_draft_narrative)) {
     return true;
   }

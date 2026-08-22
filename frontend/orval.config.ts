@@ -4,6 +4,7 @@ function stripStreamingPaths(spec: Record<string, unknown> & { paths?: Record<st
   if (spec.paths) {
     delete spec.paths["/api/idea/demo/stream"];
     delete spec.paths["/api/research/sessions/{session_id}/nodes/{node}/generate"];
+    delete spec.paths["/api/idea/sessions/{session_id}/generate"];
   }
   return spec;
 }

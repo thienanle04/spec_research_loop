@@ -1,9 +1,10 @@
 import * as React from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/lib/api/config";
+import { readSseStream } from "@/lib/api/sse";
 import {
   CardKind,
   LoopStage,
@@ -28,6 +29,12 @@ const queueFlush = vi.fn(async () => undefined);
 const queueEnqueue = vi.fn(async (mutation: () => Promise<unknown>) => mutation());
 const saveStatus = { current: "idle" as SaveStatus };
 let search = new URLSearchParams();
+
+vi.mock("@/lib/api/sse", () => ({
+  readSseStream: vi.fn(async (_path: string, onEvent: (data: unknown) => void) => {
+    onEvent({ type: "done", version: 5 });
+  }),
+}));
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/sessions/session-1",
@@ -146,6 +153,30 @@ function session(overrides: Partial<LoopSessionResponse> = {}): LoopSessionRespo
   };
 }
 
+function answeredTurns(text = "GPU kernel latency"): Record<string, unknown> {
+  return {
+    exhausted: true,
+    turns: [
+      { role: "account", kind: "idea", text },
+      { role: "model", preamble: "No further questions.", questions: [] },
+    ],
+  };
+}
+
+function unansweredTurns(): Record<string, unknown> {
+  return {
+    exhausted: false,
+    turns: [
+      { role: "account", kind: "idea", text: "GPU kernel latency" },
+      {
+        role: "model",
+        preamble: "Need the budget.",
+        questions: [{ text: "Training or inference?", options: ["Training", "Inference"] }],
+      },
+    ],
+  };
+}
+
 describe("LoopSessionWorkbench", () => {
   beforeEach(() => {
     replace.mockReset();
@@ -163,6 +194,10 @@ describe("LoopSessionWorkbench", () => {
     queueEnqueue.mockImplementation(async (mutation: () => Promise<unknown>) => mutation());
     saveStatus.current = "idle";
     search = new URLSearchParams();
+    vi.mocked(readSseStream).mockClear();
+    vi.mocked(readSseStream).mockImplementation(async (_path, onEvent) => {
+      onEvent({ type: "done", version: 5 });
+    });
     getHook.mockReturnValue({
       data: { status: 200, data: session() },
       isLoading: false,
@@ -463,7 +498,7 @@ describe("LoopSessionWorkbench", () => {
     const reopened = session({
       version: 7,
       working_draft_node: WorkflowNode.idea_interpretation,
-      working_draft_narrative: { text: "kept interpretation" },
+      working_draft_narrative: answeredTurns("kept interpretation"),
       node_heads: heads({
         [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
         [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
@@ -484,7 +519,7 @@ describe("LoopSessionWorkbench", () => {
       },
     });
     expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
-    expect(screen.getByText("Working Draft narrative editor for session-1")).toBeInTheDocument();
+    expect(screen.getByText("kept interpretation")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toHaveTextContent("Editing");
   });
 
@@ -497,7 +532,7 @@ describe("LoopSessionWorkbench", () => {
           version: 2,
           title: "Server title",
           working_draft_node: WorkflowNode.idea_interpretation,
-          working_draft_narrative: { text: "Server idea" },
+          working_draft_narrative: answeredTurns("Server idea"),
         }),
       },
     });
@@ -506,7 +541,7 @@ describe("LoopSessionWorkbench", () => {
         status: 200,
         data: session({
           version: 1,
-          working_draft_narrative: { text: "Local idea" },
+          working_draft_narrative: answeredTurns("Local idea"),
           node_heads: heads({
             [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
           }),
@@ -530,7 +565,6 @@ describe("LoopSessionWorkbench", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("version conflict");
     expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
-    expect(screen.getByText("Working Draft narrative editor for session-1")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
     expect(mutateAsync).toHaveBeenCalledTimes(1);
 
@@ -542,7 +576,7 @@ describe("LoopSessionWorkbench", () => {
         version: 2,
         title: "Server title",
         working_draft_node: WorkflowNode.idea_interpretation,
-        working_draft_narrative: { text: "Server idea" },
+        working_draft_narrative: answeredTurns("Server idea"),
       }),
     });
   });
@@ -677,11 +711,13 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("could not load");
   });
 
-  it("lets the Account enter the research idea in the interpretation Working Draft", () => {
+  it("lets the Account Send the research idea on empty interpretation", () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    expect(screen.getByText("Working Draft narrative editor for session-1")).toBeInTheDocument();
-    expect(screen.getByText("Working Draft Card canvas for session-1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Your idea" })).toBeInTheDocument();
+    expect(screen.queryByText("Working Draft narrative editor for session-1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Working Draft Card canvas for session-1")).not.toBeInTheDocument();
   });
 
   it("does not open the Working Draft editor merely by selecting another Loop Stage", () => {
@@ -704,7 +740,7 @@ describe("LoopSessionWorkbench", () => {
         status: 200,
         data: session({
           version: 3,
-          working_draft_narrative: { text: "GPU kernel latency" },
+          working_draft_narrative: answeredTurns(),
         }),
       },
       isLoading: false,
@@ -735,7 +771,73 @@ describe("LoopSessionWorkbench", () => {
       },
     });
     expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+    await waitFor(() => expect(readSseStream).toHaveBeenCalled());
+    expect(readSseStream).toHaveBeenCalledWith(
+      "/api/idea/sessions/session-1/generate",
+      expect.any(Function),
+      undefined,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_version: 4 }),
+      },
+    );
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(screen.getByText("Working Draft Card canvas for session-1")).toBeInTheDocument();
+  });
+
+  it("sends cluster answers for interpretation and keeps Send disabled until every question is answered", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 2,
+          working_draft_narrative: unansweredTurns(),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("radio", { name: "Training" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(readSseStream).toHaveBeenCalled());
+    expect(readSseStream).toHaveBeenCalledWith(
+      "/api/idea/sessions/session-1/generate",
+      expect.any(Function),
+      undefined,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_version: 2,
+          answers: [{ option: "Training" }],
+        }),
+      },
+    );
+  });
+
+  it("shows the exhausted hint on interpretation without gating Confirm", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_narrative: answeredTurns("idea"),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(
+      screen.getByText("The model thinks questioning is exhausted. Confirm is still your Decision."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
   });
 
   it("disables Confirm while autosaves are pending or failed and aborts after a flush failure", async () => {
@@ -744,7 +846,7 @@ describe("LoopSessionWorkbench", () => {
       data: {
         status: 200,
         data: session({
-          working_draft_narrative: { text: "GPU kernel latency" },
+          working_draft_narrative: answeredTurns(),
         }),
       },
       isLoading: false,
@@ -776,7 +878,7 @@ describe("LoopSessionWorkbench", () => {
         status: 200,
         data: session({
           working_draft_node: WorkflowNode.idea_interpretation,
-          working_draft_narrative: { text: "changed understanding" },
+          working_draft_narrative: answeredTurns("changed understanding"),
           node_heads: heads({
             [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
             [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
@@ -803,7 +905,7 @@ describe("LoopSessionWorkbench", () => {
       data: {
         status: 200,
         data: session({
-          working_draft_narrative: { text: "first idea" },
+          working_draft_narrative: answeredTurns("first idea"),
           node_heads: heads({
             [WorkflowNode.idea_interpretation]: NodeHeadStatus.empty,
           }),
@@ -926,7 +1028,7 @@ describe("LoopSessionWorkbench", () => {
         status: 200,
         data: session({
           version: 1,
-          working_draft_narrative: { text: "Local idea" },
+          working_draft_narrative: answeredTurns("Local idea"),
         }),
       },
       isLoading: false,
@@ -1051,7 +1153,7 @@ describe("LoopSessionWorkbench", () => {
     expect(spec).not.toHaveTextContent("latest spec");
     expect(spec).not.toHaveTextContent("Draft Research Spec");
     expect(spec).not.toHaveTextContent("Final Spec");
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(within(spec).queryByRole("textbox")).not.toBeInTheDocument();
   });
 
   it("keeps unknown Produced Spec Version fields visible as JSON", () => {
@@ -1169,7 +1271,7 @@ describe("LoopSessionWorkbench", () => {
         status: 200,
         data: session({
           version: 3,
-          working_draft_narrative: { text: "GPU kernel latency" },
+          working_draft_narrative: answeredTurns(),
         }),
       },
       isLoading: false,

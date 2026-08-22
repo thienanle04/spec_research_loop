@@ -7,6 +7,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.adapters.llm import (
+    LangChainChatAdapter,
+    bind_llm_ports,
+    configure_llm_trace_logger,
+    traced_ports,
+)
 from app.adapters.storage import get_object_storage
 from app.core.config import get_settings
 from app.core.errors import OperationalErrorException, operational_error_handler
@@ -15,7 +21,7 @@ from app.modules.idea.api import router as idea_router
 from app.modules.identity.api import router as identity_router
 from app.modules.judgement.api import router as judgement_router
 from app.modules.loop.api import router as loop_router
-from app.modules.loop.catalog import WorkflowNode
+from app.modules.loop.catalog import WORKFLOW_NODES, WorkflowNode
 from app.modules.loop.deps import (
     bind_stage_port_factories,
     default_stage_port_factories,
@@ -65,6 +71,13 @@ def create_app() -> FastAPI:
     ):
         stage_port_factories[node.value] = ResearchStagePort
     bind_stage_port_factories(stage_port_factories)
+
+    llm = LangChainChatAdapter()
+    ports = {node.value: llm for node in WORKFLOW_NODES}
+    if settings.llm_trace:
+        configure_llm_trace_logger()
+        ports = traced_ports(ports)
+    bind_llm_ports(ports)
 
     @app.get("/health")
     async def root_health() -> dict[str, str]:

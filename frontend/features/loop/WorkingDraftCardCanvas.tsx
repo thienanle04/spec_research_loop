@@ -14,7 +14,7 @@ import {
   usePatchCardApiLoopSessionsSessionIdCardsCardIdPatch,
 } from "@/lib/api/generated/endpoints";
 import {
-  type CardKind,
+  CardKind,
   type CardMutationResponse,
   type CardResponse,
   type LoopSessionResponse,
@@ -81,7 +81,17 @@ const STATUS_LABEL: Record<SaveStatus, string | null> = {
   conflict: "Resolve conflict",
 };
 
-export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
+const SINGULAR_KINDS = new Set<CardKind>([CardKind.problem, CardKind.research_question]);
+
+export function WorkingDraftCardCanvas({
+  sessionId,
+  locked = false,
+  layout = "default",
+}: {
+  sessionId: string;
+  locked?: boolean;
+  layout?: "default" | "grilling";
+}) {
   const queryClient = useQueryClient();
   const sessionQuery = useGetSessionApiLoopSessionsSessionIdGet(sessionId);
   const createCard = useCreateCardApiLoopSessionsSessionIdCardsPost();
@@ -91,6 +101,7 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
   const [texts, setTexts] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
   const [conflict, setConflict] = useState<Conflict | null>(null);
+  const [editingIds, setEditingIds] = useState<Set<string>>(new Set());
   const draftsRef = useRef(drafts);
   draftsRef.current = drafts;
 
@@ -99,6 +110,19 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
   const ownedCards = session
     ? session.cards.filter((item) => kinds.includes(item.kind))
     : [];
+  const grilling = layout === "grilling";
+
+  function startEdit(id: string) {
+    setEditingIds((current) => new Set(current).add(id));
+  }
+
+  function stopEdit(id: string) {
+    setEditingIds((current) => {
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!session || conflict) return;
@@ -112,6 +136,24 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
       return next;
     });
   }, [conflict, dirty, session]);
+
+  useEffect(() => {
+    if (layout !== "grilling" || !session) return;
+    setDrafts((current) => {
+      let next = current;
+      for (const kind of SINGULAR_KINDS) {
+        const hasCard = session.cards.some((item) => item.kind === kind);
+        const hasDraft = next.some((item) => item.kind === kind);
+        if (!hasCard && !hasDraft) {
+          next = [...next, { id: `slot-${kind}`, kind, text: "" }];
+        }
+        if (hasCard && hasDraft) {
+          next = next.filter((item) => item.kind !== kind);
+        }
+      }
+      return next;
+    });
+  }, [layout, session]);
 
   useEffect(() => {
     return () => {
@@ -215,7 +257,7 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
   }
 
   function scheduleCardSave(item: CardResponse, nextText: string) {
-    if (!session || conflict) return;
+    if (!session || conflict || locked) return;
     const expectedVersion = session.version;
     const baseBody = asBody(item.body);
     void queue
@@ -231,7 +273,7 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
   }
 
   function scheduleDraftSave(draft: Draft, nextText: string) {
-    if (!session || conflict || !nextText.trim()) return;
+    if (!session || conflict || locked || !nextText.trim()) return;
     const expectedVersion = session.version;
     const nextDraft = { ...draft, text: nextText };
     void queue
@@ -243,6 +285,37 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
           throw error;
         }
       }, AUTOSAVE_MS)
+      .catch(() => undefined);
+  }
+
+  function saveCardNow(item: CardResponse, nextText: string) {
+    if (!session || conflict || locked) return;
+    const expectedVersion = session.version;
+    const baseBody = asBody(item.body);
+    void queue
+      .enqueue(async () => {
+        try {
+          return await persistCard(item.id, nextText, expectedVersion, baseBody);
+        } catch (error) {
+          await handleSaveError(error, item.id, nextText, expectedVersion, item.kind);
+          throw error;
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  function saveDraftNow(draft: Draft) {
+    if (!session || conflict || locked || !draft.text.trim()) return;
+    const expectedVersion = session.version;
+    void queue
+      .enqueue(async () => {
+        try {
+          return await persistDraft({ ...draft }, expectedVersion);
+        } catch (error) {
+          await handleSaveError(error, draft.id, draft.text, expectedVersion, draft.kind);
+          throw error;
+        }
+      })
       .catch(() => undefined);
   }
 
@@ -317,39 +390,112 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
           <CardDescription>
             {kinds.length === 0
               ? "This Workflow Node owns no Cards."
-              : "Every Card kind is repeatable. Unknown fields are preserved."}
+              : layout === "grilling"
+                ? "One problem and one research question. Constraints and open questions may be many."
+                : "Every Card kind is repeatable. Unknown fields are preserved."}
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-6">
           {kinds.map((kind) => {
             const label = CARD_KIND_LABELS[kind];
-            const kindCards = ownedCards.filter((item) => item.kind === kind);
+            const kindCards =
+              layout === "grilling" && SINGULAR_KINDS.has(kind)
+                ? ownedCards.filter((item) => item.kind === kind).slice(0, 1)
+                : ownedCards.filter((item) => item.kind === kind);
             const kindDrafts = drafts.filter((item) => item.kind === kind);
+            const allowAdd = layout !== "grilling" || !SINGULAR_KINDS.has(kind);
             return (
               <section key={kind} aria-label={`${label} Cards`} className="grid gap-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h3 className="text-sm font-medium">{label}</h3>
+                  {allowAdd ? (
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    disabled={status === "conflict"}
-                    onClick={() =>
-                      setDrafts((current) => [
-                        ...current,
-                        { id: crypto.randomUUID(), kind, text: "" },
-                      ])
-                    }
+                    disabled={locked || status === "conflict"}
+                    onClick={() => {
+                      const id = crypto.randomUUID();
+                      setDrafts((current) => [...current, { id, kind, text: "" }]);
+                      if (grilling) startEdit(id);
+                    }}
                   >
                     Add {label}
                   </Button>
+                  ) : null}
                 </div>
-                {kindCards.map((item) => (
+                {kindCards.map((item) => {
+                  const value = texts[item.id] ?? bodyText(asBody(item.body));
+                  if (grilling) {
+                    const editing = editingIds.has(item.id);
+                    return (
+                      <div key={item.id} className="grid gap-2">
+                        <p className="text-sm font-medium">{label} Card</p>
+                        {editing ? (
+                          <>
+                            <Textarea
+                              aria-label={`${label} Card`}
+                              disabled={locked || status === "conflict"}
+                              value={value}
+                              onChange={(event) => {
+                                const nextText = event.target.value;
+                                setTexts((current) => ({ ...current, [item.id]: nextText }));
+                                setDirty((current) => ({ ...current, [item.id]: true }));
+                              }}
+                            />
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setTexts((current) => ({
+                                    ...current,
+                                    [item.id]: bodyText(asBody(item.body)),
+                                  }));
+                                  setDirty((current) => ({ ...current, [item.id]: false }));
+                                  stopEdit(item.id);
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={!dirty[item.id] || locked}
+                                onClick={() => {
+                                  saveCardNow(item, value);
+                                  stopEdit(item.id);
+                                }}
+                              >
+                                Save
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="whitespace-pre-wrap break-words text-sm">{value || "Empty"}</p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="justify-self-start"
+                              disabled={locked || status === "conflict"}
+                              onClick={() => startEdit(item.id)}
+                            >
+                              Edit
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    );
+                  }
+                  return (
                   <label key={item.id} className="grid gap-2 text-sm font-medium">
                     {label} Card
                     <Textarea
-                      disabled={status === "conflict"}
-                      value={texts[item.id] ?? bodyText(asBody(item.body))}
+                      disabled={locked || status === "conflict"}
+                      value={value}
                       onChange={(event) => {
                         const nextText = event.target.value;
                         setTexts((current) => ({ ...current, [item.id]: nextText }));
@@ -358,13 +504,90 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
                       }}
                     />
                   </label>
-                ))}
-                {kindDrafts.map((draft) => (
+                  );
+                })}
+                {kindDrafts.map((draft) => {
+                  if (grilling) {
+                    const seeded = SINGULAR_KINDS.has(kind) && draft.id.startsWith("slot-");
+                    const editing = editingIds.has(draft.id) || (!seeded && true);
+                    if (!editing) {
+                      return (
+                        <div key={draft.id} className="grid gap-2">
+                          <p className="text-sm font-medium">New {label} Card</p>
+                          <p className="text-sm text-muted-foreground">{draft.text || "Empty"}</p>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="justify-self-start"
+                            disabled={locked}
+                            onClick={() => startEdit(draft.id)}
+                          >
+                            Edit
+                          </Button>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div key={draft.id} className="grid gap-2">
+                        <label className="grid gap-2 text-sm font-medium">
+                          New {label} Card
+                          <Textarea
+                            disabled={locked || status === "conflict"}
+                            value={draft.text}
+                            onChange={(event) => {
+                              const nextText = event.target.value;
+                              setDrafts((current) =>
+                                current.map((item) =>
+                                  item.id === draft.id ? { ...item, text: nextText } : item,
+                                ),
+                              );
+                            }}
+                          />
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={locked}
+                            onClick={() => {
+                              if (seeded) {
+                                setDrafts((current) =>
+                                  current.map((item) =>
+                                    item.id === draft.id ? { ...item, text: "" } : item,
+                                  ),
+                                );
+                                stopEdit(draft.id);
+                              } else {
+                                setDrafts((current) => current.filter((item) => item.id !== draft.id));
+                                stopEdit(draft.id);
+                              }
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={locked || !draft.text.trim()}
+                            onClick={() => {
+                              saveDraftNow({ ...draft, text: draft.text });
+                              stopEdit(draft.id);
+                            }}
+                          >
+                            Save
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
                   <div key={draft.id} className="grid gap-2">
                     <label className="grid gap-2 text-sm font-medium">
                       New {label} Card
                       <Textarea
-                        disabled={status === "conflict"}
+                        disabled={locked || status === "conflict"}
                         value={draft.text}
                         onChange={(event) => {
                           const nextText = event.target.value;
@@ -382,6 +605,7 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
                       variant="ghost"
                       size="sm"
                       className="justify-self-start"
+                      disabled={locked}
                       onClick={() =>
                         setDrafts((current) => current.filter((item) => item.id !== draft.id))
                       }
@@ -389,7 +613,8 @@ export function WorkingDraftCardCanvas({ sessionId }: { sessionId: string }) {
                       Cancel new {label} Card
                     </Button>
                   </div>
-                ))}
+                  );
+                })}
               </section>
             );
           })}

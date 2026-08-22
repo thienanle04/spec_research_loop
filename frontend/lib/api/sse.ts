@@ -1,11 +1,24 @@
-import { API_BASE_URL, getStoredToken } from "./config";
+import { API_BASE_URL, ApiError, getStoredToken } from "./config";
 
-export class SseHttpError extends Error {
+export type SseRequestInit = {
+  method?: "GET" | "POST";
+  body?: unknown;
+  signal?: AbortSignal;
+};
+
+export class SseHttpError extends ApiError {
   constructor(
     public readonly status: number,
     public readonly payload: unknown,
   ) {
-    super(`SSE failed (${status})`);
+    const detail =
+      payload &&
+      typeof payload === "object" &&
+      "detail" in payload &&
+      typeof (payload as { detail: unknown }).detail === "string"
+        ? (payload as { detail: string }).detail
+        : `SSE failed (${status})`;
+    super(status, detail, payload);
     this.name = "SseHttpError";
   }
 }
@@ -17,38 +30,48 @@ export class SseHttpError extends Error {
 export async function readSseStream(
   path: string,
   onEvent: (data: unknown) => void,
-  options: {
-    method?: "GET" | "POST";
-    body?: unknown;
-    signal?: AbortSignal;
-  } = {},
+  signalOrInit?: AbortSignal | SseRequestInit,
+  init?: SseRequestInit,
 ): Promise<void> {
   const token = getStoredToken();
   if (!token) throw new Error("Not authenticated");
 
+  const requestInit = init ?? (signalOrInit as SseRequestInit | undefined) ?? {};
+  const signal = init ? (signalOrInit as AbortSignal | undefined) : requestInit.signal;
+  const body =
+    requestInit.body === undefined
+      ? undefined
+      : typeof requestInit.body === "string"
+        ? requestInit.body
+        : JSON.stringify(requestInit.body);
+
+  const headers: Record<string, string> = {
+    Accept: "text/event-stream",
+    Authorization: `Bearer ${token}`,
+  };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      Accept: "text/event-stream",
-      Authorization: `Bearer ${token}`,
-      ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    signal: options.signal,
+    method: requestInit.method ?? "GET",
+    headers,
+    body,
+    signal,
   });
 
   if (!response.ok) {
     const text = await response.text();
-    let payload: unknown = text;
+    let data: unknown = text;
     try {
-      payload = JSON.parse(text);
+      data = JSON.parse(text);
     } catch {
       // Keep non-JSON provider/proxy errors readable.
     }
-    throw new SseHttpError(response.status, payload);
+    throw new SseHttpError(response.status, data);
   }
   if (!response.body) {
-    throw new Error("SSE response had no body");
+    throw new SseHttpError(response.status, "SSE response had no body");
   }
 
   const reader = response.body.getReader();
