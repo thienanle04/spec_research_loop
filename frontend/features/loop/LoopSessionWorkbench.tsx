@@ -248,7 +248,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const editingContributionDraft =
     editingWorkingDraft && workingDraftNode === WorkflowNode.contribution;
   const editingClaimsDraft =
-    editingWorkingDraft && workingDraftNode === WorkflowNode.claims;
+    editingWorkingDraft && (workingDraftNode === WorkflowNode.claims || workingDraftNode === WorkflowNode.evidence);
   const editingExperimentDraft =
     editingWorkingDraft && (workingDraftNode === WorkflowNode.experiment_plan || workingDraftNode === WorkflowNode.feasibility);
   const editingStructuredDraft = editingResearchDraft || editingContributionDraft || editingClaimsDraft || editingExperimentDraft;

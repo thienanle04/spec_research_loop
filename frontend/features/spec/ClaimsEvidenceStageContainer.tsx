@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
   useCreateCardApiLoopSessionsSessionIdCardsPost,
+  getGetSessionApiLoopSessionsSessionIdGetQueryKey,
   useGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost,
 } from "@/lib/api/generated/endpoints";
 import {
@@ -32,7 +33,9 @@ export function ClaimsEvidenceStageContainer({
   const queryClient = useQueryClient();
   const generateClaims = useGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost();
   const createCard = useCreateCardApiLoopSessionsSessionIdCardsPost();
-  const { queue, saving, sessionKey } = useLoopSessionSave();
+  const { queue, status } = useLoopSessionSave();
+  const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
+  const saving = status === "saving";
 
   const [error, setError] = useState<string | null>(null);
   

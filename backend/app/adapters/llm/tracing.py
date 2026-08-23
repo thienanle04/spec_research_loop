@@ -94,3 +94,28 @@ class TracingLlm:
         async for token in self.stream(system=system, prompt=prompt, model=model):
             parts.append(token)
         return "".join(parts)
+
+    async def complete_structured(self, *, system: str, prompt: str, schema: type, model: str | None = None):
+        started = time.perf_counter()
+        outcome = "cancelled"
+        try:
+            result = await self._inner.complete_structured(system=system, prompt=prompt, schema=schema, model=model)
+        except Exception:
+            outcome = "error"
+            raise
+        else:
+            outcome = "ok"
+            return result
+        finally:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            logger.info(
+                _format_trace(
+                    node=self._node,
+                    model=_resolved_model(model),
+                    latency_ms=latency_ms,
+                    outcome=outcome,
+                    system=system,
+                    prompt=prompt,
+                    completion="<STRUCTURED_JSON>",
+                )
+            )

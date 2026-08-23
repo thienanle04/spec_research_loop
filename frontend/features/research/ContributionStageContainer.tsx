@@ -10,7 +10,7 @@ import { getApiErrorMessage } from "@/lib/api/config";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
   useCreateCardApiLoopSessionsSessionIdCardsPost,
-  useGenerateContributionDirectionsApiSpecSessionsSessionIdContributionDirectionsGeneratePost,
+  useGenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost,
 } from "@/lib/api/generated/endpoints";
 import {
   CardKind,
@@ -86,7 +86,7 @@ export function ContributionStageContainer({
 }) {
   const queryClient = useQueryClient();
   const { queue, status } = useLoopSessionSave();
-  const generateDirections = useGenerateContributionDirectionsApiSpecSessionsSessionIdContributionDirectionsGeneratePost();
+  const generateDirections = useGenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost();
   const createCard = useCreateCardApiLoopSessionsSessionIdCardsPost();
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
   const contributionCards = session.cards.filter((item) => item.kind === CardKind.contribution);
