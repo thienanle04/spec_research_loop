@@ -78,12 +78,17 @@ export function SessionsDashboard() {
             Open a research project or create a new Loop Session.
           </p>
         </div>
-        <Button
-          disabled={createSession.isPending}
-          onClick={() => createSession.mutate({ data: { title: null } })}
-        >
-          {createSession.isPending ? "Creating…" : "Create Loop Session"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link href="/research-demo">Open Research demo</Link>
+          </Button>
+          <Button
+            disabled={createSession.isPending}
+            onClick={() => createSession.mutate({ data: { title: null } })}
+          >
+            {createSession.isPending ? "Creating…" : "Create Loop Session"}
+          </Button>
+        </div>
       </div>
 
       {createSession.error ? (

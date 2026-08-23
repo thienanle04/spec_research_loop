@@ -9,13 +9,16 @@ from app.modules.loop.models import (
     SpecVersion,
     StageRevision,
 )
+from app.modules.research.models import Citation, RelatedWorkFinding
 
 __all__ = [
     "Account",
     "Card",
+    "Citation",
     "Decision",
     "LoopSession",
     "NodeHead",
+    "RelatedWorkFinding",
     "SpecVersion",
     "StageRevision",
 ]

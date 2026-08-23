@@ -1,0 +1,28 @@
+[
+  {
+    "title": "Large Language Models as Optimizers",
+    "authors": ["Chengrun Yang", "Xuezhi Wang", "Yifeng Lu"],
+    "year": 2023,
+    "venue": "arXiv",
+    "doi": "10.48550/arxiv.2309.03409",
+    "url": "https://arxiv.org/abs/2309.03409",
+    "provider": "fixture",
+    "provider_source_id": "opro-2023",
+    "abstract": "An optimizer model proposes prompts and receives task scores as feedback over multiple optimization rounds.",
+    "retrieved_at": "2026-01-01T00:00:00Z",
+    "metadata": {"fixture": true, "language": "en", "type": "article", "is_peer_reviewed": false}
+  },
+  {
+    "title": "Self-Refine: Iterative Refinement with Self-Feedback",
+    "authors": ["Aman Madaan", "Nikunj Tandon", "Prakhar Gupta"],
+    "year": 2023,
+    "venue": "NeurIPS",
+    "doi": "10.48550/arxiv.2303.17651",
+    "url": "https://arxiv.org/abs/2303.17651",
+    "provider": "fixture",
+    "provider_source_id": "self-refine-2023",
+    "abstract": "A language model generates feedback on its output and iteratively refines that output without supervised training data.",
+    "retrieved_at": "2026-01-01T00:00:00Z",
+    "metadata": {"fixture": true, "language": "en", "type": "article", "is_peer_reviewed": true}
+  }
+]

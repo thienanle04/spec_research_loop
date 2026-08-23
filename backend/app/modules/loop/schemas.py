@@ -45,6 +45,12 @@ class PatchCardRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class ReplaceCardsRequest(BaseModel):
+    kind: CardKind
+    bodies: list[dict[str, Any]] = Field(min_length=1)
+    expected_version: int = Field(ge=1)
+
+
 class NodeHeadResponse(BaseModel):
     node: WorkflowNode
     status: NodeHeadStatus
@@ -64,6 +70,11 @@ class CardResponse(BaseModel):
 
 
 class CardMutationResponse(CardResponse):
+    version: int
+
+
+class CardBatchMutationResponse(BaseModel):
+    cards: list[CardResponse]
     version: int
 
 

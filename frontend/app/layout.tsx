@@ -38,7 +38,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${atkinson.variable} ${crimson.variable} ${garamond.variable}`}>
-      <body className="min-h-svh font-sans antialiased">
+      <body suppressHydrationWarning className="min-h-svh font-sans antialiased">
         <AppProviders>
           <AppHeader />
           {children}

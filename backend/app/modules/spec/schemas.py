@@ -1,6 +1,9 @@
+"""Contracts for spec schemas."""
+
+from enum import StrEnum
 from pydantic import BaseModel, Field
 
-# --- MOCK DATA SCHEMA ---
+# --- MOCK DATA SCHEMA (from feat/spec) ---
 class SpecConstructionContext(BaseModel):
     problem_statement: str
     research_questions: list[str]
@@ -51,3 +54,26 @@ class FeasibilityReport(BaseModel):
     estimated_time: str
     is_feasible: bool
     suggestions: list[str]
+
+
+# --- REAL SCHEMA (from feat/research) ---
+class ContributionDirectionKind(StrEnum):
+    PROPOSED = "proposed"
+    COMBINE = "combine"
+    OTHER = "other"
+
+
+class ContributionDirection(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    kind: ContributionDirectionKind = ContributionDirectionKind.PROPOSED
+
+
+class ContributionDirectionsRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class ContributionDirectionsResponse(BaseModel):
+    version: int
+    directions: list[ContributionDirection]

@@ -340,4 +340,26 @@ describe("WorkingDraftCardCanvas", () => {
     });
     expect(await screen.findByText("Saved")).toBeInTheDocument();
   });
+
+  it("on grilling layout seeds one problem and research-question slot and only Adds many kinds", async () => {
+    getHook.mockReturnValue({
+      data: { status: 200, data: session() },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(
+      <LoopSessionSaveProvider>
+        <WorkingDraftCardCanvas layout="grilling" sessionId="session-1" />
+      </LoopSessionSaveProvider>,
+    );
+
+    expect(screen.queryByRole("button", { name: "Add Problem" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Research question" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Constraint" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Open question" })).toBeInTheDocument();
+    await userEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    expect(screen.getByRole("textbox", { name: "New Problem Card" })).toBeInTheDocument();
+  });
 });

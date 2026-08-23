@@ -67,8 +67,11 @@ LOOP_STAGE_NODES: dict[LoopStage, tuple[WorkflowNode, ...]] = {
         WorkflowNode.RESEARCH_INPUTS,
         WorkflowNode.RELATED_WORK,
         WorkflowNode.GAP,
+        WorkflowNode.CONTRIBUTION,
     ),
-    LoopStage.CONTRIBUTION: (WorkflowNode.CONTRIBUTION,),
+    # Retained as an API enum value for compatibility with existing clients.
+    # Contribution Direction now belongs to the Related Work stage.
+    LoopStage.CONTRIBUTION: (),
     LoopStage.CLAIMS_EVIDENCE: (WorkflowNode.CLAIMS, WorkflowNode.EVIDENCE),
     LoopStage.EXPERIMENT_PLANNING: (
         WorkflowNode.EXPERIMENT_PLAN,

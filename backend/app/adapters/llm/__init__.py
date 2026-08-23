@@ -1,8 +1,14 @@
 """LLM provider adapters. Implement LlmPort here."""
 
 from app.adapters.llm.fake import FakeLlm
+from app.adapters.llm.fit_webui import FitWebUiLlmPort
 from app.adapters.llm.langchain_chat import LangChainChatAdapter
-from app.ports.llm import LlmPort
+from app.adapters.llm.tracing import (
+    TracingLlm,
+    configure_llm_trace_logger,
+    traced_ports,
+)
+from app.ports.llm import LlmPort, LlmProviderError
 
 _llm_ports: dict[str, LlmPort] | None = None
 
@@ -23,7 +29,12 @@ def get_llm_port(node: str) -> LlmPort:
 
 __all__ = [
     "FakeLlm",
+    "FitWebUiLlmPort",
     "LangChainChatAdapter",
+    "LlmProviderError",
+    "TracingLlm",
     "bind_llm_ports",
+    "configure_llm_trace_logger",
     "get_llm_port",
+    "traced_ports",
 ]

@@ -40,7 +40,23 @@ pnpm dev
 pnpm codegen
 ```
 
-Smoke paths: register/login at `/register` and `/login`, then `/demo` for authenticated SSE.
+Smoke paths: register/login at `/register` and `/login`, then a Loop Session workbench Generate for authenticated SSE.
+
+### Research frontend demo
+
+To test Research without using the unfinished Idea UI, sign in and open:
+
+```text
+http://localhost:3000/research-demo
+```
+
+Choose **Create and open Research demo**. The frontend creates and confirms a
+deterministic Idea fixture through the real Loop API, prepares `research_inputs`,
+and redirects to the Related work Loop Stage. The default scholarly-source and
+LLM providers are fake, so Citation search and Gap generation need no external
+API key. For live research, set `RESEARCH_SOURCE_PROVIDER=openalex` and
+`RESEARCH_LLM_PROVIDER=fit_webui`, then provide `OPENALEX_API_KEY` and
+`FIT_WEBUI_API_KEY` in `backend/.env`.
 
 **Port notes:** compose maps Postgres to **55432** and MinIO to **9010/9011** so they do not collide with common local services on 5432/9000. Adjust `backend/.env` if you change compose ports.
 
@@ -51,7 +67,7 @@ identity → idea → research → spec → judgement
 ```
 
 - **identity** — Accounts (email/password), JWT Bearer (`/api/identity/register|login|me`)
-- **idea** — grilling / idea workflow; SSE demo at `/api/idea/demo/stream`
+- **idea** — Grilling generate/SSE at `POST /api/idea/sessions/{id}/generate`
 - **research** — citations, related work, gap proposals
 - **spec** — Research Spec drafts + **Spec Artifact** metadata
 - **judgement** — independent Judges + aggregator
@@ -76,7 +92,7 @@ Shared: `app/core`, `app/db`, `app/ports` (LLM, object storage), `app/adapters`,
 | Data | Postgres + S3-compatible object store | [0003](./docs/adr/0003-postgres-s3-persistence.md) |
 | Long work | SSE, in-request async streaming | [0004](./docs/adr/0004-sse-in-request-streaming.md) |
 | Auth | Email/password Accounts, JWT Bearer | [0005](./docs/adr/0005-email-password-jwt-accounts.md) |
-| LLMs | Provider port + adapters | [0006](./docs/adr/0006-llm-provider-port.md), [0022](./docs/adr/0022-complete-only-llm-port.md) |
+| LLMs | Provider port + adapters | [0006](./docs/adr/0006-llm-provider-port.md), [0023](./docs/adr/0023-llm-port-stream.md) (supersedes [0022](./docs/adr/0022-complete-only-llm-port.md)) |
 
 ## Tooling
 
