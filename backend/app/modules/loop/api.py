@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.modules.identity.deps import get_current_account
 from app.modules.identity.models import Account
 from app.modules.loop.schemas import (
+    CardBatchMutationResponse,
     CardMutationResponse,
     CardResponse,
     ConfirmRequest,
@@ -22,6 +23,7 @@ from app.modules.loop.schemas import (
     PatchCardRequest,
     PatchSessionRequest,
     PrepareRequest,
+    ReplaceCardsRequest,
     WorkingDraftPatchRequest,
 )
 from app.modules.loop.service import LoopService
@@ -129,6 +131,26 @@ async def create_card(
         account_id=account.id,
         kind=body.kind,
         body=body.body,
+        expected_version=body.expected_version,
+    )
+
+
+@router.put(
+    "/sessions/{session_id}/cards",
+    response_model=CardBatchMutationResponse,
+    responses={409: {"model": OperationalError}},
+)
+async def replace_cards(
+    session_id: UUID,
+    body: ReplaceCardsRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CardBatchMutationResponse:
+    return await _service(db).replace_cards(
+        session_id=session_id,
+        account_id=account.id,
+        kind=body.kind,
+        bodies=body.bodies,
         expected_version=body.expected_version,
     )
 

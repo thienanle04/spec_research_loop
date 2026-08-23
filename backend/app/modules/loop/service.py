@@ -39,6 +39,7 @@ from app.modules.loop.models import (
     StageRevision,
 )
 from app.modules.loop.schemas import (
+    CardBatchMutationResponse,
     CardMutationResponse,
     CardResponse,
     DecisionResponse,
@@ -301,6 +302,45 @@ class LoopService:
         await self._db.commit()
         await self._db.refresh(card)
         return self._to_mutation_response(card, next_version)
+
+    async def replace_cards(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        kind: CardKind,
+        bodies: list[dict[str, Any]],
+        expected_version: int,
+    ) -> CardBatchMutationResponse:
+        session = await self._load_session(session_id, account_id)
+        self._assert_card_owner(session, kind)
+        next_version = await self._increment_session_version(
+            session,
+            session_id=session_id,
+            account_id=account_id,
+            expected_version=expected_version,
+        )
+        existing = sorted(
+            (card for card in session.cards if card.kind_enum() == kind),
+            key=lambda card: (card.created_at, str(card.id)),
+        )
+        saved_cards: list[Card] = []
+        for card, body in zip(existing, bodies, strict=False):
+            card.body = body
+            saved_cards.append(card)
+        for body in bodies[len(existing) :]:
+            card = Card(session_id=session.id, kind=kind.value, body=body)
+            self._db.add(card)
+            saved_cards.append(card)
+        for card in existing[len(bodies) :]:
+            await self._db.delete(card)
+        await self._db.commit()
+        for card in saved_cards:
+            await self._db.refresh(card)
+        return CardBatchMutationResponse(
+            cards=[CardResponse.model_validate(card) for card in saved_cards],
+            version=next_version,
+        )
 
     async def list_decisions(
         self, *, session_id: UUID, account_id: UUID

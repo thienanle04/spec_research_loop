@@ -113,3 +113,65 @@ async def test_rejects_direction_generation_outside_contribution_draft(
 
     assert response.status_code == 409
     assert response.json()["code"] == "invalid_working_draft_target"
+
+
+@pytest.mark.asyncio
+async def test_replaces_contribution_cards_without_accumulating(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    contribution = await _prepare_contribution(client)
+    session_id = contribution["id"]
+
+    first = await client.put(
+        f"/api/loop/sessions/{session_id}/cards",
+        json={
+            "kind": "contribution",
+            "bodies": [
+                {"text": "Primary", "direction_id": "direction-a", "role": "primary"},
+                {
+                    "text": "Supporting",
+                    "direction_id": "direction-b",
+                    "role": "supporting",
+                },
+            ],
+            "expected_version": contribution["version"],
+        },
+    )
+    assert first.status_code == 200, first.text
+    first_payload = first.json()
+    primary_id = first_payload["cards"][0]["id"]
+    assert len(first_payload["cards"]) == 2
+
+    second = await client.put(
+        f"/api/loop/sessions/{session_id}/cards",
+        json={
+            "kind": "contribution",
+            "bodies": [
+                {"text": "Changed", "direction_id": "direction-c", "role": "primary"}
+            ],
+            "expected_version": first_payload["version"],
+        },
+    )
+    assert second.status_code == 200, second.text
+    second_payload = second.json()
+    assert second_payload["version"] == first_payload["version"] + 1
+    assert second_payload["cards"] == [
+        {
+            "id": primary_id,
+            "kind": "contribution",
+            "body": {
+                "text": "Changed",
+                "direction_id": "direction-c",
+                "role": "primary",
+            },
+            "created_at": first_payload["cards"][0]["created_at"],
+            "updated_at": second_payload["cards"][0]["updated_at"],
+        }
+    ]
+
+    saved = await client.get(f"/api/loop/sessions/{session_id}")
+    contribution_cards = [
+        card for card in saved.json()["cards"] if card["kind"] == "contribution"
+    ]
+    assert contribution_cards == second_payload["cards"]

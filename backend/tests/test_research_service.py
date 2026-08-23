@@ -11,7 +11,11 @@ from app.modules.research.adapters.fake_source import FakeScholarlySourcePort
 from app.modules.research.normalization import normalize_doi, normalize_url
 from app.modules.research.ports import ScholarlyRecord, SourcePreferences
 from app.modules.research.schemas import GroundingStatus, ResearchInputs
-from app.modules.research.service import ResearchService, _rank_relevant_records
+from app.modules.research.service import (
+    ResearchService,
+    _compose_search_queries,
+    _rank_relevant_records,
+)
 from app.ports.llm import LlmProviderError
 
 
@@ -256,6 +260,56 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
 
 
 @pytest.mark.asyncio
+async def test_gap_generation_preserves_valid_analysis_when_synthesis_times_out() -> (
+    None
+):
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=_GapSynthesisTimeoutLlm(),
+    )
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {"kind": "problem", "body": {"text": "Unsupported claims"}}
+                ]
+            },
+            "related_work": {
+                "projected": {
+                    "citations": [
+                        {
+                            "id": "citation-1",
+                            "citation_key": "smith-2025",
+                            "title": "Claim verification",
+                            "abstract": "Evaluates aggregate feedback.",
+                        }
+                    ],
+                    "related_work": [
+                        {
+                            "citation_id": "citation-1",
+                            "what_was_done": "Optimizes prompts with aggregate scores",
+                            "limitation": "Does not verify evidence per claim",
+                        }
+                    ],
+                }
+            },
+        },
+        "working_draft": {"narrative": {}},
+    }
+
+    narrative, warnings = await service._generate_gaps(context)
+
+    statement = narrative["candidate"]["statement"]
+    assert "Prior systems optimize outputs or prompts" in statement
+    assert "Localized feedback can make optimization more reliable" in statement
+    assert narrative["candidate"]["supporting_citation_keys"] == ["smith-2025"]
+    assert "validated source-grounded analysis" in warnings[0]
+    assert "timed out" in warnings[0]
+
+
+@pytest.mark.asyncio
 async def test_research_input_generation_falls_back_to_idea_keywords_on_quota_error() -> (
     None
 ):
@@ -443,6 +497,58 @@ async def test_research_inputs_preserve_distinctive_idea_concepts_when_model_omi
 
 
 @pytest.mark.asyncio
+async def test_research_inputs_reject_narrative_fragments_as_search_keywords() -> None:
+    llm = FakeLlmPort(
+        responses={
+            "research-inputs": (
+                '{"keywords":["measure","analyze phone usage","moment","user gets",'
+                '"bed until sleep","sleep onset categorized",'
+                '"emotional arousal stressful","stressful vs calming"]}'
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {
+                        "kind": "problem",
+                        "body": {
+                            "text": (
+                                "Measure and analyze phone usage from the moment a user "
+                                "gets in bed until sleep onset."
+                            )
+                        },
+                    },
+                    {
+                        "kind": "research_question",
+                        "body": {
+                            "text": "Categorize emotional arousal as stressful vs calming."
+                        },
+                    },
+                ]
+            }
+        },
+        "working_draft": {"narrative": {}},
+    }
+
+    narrative, warnings = await service._generate_research_inputs(context)
+
+    assert warnings == []
+    assert narrative["keywords"] == [
+        "phone usage",
+        "sleep onset",
+        "emotional arousal",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_query_generation_restores_idea_anchors_omitted_by_model() -> None:
     llm = FakeLlmPort(
         responses={"research-query": '{"queries":["language model evaluation"]}'}
@@ -466,6 +572,27 @@ async def test_query_generation_restores_idea_anchors_omitted_by_model() -> None
     assert "claim checklist" in queries
     assert "paper summaries" in queries
     assert "language model evaluation" in queries
+
+
+def test_query_composition_covers_all_keywords_without_a_five_query_cap() -> None:
+    keywords = [
+        "paper summarization",
+        "claim decomposition",
+        "evidence verification",
+        "unsupported claims",
+        "iterative prompt optimization",
+        "equal inference budget",
+    ]
+
+    queries = _compose_search_queries(
+        ["language model evaluation"],
+        ResearchInputs(keywords=keywords),
+        {},
+    )
+
+    assert len(queries) == 7
+    assert queries[0] == "language model evaluation"
+    assert all(keyword in queries for keyword in keywords)
 
 
 def test_related_work_ranking_filters_generic_results_and_covers_idea_concepts() -> (
@@ -516,3 +643,20 @@ class _QuotaLlm:
             status_code=429,
             code="insufficient_quota",
         )
+
+
+class _GapSynthesisTimeoutLlm(FakeLlmPort):
+    async def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        model: str | None = None,
+    ) -> str:
+        if "research-gap-synthesis" in system:
+            raise LlmProviderError(
+                "FIT WebUI request timed out; retry later",
+                provider="fit_webui",
+                code="timeout",
+            )
+        return await super().complete(system=system, prompt=prompt, model=model)

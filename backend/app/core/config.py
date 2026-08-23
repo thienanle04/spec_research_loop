@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     research_llm_model: str = "Qwen3.6-27B"
     fit_webui_api_key: str | None = None
     fit_webui_base_url: str = "https://ai-fit.hcmus.edu.vn/openai"
-    fit_webui_timeout_seconds: float = 120.0
+    fit_webui_timeout_seconds: float = 300.0
     fit_webui_max_tokens: int = 2_000
     llm_api_key: str | None = None
     llm_base_url: str | None = None

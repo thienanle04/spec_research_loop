@@ -398,7 +398,12 @@ class ResearchService:
                     "proposed intervention or mechanism, measured outcome, and constraints. "
                     "Every distinctive anchor must appear verbatim or through a precise "
                     "scholarly synonym in at least one keyword; never generalize it away. "
-                    "Prefer technical concepts, intervention names, outcomes, and evaluation concepts. "
+                    "Prefer established technical concepts, intervention names, outcomes, and "
+                    "evaluation concepts. Every item must stand alone as a noun phrase that a "
+                    "researcher could paste into a scholarly search engine. Convert narrative "
+                    "wording into the corresponding research concept; do not copy instructions, "
+                    "sentence fragments, subject-verb clauses, temporal fragments, or category "
+                    "labels joined by 'vs'. "
                     "Never output IDs, UUIDs, sentences, explanations, or generic standalone "
                     "terms such as paper, source, study, research, method, result, generated, "
                     "summary, statement, or plausible. Do not use markdown."
@@ -440,7 +445,9 @@ class ResearchService:
                     "Create precise scholarly queries from the confirmed keywords and "
                     "idea concept anchors. Across the query set, preserve every distinctive "
                     "artifact, intervention, mechanism, outcome, and constraint; do not "
-                    "replace them with broad terms such as AI, paper, method, or research."
+                    "replace them with broad terms such as AI, paper, method, or research. "
+                    "Do not target a fixed query count; return as many queries as needed "
+                    "to cover every confirmed keyword and distinctive idea concept."
                 ),
                 prompt=json.dumps(
                     {
@@ -603,31 +610,6 @@ class ResearchService:
             )
             if set(valid_keys) - set(answers.covered_citation_keys):
                 raise ValueError("Gap analysis did not cover every Related Work source")
-
-            synthesis_raw = await self._llm.complete(
-                system=(
-                    "research-gap-synthesis: return only JSON with one non-empty string "
-                    "field named statement. Synthesize the four private analysis answers "
-                    "into one concise, coherent Gap Candidate of 2 to 4 sentences. State "
-                    "what existing approaches do and what remains unclear or insufficient. "
-                    "Do not expose the questions, field labels, source list, bullet points, "
-                    "or separate answers. Do not claim proven novelty and do not use markdown."
-                ),
-                prompt=json.dumps(
-                    {
-                        "idea": _idea_context(context),
-                        "analysis": answers.model_dump(mode="json"),
-                    },
-                    default=str,
-                    ensure_ascii=False,
-                ),
-            )
-            synthesis = _GapSynthesis.model_validate(_json_value(synthesis_raw, dict))
-            candidate = GapCardBody(
-                statement=synthesis.statement,
-                supporting_citation_keys=valid_keys,
-            )
-            warnings: list[str] = []
         except Exception as exc:  # noqa: BLE001 - conservative source-linked fallback
             candidate = GapCardBody(
                 statement=_fallback_gap_statement(related_work),
@@ -635,10 +617,48 @@ class ResearchService:
             )
             warnings = [
                 (
-                    "Gap generation used a conservative fallback: "
+                    "Gap analysis used a conservative source-linked fallback: "
                     f"{_llm_failure_summary(exc)}"
                 )
             ]
+        else:
+            try:
+                synthesis_raw = await self._llm.complete(
+                    system=(
+                        "research-gap-synthesis: return only JSON with one non-empty string "
+                        "field named statement. Synthesize the four private analysis answers "
+                        "into one concise, coherent Gap Candidate of 2 to 4 sentences. State "
+                        "what existing approaches do and what remains unclear or insufficient. "
+                        "Do not expose the questions, field labels, source list, bullet points, "
+                        "or separate answers. Do not claim proven novelty and do not use markdown."
+                    ),
+                    prompt=json.dumps(
+                        {
+                            "idea": _idea_context(context),
+                            "analysis": answers.model_dump(mode="json"),
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    ),
+                )
+                synthesis = _GapSynthesis.model_validate(
+                    _json_value(synthesis_raw, dict)
+                )
+                statement = synthesis.statement
+                warnings = []
+            except Exception as exc:  # noqa: BLE001 - preserve valid private analysis
+                statement = _gap_statement_from_answers(answers)
+                warnings = [
+                    (
+                        "Gap synthesis used the validated source-grounded analysis "
+                        "directly because the final model call failed: "
+                        f"{_llm_failure_summary(exc)}"
+                    )
+                ]
+            candidate = GapCardBody(
+                statement=statement,
+                supporting_citation_keys=valid_keys,
+            )
         narrative = dict(context.get("working_draft", {}).get("narrative", {}))
         narrative["candidate"] = candidate.model_dump(mode="json")
         return narrative, warnings
@@ -1194,6 +1214,24 @@ def _fallback_gap_statement(related_work: list[dict[str, Any]]) -> str:
     )
 
 
+def _gap_statement_from_answers(answers: _GapQuestionAnswers) -> str:
+    """Keep validated source-grounded analysis when only synthesis fails."""
+
+    return " ".join(
+        (
+            _as_sentence(answers.prior_work),
+            _as_sentence(f"However, {answers.limitation}"),
+            _as_sentence(answers.importance),
+            _as_sentence(answers.testability),
+        )
+    )
+
+
+def _as_sentence(value: str) -> str:
+    text = value.strip()
+    return text if text.endswith((".", "!", "?")) else f"{text}."
+
+
 def _first_text(payload: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = payload.get(key)
@@ -1307,11 +1345,37 @@ _KEYWORD_STOPWORDS = {
 }
 
 _LOW_VALUE_WORDS = {
+    "analyze",
+    "analyzes",
+    "analyzing",
+    "assess",
+    "assesses",
+    "assessing",
+    "categorized",
+    "categorize",
+    "categorizes",
+    "categorizing",
+    "classified",
+    "classify",
+    "classifies",
+    "classifying",
+    "compare",
+    "compares",
+    "comparing",
     "contain",
     "contains",
+    "evaluate",
+    "evaluates",
+    "evaluating",
     "generated",
+    "get",
+    "gets",
+    "measure",
+    "measures",
+    "measuring",
     "method",
     "methods",
+    "moment",
     "output",
     "outputs",
     "paper",
@@ -1339,6 +1403,27 @@ _LOW_VALUE_PHRASES = {
 }
 
 
+_NON_CONCEPT_KEYWORD_PATTERNS = (
+    # Research instructions are actions, not the concepts being investigated.
+    (
+        r"^(?:analy[sz](?:e|es|ed|ing)|assess(?:es|ed|ing)?|"
+        r"categori[sz](?:e|es|ed|ing)|classif(?:y|ies|ied|ying)|"
+        r"compar(?:e|es|ed|ing)|determin(?:e|es|ed|ing)|"
+        r"evaluat(?:e|es|ed|ing)|measur(?:e|es|ed|ing))\b"
+    ),
+    # Narrative subject-verb fragments are not useful scholarly search phrases.
+    (
+        r"^(?:a\s+)?(?:person|people|participant|participants|user|users)\s+"
+        r"(?:feel|feels|get|gets|go|goes|spend|spends|use|uses)\b"
+    ),
+    # These usually survive when a time span or prose comparison was cut badly.
+    r"\buntil\b",
+    r"\bvs\.?\b",
+    # A trailing prose predicate/category label leaves an incomplete phrase.
+    r"\b(?:calming|categorized|classified|stressful)\s*$",
+)
+
+
 def _clean_keywords(values: list[str]) -> list[str]:
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -1351,6 +1436,8 @@ def _clean_keywords(values: list[str]) -> list[str]:
             r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
             folded,
         ):
+            continue
+        if any(re.search(pattern, folded) for pattern in _NON_CONCEPT_KEYWORD_PATTERNS):
             continue
         words = re.findall(r"[^\W_]+", folded, flags=re.UNICODE)
         content_words = [
@@ -1398,19 +1485,56 @@ def _fallback_keywords(idea: dict[str, Any]) -> list[str]:
             mapped.append(phrase)
 
     extracted: list[str] = []
+    # Split prose around actions and narrative glue before treating the remaining
+    # spans as idea anchors. Single words are deliberately not emitted here: the
+    # model can still suggest a genuine one-word technical term, while prose-derived
+    # words such as "measure" or "moment" must not crowd out useful noun phrases.
     breakers = _KEYWORD_STOPWORDS | {
+        "analyze",
+        "analyzes",
+        "analyzing",
+        "assess",
+        "assesses",
+        "assessing",
+        "calming",
+        "categorized",
+        "categorize",
+        "categorizes",
+        "categorizing",
         "check",
         "checking",
+        "classified",
+        "classify",
+        "classifies",
+        "classifying",
         "compare",
         "compared",
+        "compares",
+        "comparing",
         "contain",
         "contains",
+        "determine",
+        "determines",
+        "determining",
         "evaluate",
         "evaluates",
+        "evaluating",
+        "get",
+        "gets",
+        "getting",
+        "measure",
+        "measures",
+        "measuring",
+        "moment",
         "reduce",
         "reduces",
+        "stressful",
+        "until",
         "use",
         "uses",
+        "user",
+        "users",
+        "vs",
     }
     for value in _text_values(idea):
         words = re.findall(r"[^\W_][\w-]*", value.casefold(), flags=re.UNICODE)
@@ -1419,8 +1543,6 @@ def _fallback_keywords(idea: dict[str, Any]) -> list[str]:
             if not word or word in breakers:
                 if 2 <= len(segment) <= 5:
                     extracted.append(" ".join(segment))
-                elif len(segment) == 1 and segment[0] not in _LOW_VALUE_WORDS:
-                    extracted.append(segment[0])
                 elif len(segment) > 5:
                     extracted.extend(
                         " ".join(segment[index : index + 3])
@@ -1450,26 +1572,36 @@ def _compose_search_queries(
     inputs: ResearchInputs,
     idea: dict[str, Any],
 ) -> list[str]:
-    """Keep deterministic concept anchors even when an LLM returns broad queries."""
+    """Cover every confirmed concept without coupling query count to result count."""
     anchors = _idea_search_concepts(idea)
     confirmed = _clean_keywords(inputs.keywords)
-    candidates = [*anchors, *model_queries]
-    if not anchors:
-        candidates.extend(confirmed)
-    if confirmed:
-        candidates.append(" ".join(confirmed[:3]))
-
     queries: list[str] = []
     seen: set[str] = set()
-    for raw in candidates:
+
+    for raw in model_queries:
         query = re.sub(r"\s+", " ", raw.strip())
         folded = query.casefold()
         if not query or folded in seen:
             continue
         queries.append(query)
         seen.add(folded)
-        if len(queries) == 5:
-            break
+
+    # Model queries may use useful scholarly synonyms, but deterministic fallbacks
+    # make coverage explicit: each idea anchor and Account-confirmed keyword must be
+    # represented by at least one query before candidates are retrieved and ranked.
+    for concept in _clean_keywords([*anchors, *confirmed]):
+        concept_tokens = _search_tokens(concept)
+        covered = any(
+            _matched_concept_indexes([concept_tokens], _search_tokens(query))
+            for query in queries
+        )
+        if covered:
+            continue
+        folded = concept.casefold()
+        if folded not in seen:
+            queries.append(concept)
+            seen.add(folded)
+
     return queries or ["related work"]
 
 
