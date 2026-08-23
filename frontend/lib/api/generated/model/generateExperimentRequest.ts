@@ -5,4 +5,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem = { [key: string]: unknown };
+export interface GenerateExperimentRequest {
+  /** @minimum 1 */
+  expected_version: number;
+}

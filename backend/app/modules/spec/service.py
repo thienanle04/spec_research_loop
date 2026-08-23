@@ -18,94 +18,24 @@ from app.modules.spec.schemas import (
     ContributionDirection,
     ContributionDirectionKind,
     ContributionDirectionsResponse,
-    SpecConstructionContext,
-    GenerateContributionResponse,
     GenerateClaimsResponse,
     GenerateExperimentResponse,
+    CheckFeasibilityResponse,
     FeasibilityReport,
 )
 from app.ports.llm import LlmPort
-
 
 class _GeneratedDirection(BaseModel):
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
 
 
-# --- MOCK SERVICES (from feat/spec) ---
-
-async def generate_contribution_options(context: SpecConstructionContext, llm: LlmPort) -> GenerateContributionResponse:
-    system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
-    prompt = f"""
-    Dựa trên Bài toán (Problem): {context.problem_statement}
-    Các câu hỏi nghiên cứu: {context.research_questions}
-    Khoảng trống nghiên cứu (Gap): {context.research_gap}
-    
-    Hãy đề xuất 3 hướng Đóng góp (Contribution options) khác nhau.
-    Mỗi option gồm id, title, và description.
-    """
-    return await llm.complete_structured(
-        system=system,
-        prompt=prompt,
-        schema=GenerateContributionResponse
-    )
-
-async def generate_claims_evidence(contribution_desc: str, context: SpecConstructionContext, llm: LlmPort) -> GenerateClaimsResponse:
-    system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
-    prompt = f"""
-    Hướng đóng góp đã chọn: {contribution_desc}
-    
-    Hãy sinh ra các luận điểm (Claims) chứng minh cho đóng góp trên. 
-    Mỗi Claim đi kèm Baseline, Metric cần đo, Bằng chứng kỳ vọng (evidence), và Điều kiện bác bỏ (rejection_condition).
-    """
-    return await llm.complete_structured(
-        system=system,
-        prompt=prompt,
-        schema=GenerateClaimsResponse
-    )
-
-async def generate_experiment_plan(claims: list[dict], context: SpecConstructionContext, llm: LlmPort) -> GenerateExperimentResponse:
-    system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
-    prompt = f"""
-    Dựa trên các Claim sau: {claims}
-    
-    Hãy lên kế hoạch thử nghiệm chi tiết gồm: Baselines, Metrics, Giao thức đánh giá (evaluation_protocol), Ablation Study, và Generalization.
-    """
-    return await llm.complete_structured(
-        system=system,
-        prompt=prompt,
-        schema=GenerateExperimentResponse
-    )
-
-async def check_feasibility(plan_desc: str, context: SpecConstructionContext, llm: LlmPort) -> FeasibilityReport:
-    system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
-    prompt = f"""
-    Kế hoạch thử nghiệm: {plan_desc}
-    Ràng buộc tài nguyên: {context.hardware_constraint}
-    
-    Hãy đánh giá tính khả thi (Feasibility). Đưa ra ước lượng VRAM (estimated_vram), thời gian chạy (estimated_time), và các gợi ý điều chỉnh nếu cần (suggestions). Trả về boolean is_feasible.
-    """
-    return await llm.complete_structured(
-        system=system,
-        prompt=prompt,
-        schema=FeasibilityReport
-    )
-
-
-# --- REAL SERVICES (from feat/research) ---
-
 class SpecService:
     def __init__(self, db: AsyncSession, *, llm: LlmPort) -> None:
         self._db = db
         self._llm = llm
 
-    async def generate_contribution_directions(
-        self,
-        *,
-        session_id: UUID,
-        account_id: UUID,
-        expected_version: int,
-    ) -> ContributionDirectionsResponse:
+    async def _ensure_node_ready(self, session_id: UUID, account_id: UUID, expected_version: int, node: WorkflowNode) -> LoopSession:
         session = await self._db.scalar(
             select(LoopSession).where(
                 LoopSession.id == session_id,
@@ -116,11 +46,11 @@ class SpecService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Loop Session not found"
             )
-        if session.working_draft_node != WorkflowNode.CONTRIBUTION.value:
+        if session.working_draft_node != node.value:
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,
                 code="invalid_working_draft_target",
-                detail="Contribution directions require contribution to be the Working Draft",
+                detail=f"This operation requires {node.value} to be the Working Draft",
             )
         heads = list(
             (
@@ -131,14 +61,51 @@ class SpecService:
         )
         status_by_node = {WorkflowNode(head.node): head.status for head in heads}
         if any(
-            status_by_node[node] != NodeHeadStatus.CURRENT.value
-            for node in ancestors(WorkflowNode.CONTRIBUTION)
+            status_by_node[ancestor] != NodeHeadStatus.CURRENT.value
+            for ancestor in ancestors(node)
         ):
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,
                 code="upstream_not_current",
                 detail="Upstream Workflow Nodes must be current",
             )
+        return session
+
+    async def _update_narrative(self, session_id: UUID, account_id: UUID, expected_version: int, narrative: dict, session: LoopSession) -> int:
+        result = await self._db.execute(
+            update(LoopSession)
+            .where(
+                LoopSession.id == session_id,
+                LoopSession.account_id == account_id,
+                LoopSession.version == expected_version,
+            )
+            .values(
+                working_draft_narrative=narrative,
+                version=LoopSession.version + 1,
+            )
+            .returning(LoopSession.version)
+            .execution_options(synchronize_session=False)
+        )
+        row = result.one_or_none()
+        if row is None:
+            await self._db.refresh(session, attribute_names=["version"])
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="version_conflict",
+                detail="Loop Session was changed by another request",
+                current_version=session.version,
+            )
+        await self._db.commit()
+        return row.version
+
+    async def generate_contribution_directions(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+    ) -> ContributionDirectionsResponse:
+        session = await self._ensure_node_ready(session_id, account_id, expected_version, WorkflowNode.CONTRIBUTION)
 
         context = await LoopService(self._db).project_context(
             session_id=session_id,
@@ -173,33 +140,113 @@ class SpecService:
         narrative = {
             "directions": [item.model_dump(mode="json") for item in directions]
         }
-        result = await self._db.execute(
-            update(LoopSession)
-            .where(
-                LoopSession.id == session_id,
-                LoopSession.account_id == account_id,
-                LoopSession.version == expected_version,
-            )
-            .values(
-                working_draft_narrative=narrative,
-                version=LoopSession.version + 1,
-            )
-            .returning(LoopSession.version)
-            .execution_options(synchronize_session=False)
+        
+        new_version = await self._update_narrative(session_id, account_id, expected_version, narrative, session)
+        return ContributionDirectionsResponse(version=new_version, directions=directions)
+
+    async def generate_claims(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+    ) -> GenerateClaimsResponse:
+        session = await self._ensure_node_ready(session_id, account_id, expected_version, WorkflowNode.CLAIMS)
+        context = await LoopService(self._db).project_context(
+            session_id=session_id,
+            account_id=account_id,
+            node=WorkflowNode.CLAIMS,
         )
-        row = result.one_or_none()
-        if row is None:
-            await self._db.refresh(session, attribute_names=["version"])
-            raise OperationalErrorException(
-                status_code=status.HTTP_409_CONFLICT,
-                code="version_conflict",
-                detail="Loop Session was changed by another request",
-                current_version=session.version,
-            )
-        await self._db.commit()
-        return ContributionDirectionsResponse(
-            version=row.version, directions=directions
+        
+        system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
+        prompt = f"""
+        Dựa vào context của dự án:
+        {json.dumps(context, default=str, ensure_ascii=False)}
+        
+        Hãy sinh ra các luận điểm (Claims) chứng minh cho các đóng góp (Contribution) đã chọn.
+        Mỗi Claim đi kèm Baseline, Metric cần đo, Bằng chứng kỳ vọng (evidence), và Điều kiện bác bỏ (rejection_condition).
+        """
+        response_data = await self._llm.complete_structured(
+            system=system,
+            prompt=prompt,
+            schema=GenerateClaimsResponse
         )
+        
+        narrative = {
+            "cards": [card.model_dump(mode="json") for card in response_data.cards]
+        }
+        new_version = await self._update_narrative(session_id, account_id, expected_version, narrative, session)
+        return GenerateClaimsResponse(version=new_version, cards=response_data.cards)
+
+    async def generate_experiment_plan(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+    ) -> GenerateExperimentResponse:
+        session = await self._ensure_node_ready(session_id, account_id, expected_version, WorkflowNode.EXPERIMENT_PLAN)
+        context = await LoopService(self._db).project_context(
+            session_id=session_id,
+            account_id=account_id,
+            node=WorkflowNode.EXPERIMENT_PLAN,
+        )
+        
+        system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
+        prompt = f"""
+        Dựa vào context sau của dự án (đặc biệt là các Claim đã chọn):
+        {json.dumps(context, default=str, ensure_ascii=False)}
+        
+        Hãy lên kế hoạch thử nghiệm chi tiết gồm: Baselines, Metrics, Giao thức đánh giá (evaluation_protocol), Ablation Study, và Generalization.
+        """
+        response_data = await self._llm.complete_structured(
+            system=system,
+            prompt=prompt,
+            schema=GenerateExperimentResponse
+        )
+        
+        narrative = {
+            "plan": response_data.plan.model_dump(mode="json")
+        }
+        new_version = await self._update_narrative(session_id, account_id, expected_version, narrative, session)
+        return GenerateExperimentResponse(version=new_version, plan=response_data.plan)
+
+    async def check_feasibility(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+        plan: dict | None = None
+    ) -> CheckFeasibilityResponse:
+        session = await self._ensure_node_ready(session_id, account_id, expected_version, WorkflowNode.FEASIBILITY)
+        context = await LoopService(self._db).project_context(
+            session_id=session_id,
+            account_id=account_id,
+            node=WorkflowNode.FEASIBILITY,
+        )
+        
+        system = "Bạn là một AI đánh giá tài nguyên và tính khả thi cho Đặc tả Nghiên cứu."
+        prompt = f"""
+        Kế hoạch thử nghiệm: 
+        {json.dumps(plan) if plan else "Dựa vào context experiment plan trong dữ liệu: " + json.dumps(context.get('experiment_plan', {}))}
+        
+        Context hiện tại của dự án:
+        {json.dumps(context, default=str, ensure_ascii=False)}
+        
+        Hãy đánh giá tính khả thi (Feasibility). Đưa ra ước lượng VRAM (estimated_vram), thời gian chạy (estimated_time), và các gợi ý điều chỉnh nếu cần (suggestions). Trả về is_feasible.
+        """
+        report = await self._llm.complete_structured(
+            system=system,
+            prompt=prompt,
+            schema=FeasibilityReport
+        )
+        
+        narrative = {
+            "feasibility_report": report.model_dump(mode="json")
+        }
+        new_version = await self._update_narrative(session_id, account_id, expected_version, narrative, session)
+        return CheckFeasibilityResponse(version=new_version, report=report)
 
     async def _propose_directions(
         self, context: dict[str, Any]

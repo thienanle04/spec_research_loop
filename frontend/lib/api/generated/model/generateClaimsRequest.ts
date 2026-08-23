@@ -4,10 +4,8 @@
  * SpecResearch Loop
  * OpenAPI spec version: 0.1.0
  */
-import type { WorkflowNode } from './workflowNode';
 
-export interface AppModulesLoopSchemasConfirmRequest {
-  node: WorkflowNode;
+export interface GenerateClaimsRequest {
   /** @minimum 1 */
   expected_version: number;
 }

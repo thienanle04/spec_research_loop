@@ -6,7 +6,8 @@
  */
 import type { ExperimentPlan } from './experimentPlan';
 
-export interface GenerateExperimentResponse {
-  version: number;
-  plan: ExperimentPlan;
+export interface CheckFeasibilityRequest {
+  /** @minimum 1 */
+  expected_version: number;
+  plan?: ExperimentPlan | null;
 }

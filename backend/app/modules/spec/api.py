@@ -12,24 +12,14 @@ from app.modules.spec.deps import get_spec_llm
 from app.modules.spec.schemas import (
     ContributionDirectionsRequest,
     ContributionDirectionsResponse,
-    SpecConstructionContext,
-    GenerateContributionResponse,
+    GenerateClaimsRequest,
     GenerateClaimsResponse,
+    GenerateExperimentRequest,
     GenerateExperimentResponse,
-    FeasibilityReport,
-    ConfirmRequest,
-    ExperimentPlan
+    CheckFeasibilityRequest,
+    CheckFeasibilityResponse
 )
-from app.modules.spec.dependencies import get_mock_spec_context
-from app.modules.spec.service import (
-    SpecService,
-    generate_contribution_options,
-    generate_claims_evidence,
-    generate_experiment_plan,
-    check_feasibility as service_check_feasibility
-)
-from app.adapters.llm import get_llm_port
-from app.modules.loop.catalog import WorkflowNode
+from app.modules.spec.service import SpecService
 from app.ports.llm import LlmPort
 
 router = APIRouter(prefix="/spec", tags=["Spec Construction"])
@@ -56,45 +46,57 @@ async def generate_contribution_directions(
         expected_version=body.expected_version,
     )
 
-@router.post("/contribution/generate", response_model=GenerateContributionResponse)
-async def generate_contribution(
-    context: SpecConstructionContext = Depends(get_mock_spec_context)
-):
-    llm = get_llm_port(WorkflowNode.CONTRIBUTION)
-    return await generate_contribution_options(context, llm)
-
-@router.post("/contribution/confirm")
-async def confirm_contribution(req: ConfirmRequest):
-    return {"status": "ok", "message": "Contribution confirmed"}
-
-@router.post("/claims/generate", response_model=GenerateClaimsResponse)
+@router.post(
+    "/sessions/{session_id}/claims/generate",
+    response_model=GenerateClaimsResponse,
+    responses={409: {"model": OperationalError}},
+)
 async def generate_claims(
-    contribution_desc: str,
-    context: SpecConstructionContext = Depends(get_mock_spec_context)
-):
-    llm = get_llm_port(WorkflowNode.CLAIMS)
-    return await generate_claims_evidence(contribution_desc, context, llm)
+    session_id: UUID,
+    body: GenerateClaimsRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    llm: Annotated[LlmPort, Depends(get_spec_llm)],
+) -> GenerateClaimsResponse:
+    return await SpecService(db, llm=llm).generate_claims(
+        session_id=session_id,
+        account_id=account.id,
+        expected_version=body.expected_version,
+    )
 
-@router.post("/claims/confirm")
-async def confirm_claims(req: ConfirmRequest):
-    return {"status": "ok", "message": "Claims confirmed"}
-
-@router.post("/experiment/generate", response_model=GenerateExperimentResponse)
+@router.post(
+    "/sessions/{session_id}/experiment-plan/generate",
+    response_model=GenerateExperimentResponse,
+    responses={409: {"model": OperationalError}},
+)
 async def generate_experiment(
-    claims: list[dict],
-    context: SpecConstructionContext = Depends(get_mock_spec_context)
-):
-    llm = get_llm_port(WorkflowNode.EXPERIMENT_PLAN)
-    return await generate_experiment_plan(claims, context, llm)
+    session_id: UUID,
+    body: GenerateExperimentRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    llm: Annotated[LlmPort, Depends(get_spec_llm)],
+) -> GenerateExperimentResponse:
+    return await SpecService(db, llm=llm).generate_experiment_plan(
+        session_id=session_id,
+        account_id=account.id,
+        expected_version=body.expected_version,
+    )
 
-@router.post("/experiment/confirm")
-async def confirm_experiment(req: ConfirmRequest):
-    return {"status": "ok", "message": "Experiment confirmed"}
-
-@router.post("/feasibility/check", response_model=FeasibilityReport)
+@router.post(
+    "/sessions/{session_id}/feasibility/check",
+    response_model=CheckFeasibilityResponse,
+    responses={409: {"model": OperationalError}},
+)
 async def check_feasibility(
-    plan_desc: str,
-    context: SpecConstructionContext = Depends(get_mock_spec_context)
-):
-    llm = get_llm_port(WorkflowNode.FEASIBILITY)
-    return await service_check_feasibility(plan_desc, context, llm)
+    session_id: UUID,
+    body: CheckFeasibilityRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    llm: Annotated[LlmPort, Depends(get_spec_llm)],
+) -> CheckFeasibilityResponse:
+    return await SpecService(db, llm=llm).check_feasibility(
+        session_id=session_id,
+        account_id=account.id,
+        expected_version=body.expected_version,
+        plan=body.plan.model_dump(mode="json") if body.plan else None
+    )

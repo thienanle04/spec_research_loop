@@ -33,6 +33,8 @@ import {
   ContributionStageContainer,
   ResearchStageContainer,
 } from "@/features/research";
+import { ClaimsEvidenceStageContainer } from "@/features/spec/ClaimsEvidenceStageContainer";
+import { ExperimentPlanningStageContainer } from "@/features/spec/ExperimentPlanningStageContainer";
 
 import {
   LOOP_STAGE_CATALOG,
@@ -245,7 +247,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       workingDraftNode === WorkflowNode.gap);
   const editingContributionDraft =
     editingWorkingDraft && workingDraftNode === WorkflowNode.contribution;
-  const editingStructuredDraft = editingResearchDraft || editingContributionDraft;
+  const editingClaimsDraft =
+    editingWorkingDraft && workingDraftNode === WorkflowNode.claims;
+  const editingExperimentDraft =
+    editingWorkingDraft && (workingDraftNode === WorkflowNode.experiment_plan || workingDraftNode === WorkflowNode.feasibility);
+  const editingStructuredDraft = editingResearchDraft || editingContributionDraft || editingClaimsDraft || editingExperimentDraft;
   const confirmDisabled =
     generating ||
     grillEditing ||
@@ -496,6 +502,20 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               />
             ) : editingContributionDraft ? (
               <ContributionStageContainer
+                sessionId={sessionId}
+                session={session}
+                onRunningChange={setResearchRunning}
+                onConfirmabilityChange={setResearchConfirmable}
+              />
+            ) : editingClaimsDraft ? (
+              <ClaimsEvidenceStageContainer
+                sessionId={sessionId}
+                session={session}
+                onRunningChange={setResearchRunning}
+                onConfirmabilityChange={setResearchConfirmable}
+              />
+            ) : editingExperimentDraft ? (
+              <ExperimentPlanningStageContainer
                 sessionId={sessionId}
                 session={session}
                 onRunningChange={setResearchRunning}

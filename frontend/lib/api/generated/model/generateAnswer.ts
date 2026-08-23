@@ -5,6 +5,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type GenerateClaimsApiSpecSpecClaimsGeneratePostParams = {
-contribution_desc: string;
-};
+export interface GenerateAnswer {
+  option?: string | null;
+  other?: string | null;
+}

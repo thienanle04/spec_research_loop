@@ -25,19 +25,21 @@ import type {
 
 import type {
   AccountResponse,
-  AppModulesLoopSchemasConfirmRequest,
-  AppModulesSpecSchemasConfirmRequest,
+  CardBatchMutationResponse,
   CardMutationResponse,
   CardResponse,
-  CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams,
+  CheckFeasibilityRequest,
+  CheckFeasibilityResponse,
+  CitationResponse,
+  ConfirmRequest,
+  ContributionDirectionsRequest,
+  ContributionDirectionsResponse,
   CreateCardRequest,
   CreateSessionRequest,
   DecisionResponse,
-  FeasibilityReport,
-  GenerateClaimsApiSpecSpecClaimsGeneratePostParams,
+  GenerateClaimsRequest,
   GenerateClaimsResponse,
-  GenerateContributionResponse,
-  GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem,
+  GenerateExperimentRequest,
   GenerateExperimentResponse,
   HTTPValidationError,
   HealthApiIdeaHealthGet200,
@@ -45,6 +47,7 @@ import type {
   HealthApiJudgementHealthGet200,
   HealthApiLoopHealthGet200,
   HealthApiResearchHealthGet200,
+  HealthApiSpecSpecHealthGet200,
   LoginRequest,
   LoopSessionResponse,
   LoopSessionSummary,
@@ -53,6 +56,8 @@ import type {
   PatchSessionRequest,
   PrepareRequest,
   RegisterRequest,
+  RelatedWorkFindingResponse,
+  ReplaceCardsRequest,
   RootHealthHealthGet200,
   TokenResponse,
   WorkingDraftPatchRequest
@@ -1331,6 +1336,102 @@ export const useCreateCardApiLoopSessionsSessionIdCardsPost = <TError = ErrorTyp
       return useMutation(getCreateCardApiLoopSessionsSessionIdCardsPostMutationOptions(options), queryClient);
     }
 
+export type replaceCardsApiLoopSessionsSessionIdCardsPutResponse200 = {
+  data: CardBatchMutationResponse
+  status: 200
+}
+
+export type replaceCardsApiLoopSessionsSessionIdCardsPutResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type replaceCardsApiLoopSessionsSessionIdCardsPutResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type replaceCardsApiLoopSessionsSessionIdCardsPutResponseSuccess = (replaceCardsApiLoopSessionsSessionIdCardsPutResponse200) & {
+  headers: Headers;
+};
+export type replaceCardsApiLoopSessionsSessionIdCardsPutResponseError = (replaceCardsApiLoopSessionsSessionIdCardsPutResponse409 | replaceCardsApiLoopSessionsSessionIdCardsPutResponse422) & {
+  headers: Headers;
+};
+
+export type replaceCardsApiLoopSessionsSessionIdCardsPutResponse = (replaceCardsApiLoopSessionsSessionIdCardsPutResponseSuccess | replaceCardsApiLoopSessionsSessionIdCardsPutResponseError)
+
+export const getReplaceCardsApiLoopSessionsSessionIdCardsPutUrl = (sessionId: string,) => {
+
+
+
+
+  return `/api/loop/sessions/${sessionId}/cards`
+}
+
+/**
+ * @summary Replace Cards
+ */
+export const replaceCardsApiLoopSessionsSessionIdCardsPut = async (sessionId: string,
+    replaceCardsRequest: ReplaceCardsRequest, options?: Parameters<typeof customFetch>[1]): Promise<replaceCardsApiLoopSessionsSessionIdCardsPutResponse> => {
+
+  return customFetch<replaceCardsApiLoopSessionsSessionIdCardsPutResponse>(getReplaceCardsApiLoopSessionsSessionIdCardsPutUrl(sessionId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(replaceCardsRequest)
+  }
+);}
+
+
+
+
+
+export const getReplaceCardsApiLoopSessionsSessionIdCardsPutMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof replaceCardsApiLoopSessionsSessionIdCardsPut>>, TError,{sessionId: string;data: BodyType<ReplaceCardsRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof replaceCardsApiLoopSessionsSessionIdCardsPut>>, TError,{sessionId: string;data: BodyType<ReplaceCardsRequest>}, TContext> => {
+
+const mutationKey = ['replaceCardsApiLoopSessionsSessionIdCardsPut'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof replaceCardsApiLoopSessionsSessionIdCardsPut>>, {sessionId: string;data: BodyType<ReplaceCardsRequest>}> = (props) => {
+          const {sessionId,data} = props ?? {};
+
+          return  replaceCardsApiLoopSessionsSessionIdCardsPut(sessionId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReplaceCardsApiLoopSessionsSessionIdCardsPutMutationResult = NonNullable<Awaited<ReturnType<typeof replaceCardsApiLoopSessionsSessionIdCardsPut>>>
+    export type ReplaceCardsApiLoopSessionsSessionIdCardsPutMutationBody = BodyType<ReplaceCardsRequest>
+    export type ReplaceCardsApiLoopSessionsSessionIdCardsPutMutationError = ErrorType<OperationalError | HTTPValidationError>
+
+    /**
+ * @summary Replace Cards
+ */
+export const useReplaceCardsApiLoopSessionsSessionIdCardsPut = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof replaceCardsApiLoopSessionsSessionIdCardsPut>>, TError,{sessionId: string;data: BodyType<ReplaceCardsRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof replaceCardsApiLoopSessionsSessionIdCardsPut>>,
+        TError,
+        {sessionId: string;data: BodyType<ReplaceCardsRequest>},
+        TContext
+      > => {
+      return useMutation(getReplaceCardsApiLoopSessionsSessionIdCardsPutMutationOptions(options), queryClient);
+    }
+
 export type patchCardApiLoopSessionsSessionIdCardsCardIdPatchResponse200 = {
   data: CardMutationResponse
   status: 200
@@ -1585,14 +1686,14 @@ export const getConfirmApiLoopSessionsSessionIdConfirmPostUrl = (sessionId: stri
  * @summary Confirm
  */
 export const confirmApiLoopSessionsSessionIdConfirmPost = async (sessionId: string,
-    appModulesLoopSchemasConfirmRequest: AppModulesLoopSchemasConfirmRequest, options?: Parameters<typeof customFetch>[1]): Promise<confirmApiLoopSessionsSessionIdConfirmPostResponse> => {
+    confirmRequest: ConfirmRequest, options?: Parameters<typeof customFetch>[1]): Promise<confirmApiLoopSessionsSessionIdConfirmPostResponse> => {
 
   return customFetch<confirmApiLoopSessionsSessionIdConfirmPostResponse>(getConfirmApiLoopSessionsSessionIdConfirmPostUrl(sessionId),
   {
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(appModulesLoopSchemasConfirmRequest)
+    body: JSON.stringify(confirmRequest)
   }
 );}
 
@@ -1601,8 +1702,8 @@ export const confirmApiLoopSessionsSessionIdConfirmPost = async (sessionId: stri
 
 
 export const getConfirmApiLoopSessionsSessionIdConfirmPostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>, TError,{sessionId: string;data: BodyType<AppModulesLoopSchemasConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>, TError,{sessionId: string;data: BodyType<AppModulesLoopSchemasConfirmRequest>}, TContext> => {
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>, TError,{sessionId: string;data: BodyType<ConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>, TError,{sessionId: string;data: BodyType<ConfirmRequest>}, TContext> => {
 
 const mutationKey = ['confirmApiLoopSessionsSessionIdConfirmPost'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
@@ -1614,7 +1715,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>, {sessionId: string;data: BodyType<AppModulesLoopSchemasConfirmRequest>}> = (props) => {
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>, {sessionId: string;data: BodyType<ConfirmRequest>}> = (props) => {
           const {sessionId,data} = props ?? {};
 
           return  confirmApiLoopSessionsSessionIdConfirmPost(sessionId,data,requestOptions)
@@ -1628,18 +1729,18 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
   return  { mutationFn, ...mutationOptions }}
 
     export type ConfirmApiLoopSessionsSessionIdConfirmPostMutationResult = NonNullable<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>>
-    export type ConfirmApiLoopSessionsSessionIdConfirmPostMutationBody = BodyType<AppModulesLoopSchemasConfirmRequest>
+    export type ConfirmApiLoopSessionsSessionIdConfirmPostMutationBody = BodyType<ConfirmRequest>
     export type ConfirmApiLoopSessionsSessionIdConfirmPostMutationError = ErrorType<OperationalError | HTTPValidationError>
 
     /**
  * @summary Confirm
  */
 export const useConfirmApiLoopSessionsSessionIdConfirmPost = <TError = ErrorType<OperationalError | HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>, TError,{sessionId: string;data: BodyType<AppModulesLoopSchemasConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>, TError,{sessionId: string;data: BodyType<ConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
  , queryClient?: QueryClient): UseMutationResult<
         Awaited<ReturnType<typeof confirmApiLoopSessionsSessionIdConfirmPost>>,
         TError,
-        {sessionId: string;data: BodyType<AppModulesLoopSchemasConfirmRequest>},
+        {sessionId: string;data: BodyType<ConfirmRequest>},
         TContext
       > => {
       return useMutation(getConfirmApiLoopSessionsSessionIdConfirmPostMutationOptions(options), queryClient);
@@ -1967,35 +2068,275 @@ export function useHealthApiResearchHealthGet<TData = Awaited<ReturnType<typeof 
 
 
 
-export type generateContributionApiSpecSpecContributionGeneratePostResponse200 = {
-  data: GenerateContributionResponse
+export type listCitationsApiResearchSessionsSessionIdCitationsGetResponse200 = {
+  data: CitationResponse[]
   status: 200
 }
 
-export type generateContributionApiSpecSpecContributionGeneratePostResponseSuccess = (generateContributionApiSpecSpecContributionGeneratePostResponse200) & {
+export type listCitationsApiResearchSessionsSessionIdCitationsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listCitationsApiResearchSessionsSessionIdCitationsGetResponseSuccess = (listCitationsApiResearchSessionsSessionIdCitationsGetResponse200) & {
+  headers: Headers;
+};
+export type listCitationsApiResearchSessionsSessionIdCitationsGetResponseError = (listCitationsApiResearchSessionsSessionIdCitationsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listCitationsApiResearchSessionsSessionIdCitationsGetResponse = (listCitationsApiResearchSessionsSessionIdCitationsGetResponseSuccess | listCitationsApiResearchSessionsSessionIdCitationsGetResponseError)
+
+export const getListCitationsApiResearchSessionsSessionIdCitationsGetUrl = (sessionId: string,) => {
+
+
+
+
+  return `/api/research/sessions/${sessionId}/citations`
+}
+
+/**
+ * @summary List Citations
+ */
+export const listCitationsApiResearchSessionsSessionIdCitationsGet = async (sessionId: string, options?: Parameters<typeof customFetch>[1]): Promise<listCitationsApiResearchSessionsSessionIdCitationsGetResponse> => {
+
+  return customFetch<listCitationsApiResearchSessionsSessionIdCitationsGetResponse>(getListCitationsApiResearchSessionsSessionIdCitationsGetUrl(sessionId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListCitationsApiResearchSessionsSessionIdCitationsGetQueryKey = (sessionId: string,) => {
+    return [
+    `/api/research/sessions/${sessionId}/citations`
+    ] as const;
+    }
+
+
+export const getListCitationsApiResearchSessionsSessionIdCitationsGetQueryOptions = <TData = Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError = ErrorType<HTTPValidationError>>(sessionId: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListCitationsApiResearchSessionsSessionIdCitationsGetQueryKey(sessionId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>> = ({ signal }) => listCitationsApiResearchSessionsSessionIdCitationsGet(sessionId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: sessionId !== null && sessionId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListCitationsApiResearchSessionsSessionIdCitationsGetQueryResult = NonNullable<Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>>
+export type ListCitationsApiResearchSessionsSessionIdCitationsGetQueryError = ErrorType<HTTPValidationError>
+
+
+export function useListCitationsApiResearchSessionsSessionIdCitationsGet<TData = Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>,
+          TError,
+          Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListCitationsApiResearchSessionsSessionIdCitationsGet<TData = Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>,
+          TError,
+          Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListCitationsApiResearchSessionsSessionIdCitationsGet<TData = Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List Citations
+ */
+
+export function useListCitationsApiResearchSessionsSessionIdCitationsGet<TData = Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listCitationsApiResearchSessionsSessionIdCitationsGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListCitationsApiResearchSessionsSessionIdCitationsGetQueryOptions(sessionId,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type listFindingsApiResearchSessionsSessionIdFindingsGetResponse200 = {
+  data: RelatedWorkFindingResponse[]
+  status: 200
+}
+
+export type listFindingsApiResearchSessionsSessionIdFindingsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listFindingsApiResearchSessionsSessionIdFindingsGetResponseSuccess = (listFindingsApiResearchSessionsSessionIdFindingsGetResponse200) & {
+  headers: Headers;
+};
+export type listFindingsApiResearchSessionsSessionIdFindingsGetResponseError = (listFindingsApiResearchSessionsSessionIdFindingsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listFindingsApiResearchSessionsSessionIdFindingsGetResponse = (listFindingsApiResearchSessionsSessionIdFindingsGetResponseSuccess | listFindingsApiResearchSessionsSessionIdFindingsGetResponseError)
+
+export const getListFindingsApiResearchSessionsSessionIdFindingsGetUrl = (sessionId: string,) => {
+
+
+
+
+  return `/api/research/sessions/${sessionId}/findings`
+}
+
+/**
+ * @summary List Findings
+ */
+export const listFindingsApiResearchSessionsSessionIdFindingsGet = async (sessionId: string, options?: Parameters<typeof customFetch>[1]): Promise<listFindingsApiResearchSessionsSessionIdFindingsGetResponse> => {
+
+  return customFetch<listFindingsApiResearchSessionsSessionIdFindingsGetResponse>(getListFindingsApiResearchSessionsSessionIdFindingsGetUrl(sessionId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListFindingsApiResearchSessionsSessionIdFindingsGetQueryKey = (sessionId: string,) => {
+    return [
+    `/api/research/sessions/${sessionId}/findings`
+    ] as const;
+    }
+
+
+export const getListFindingsApiResearchSessionsSessionIdFindingsGetQueryOptions = <TData = Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError = ErrorType<HTTPValidationError>>(sessionId: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListFindingsApiResearchSessionsSessionIdFindingsGetQueryKey(sessionId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>> = ({ signal }) => listFindingsApiResearchSessionsSessionIdFindingsGet(sessionId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: sessionId !== null && sessionId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ListFindingsApiResearchSessionsSessionIdFindingsGetQueryResult = NonNullable<Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>>
+export type ListFindingsApiResearchSessionsSessionIdFindingsGetQueryError = ErrorType<HTTPValidationError>
+
+
+export function useListFindingsApiResearchSessionsSessionIdFindingsGet<TData = Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>,
+          TError,
+          Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListFindingsApiResearchSessionsSessionIdFindingsGet<TData = Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>,
+          TError,
+          Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useListFindingsApiResearchSessionsSessionIdFindingsGet<TData = Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary List Findings
+ */
+
+export function useListFindingsApiResearchSessionsSessionIdFindingsGet<TData = Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof listFindingsApiResearchSessionsSessionIdFindingsGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getListFindingsApiResearchSessionsSessionIdFindingsGetQueryOptions(sessionId,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type healthApiSpecSpecHealthGetResponse200 = {
+  data: HealthApiSpecSpecHealthGet200
+  status: 200
+}
+
+export type healthApiSpecSpecHealthGetResponseSuccess = (healthApiSpecSpecHealthGetResponse200) & {
   headers: Headers;
 };
 ;
 
-export type generateContributionApiSpecSpecContributionGeneratePostResponse = (generateContributionApiSpecSpecContributionGeneratePostResponseSuccess)
+export type healthApiSpecSpecHealthGetResponse = (healthApiSpecSpecHealthGetResponseSuccess)
 
-export const getGenerateContributionApiSpecSpecContributionGeneratePostUrl = () => {
-
-
+export const getHealthApiSpecSpecHealthGetUrl = () => {
 
 
-  return `/api/spec/spec/contribution/generate`
+
+
+  return `/api/spec/spec/health`
 }
 
 /**
- * @summary Generate Contribution
+ * @summary Health
  */
-export const generateContributionApiSpecSpecContributionGeneratePost = async ( options?: Parameters<typeof customFetch>[1]): Promise<generateContributionApiSpecSpecContributionGeneratePostResponse> => {
+export const healthApiSpecSpecHealthGet = async ( options?: Parameters<typeof customFetch>[1]): Promise<healthApiSpecSpecHealthGetResponse> => {
 
-  return customFetch<generateContributionApiSpecSpecContributionGeneratePostResponse>(getGenerateContributionApiSpecSpecContributionGeneratePostUrl(),
+  return customFetch<healthApiSpecSpecHealthGetResponse>(getHealthApiSpecSpecHealthGetUrl(),
   {
     ...options,
-    method: 'POST'
+    method: 'GET'
 
 
   }
@@ -2005,89 +2346,125 @@ export const generateContributionApiSpecSpecContributionGeneratePost = async ( o
 
 
 
-export const getGenerateContributionApiSpecSpecContributionGeneratePostMutationOptions = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateContributionApiSpecSpecContributionGeneratePost>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof generateContributionApiSpecSpecContributionGeneratePost>>, TError,void, TContext> => {
-
-const mutationKey = ['generateContributionApiSpecSpecContributionGeneratePost'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof generateContributionApiSpecSpecContributionGeneratePost>>, void> = () => {
-
-
-          return  generateContributionApiSpecSpecContributionGeneratePost(requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type GenerateContributionApiSpecSpecContributionGeneratePostMutationResult = NonNullable<Awaited<ReturnType<typeof generateContributionApiSpecSpecContributionGeneratePost>>>
-
-    export type GenerateContributionApiSpecSpecContributionGeneratePostMutationError = ErrorType<unknown>
-
-    /**
- * @summary Generate Contribution
- */
-export const useGenerateContributionApiSpecSpecContributionGeneratePost = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateContributionApiSpecSpecContributionGeneratePost>>, TError,void, TContext>, request?: SecondParameter<typeof customFetch>}
- , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof generateContributionApiSpecSpecContributionGeneratePost>>,
-        TError,
-        void,
-        TContext
-      > => {
-      return useMutation(getGenerateContributionApiSpecSpecContributionGeneratePostMutationOptions(options), queryClient);
+export const getHealthApiSpecSpecHealthGetQueryKey = () => {
+    return [
+    `/api/spec/spec/health`
+    ] as const;
     }
 
-export type confirmContributionApiSpecSpecContributionConfirmPostResponse200 = {
-  data: unknown
+
+export const getHealthApiSpecSpecHealthGetQueryOptions = <TData = Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError = ErrorType<unknown>>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getHealthApiSpecSpecHealthGetQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>> = ({ signal }) => healthApiSpecSpecHealthGet({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type HealthApiSpecSpecHealthGetQueryResult = NonNullable<Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>>
+export type HealthApiSpecSpecHealthGetQueryError = ErrorType<unknown>
+
+
+export function useHealthApiSpecSpecHealthGet<TData = Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError = ErrorType<unknown>>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>,
+          TError,
+          Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useHealthApiSpecSpecHealthGet<TData = Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError = ErrorType<unknown>>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>,
+          TError,
+          Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useHealthApiSpecSpecHealthGet<TData = Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError = ErrorType<unknown>>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Health
+ */
+
+export function useHealthApiSpecSpecHealthGet<TData = Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError = ErrorType<unknown>>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof healthApiSpecSpecHealthGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getHealthApiSpecSpecHealthGetQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse200 = {
+  data: ContributionDirectionsResponse
   status: 200
 }
 
-export type confirmContributionApiSpecSpecContributionConfirmPostResponse422 = {
+export type generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse422 = {
   data: HTTPValidationError
   status: 422
 }
 
-export type confirmContributionApiSpecSpecContributionConfirmPostResponseSuccess = (confirmContributionApiSpecSpecContributionConfirmPostResponse200) & {
+export type generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponseSuccess = (generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse200) & {
   headers: Headers;
 };
-export type confirmContributionApiSpecSpecContributionConfirmPostResponseError = (confirmContributionApiSpecSpecContributionConfirmPostResponse422) & {
+export type generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponseError = (generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse409 | generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse422) & {
   headers: Headers;
 };
 
-export type confirmContributionApiSpecSpecContributionConfirmPostResponse = (confirmContributionApiSpecSpecContributionConfirmPostResponseSuccess | confirmContributionApiSpecSpecContributionConfirmPostResponseError)
+export type generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse = (generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponseSuccess | generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponseError)
 
-export const getConfirmContributionApiSpecSpecContributionConfirmPostUrl = () => {
-
-
+export const getGenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostUrl = (sessionId: string,) => {
 
 
-  return `/api/spec/spec/contribution/confirm`
+
+
+  return `/api/spec/spec/sessions/${sessionId}/contribution-directions/generate`
 }
 
 /**
- * @summary Confirm Contribution
+ * @summary Generate Contribution Directions
  */
-export const confirmContributionApiSpecSpecContributionConfirmPost = async (appModulesSpecSchemasConfirmRequest: AppModulesSpecSchemasConfirmRequest, options?: Parameters<typeof customFetch>[1]): Promise<confirmContributionApiSpecSpecContributionConfirmPostResponse> => {
+export const generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost = async (sessionId: string,
+    contributionDirectionsRequest: ContributionDirectionsRequest, options?: Parameters<typeof customFetch>[1]): Promise<generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse> => {
 
-  return customFetch<confirmContributionApiSpecSpecContributionConfirmPostResponse>(getConfirmContributionApiSpecSpecContributionConfirmPostUrl(),
+  return customFetch<generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostResponse>(getGenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostUrl(sessionId),
   {
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(appModulesSpecSchemasConfirmRequest)
+    body: JSON.stringify(contributionDirectionsRequest)
   }
 );}
 
@@ -2095,11 +2472,11 @@ export const confirmContributionApiSpecSpecContributionConfirmPost = async (appM
 
 
 
-export const getConfirmContributionApiSpecSpecContributionConfirmPostMutationOptions = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmContributionApiSpecSpecContributionConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof confirmContributionApiSpecSpecContributionConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext> => {
+export const getGenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost>>, TError,{sessionId: string;data: BodyType<ContributionDirectionsRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost>>, TError,{sessionId: string;data: BodyType<ContributionDirectionsRequest>}, TContext> => {
 
-const mutationKey = ['confirmContributionApiSpecSpecContributionConfirmPost'];
+const mutationKey = ['generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
       options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
       options
@@ -2109,10 +2486,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof confirmContributionApiSpecSpecContributionConfirmPost>>, {data: BodyType<AppModulesSpecSchemasConfirmRequest>}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost>>, {sessionId: string;data: BodyType<ContributionDirectionsRequest>}> = (props) => {
+          const {sessionId,data} = props ?? {};
 
-          return  confirmContributionApiSpecSpecContributionConfirmPost(data,requestOptions)
+          return  generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost(sessionId,data,requestOptions)
         }
 
 
@@ -2122,159 +2499,68 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
   return  { mutationFn, ...mutationOptions }}
 
-    export type ConfirmContributionApiSpecSpecContributionConfirmPostMutationResult = NonNullable<Awaited<ReturnType<typeof confirmContributionApiSpecSpecContributionConfirmPost>>>
-    export type ConfirmContributionApiSpecSpecContributionConfirmPostMutationBody = BodyType<AppModulesSpecSchemasConfirmRequest>
-    export type ConfirmContributionApiSpecSpecContributionConfirmPostMutationError = ErrorType<HTTPValidationError>
+    export type GenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostMutationResult = NonNullable<Awaited<ReturnType<typeof generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost>>>
+    export type GenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostMutationBody = BodyType<ContributionDirectionsRequest>
+    export type GenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostMutationError = ErrorType<OperationalError | HTTPValidationError>
 
     /**
- * @summary Confirm Contribution
+ * @summary Generate Contribution Directions
  */
-export const useConfirmContributionApiSpecSpecContributionConfirmPost = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmContributionApiSpecSpecContributionConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+export const useGenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost>>, TError,{sessionId: string;data: BodyType<ContributionDirectionsRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
  , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof confirmContributionApiSpecSpecContributionConfirmPost>>,
+        Awaited<ReturnType<typeof generateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePost>>,
         TError,
-        {data: BodyType<AppModulesSpecSchemasConfirmRequest>},
+        {sessionId: string;data: BodyType<ContributionDirectionsRequest>},
         TContext
       > => {
-      return useMutation(getConfirmContributionApiSpecSpecContributionConfirmPostMutationOptions(options), queryClient);
+      return useMutation(getGenerateContributionDirectionsApiSpecSpecSessionsSessionIdContributionDirectionsGeneratePostMutationOptions(options), queryClient);
     }
 
-export type generateClaimsApiSpecSpecClaimsGeneratePostResponse200 = {
+export type generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse200 = {
   data: GenerateClaimsResponse
   status: 200
 }
 
-export type generateClaimsApiSpecSpecClaimsGeneratePostResponse422 = {
+export type generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse422 = {
   data: HTTPValidationError
   status: 422
 }
 
-export type generateClaimsApiSpecSpecClaimsGeneratePostResponseSuccess = (generateClaimsApiSpecSpecClaimsGeneratePostResponse200) & {
+export type generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponseSuccess = (generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse200) & {
   headers: Headers;
 };
-export type generateClaimsApiSpecSpecClaimsGeneratePostResponseError = (generateClaimsApiSpecSpecClaimsGeneratePostResponse422) & {
+export type generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponseError = (generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse409 | generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse422) & {
   headers: Headers;
 };
 
-export type generateClaimsApiSpecSpecClaimsGeneratePostResponse = (generateClaimsApiSpecSpecClaimsGeneratePostResponseSuccess | generateClaimsApiSpecSpecClaimsGeneratePostResponseError)
+export type generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse = (generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponseSuccess | generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponseError)
 
-export const getGenerateClaimsApiSpecSpecClaimsGeneratePostUrl = (params: GenerateClaimsApiSpecSpecClaimsGeneratePostParams,) => {
-  const normalizedParams = new URLSearchParams();
+export const getGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostUrl = (sessionId: string,) => {
 
-  Object.entries(params || {}).forEach(([key, value]) => {
 
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? 'null' : String(value))
-    }
-  });
 
-  const stringifiedParams = normalizedParams.toString();
 
-  return stringifiedParams.length > 0 ? `/api/spec/spec/claims/generate?${stringifiedParams}` : `/api/spec/spec/claims/generate`
+  return `/api/spec/spec/sessions/${sessionId}/claims/generate`
 }
 
 /**
  * @summary Generate Claims
  */
-export const generateClaimsApiSpecSpecClaimsGeneratePost = async (params: GenerateClaimsApiSpecSpecClaimsGeneratePostParams, options?: Parameters<typeof customFetch>[1]): Promise<generateClaimsApiSpecSpecClaimsGeneratePostResponse> => {
+export const generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost = async (sessionId: string,
+    generateClaimsRequest: GenerateClaimsRequest, options?: Parameters<typeof customFetch>[1]): Promise<generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse> => {
 
-  return customFetch<generateClaimsApiSpecSpecClaimsGeneratePostResponse>(getGenerateClaimsApiSpecSpecClaimsGeneratePostUrl(params),
-  {
-    ...options,
-    method: 'POST'
-
-
-  }
-);}
-
-
-
-
-
-export const getGenerateClaimsApiSpecSpecClaimsGeneratePostMutationOptions = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateClaimsApiSpecSpecClaimsGeneratePost>>, TError,{params: GenerateClaimsApiSpecSpecClaimsGeneratePostParams}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof generateClaimsApiSpecSpecClaimsGeneratePost>>, TError,{params: GenerateClaimsApiSpecSpecClaimsGeneratePostParams}, TContext> => {
-
-const mutationKey = ['generateClaimsApiSpecSpecClaimsGeneratePost'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof generateClaimsApiSpecSpecClaimsGeneratePost>>, {params: GenerateClaimsApiSpecSpecClaimsGeneratePostParams}> = (props) => {
-          const {params} = props ?? {};
-
-          return  generateClaimsApiSpecSpecClaimsGeneratePost(params,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type GenerateClaimsApiSpecSpecClaimsGeneratePostMutationResult = NonNullable<Awaited<ReturnType<typeof generateClaimsApiSpecSpecClaimsGeneratePost>>>
-
-    export type GenerateClaimsApiSpecSpecClaimsGeneratePostMutationError = ErrorType<HTTPValidationError>
-
-    /**
- * @summary Generate Claims
- */
-export const useGenerateClaimsApiSpecSpecClaimsGeneratePost = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateClaimsApiSpecSpecClaimsGeneratePost>>, TError,{params: GenerateClaimsApiSpecSpecClaimsGeneratePostParams}, TContext>, request?: SecondParameter<typeof customFetch>}
- , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof generateClaimsApiSpecSpecClaimsGeneratePost>>,
-        TError,
-        {params: GenerateClaimsApiSpecSpecClaimsGeneratePostParams},
-        TContext
-      > => {
-      return useMutation(getGenerateClaimsApiSpecSpecClaimsGeneratePostMutationOptions(options), queryClient);
-    }
-
-export type confirmClaimsApiSpecSpecClaimsConfirmPostResponse200 = {
-  data: unknown
-  status: 200
-}
-
-export type confirmClaimsApiSpecSpecClaimsConfirmPostResponse422 = {
-  data: HTTPValidationError
-  status: 422
-}
-
-export type confirmClaimsApiSpecSpecClaimsConfirmPostResponseSuccess = (confirmClaimsApiSpecSpecClaimsConfirmPostResponse200) & {
-  headers: Headers;
-};
-export type confirmClaimsApiSpecSpecClaimsConfirmPostResponseError = (confirmClaimsApiSpecSpecClaimsConfirmPostResponse422) & {
-  headers: Headers;
-};
-
-export type confirmClaimsApiSpecSpecClaimsConfirmPostResponse = (confirmClaimsApiSpecSpecClaimsConfirmPostResponseSuccess | confirmClaimsApiSpecSpecClaimsConfirmPostResponseError)
-
-export const getConfirmClaimsApiSpecSpecClaimsConfirmPostUrl = () => {
-
-
-
-
-  return `/api/spec/spec/claims/confirm`
-}
-
-/**
- * @summary Confirm Claims
- */
-export const confirmClaimsApiSpecSpecClaimsConfirmPost = async (appModulesSpecSchemasConfirmRequest: AppModulesSpecSchemasConfirmRequest, options?: Parameters<typeof customFetch>[1]): Promise<confirmClaimsApiSpecSpecClaimsConfirmPostResponse> => {
-
-  return customFetch<confirmClaimsApiSpecSpecClaimsConfirmPostResponse>(getConfirmClaimsApiSpecSpecClaimsConfirmPostUrl(),
+  return customFetch<generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostResponse>(getGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostUrl(sessionId),
   {
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(appModulesSpecSchemasConfirmRequest)
+    body: JSON.stringify(generateClaimsRequest)
   }
 );}
 
@@ -2282,11 +2568,11 @@ export const confirmClaimsApiSpecSpecClaimsConfirmPost = async (appModulesSpecSc
 
 
 
-export const getConfirmClaimsApiSpecSpecClaimsConfirmPostMutationOptions = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmClaimsApiSpecSpecClaimsConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof confirmClaimsApiSpecSpecClaimsConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext> => {
+export const getGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost>>, TError,{sessionId: string;data: BodyType<GenerateClaimsRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost>>, TError,{sessionId: string;data: BodyType<GenerateClaimsRequest>}, TContext> => {
 
-const mutationKey = ['confirmClaimsApiSpecSpecClaimsConfirmPost'];
+const mutationKey = ['generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
       options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
       options
@@ -2296,10 +2582,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof confirmClaimsApiSpecSpecClaimsConfirmPost>>, {data: BodyType<AppModulesSpecSchemasConfirmRequest>}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost>>, {sessionId: string;data: BodyType<GenerateClaimsRequest>}> = (props) => {
+          const {sessionId,data} = props ?? {};
 
-          return  confirmClaimsApiSpecSpecClaimsConfirmPost(data,requestOptions)
+          return  generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost(sessionId,data,requestOptions)
         }
 
 
@@ -2309,62 +2595,68 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
   return  { mutationFn, ...mutationOptions }}
 
-    export type ConfirmClaimsApiSpecSpecClaimsConfirmPostMutationResult = NonNullable<Awaited<ReturnType<typeof confirmClaimsApiSpecSpecClaimsConfirmPost>>>
-    export type ConfirmClaimsApiSpecSpecClaimsConfirmPostMutationBody = BodyType<AppModulesSpecSchemasConfirmRequest>
-    export type ConfirmClaimsApiSpecSpecClaimsConfirmPostMutationError = ErrorType<HTTPValidationError>
+    export type GenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostMutationResult = NonNullable<Awaited<ReturnType<typeof generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost>>>
+    export type GenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostMutationBody = BodyType<GenerateClaimsRequest>
+    export type GenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostMutationError = ErrorType<OperationalError | HTTPValidationError>
 
     /**
- * @summary Confirm Claims
+ * @summary Generate Claims
  */
-export const useConfirmClaimsApiSpecSpecClaimsConfirmPost = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmClaimsApiSpecSpecClaimsConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+export const useGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost>>, TError,{sessionId: string;data: BodyType<GenerateClaimsRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
  , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof confirmClaimsApiSpecSpecClaimsConfirmPost>>,
+        Awaited<ReturnType<typeof generateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost>>,
         TError,
-        {data: BodyType<AppModulesSpecSchemasConfirmRequest>},
+        {sessionId: string;data: BodyType<GenerateClaimsRequest>},
         TContext
       > => {
-      return useMutation(getConfirmClaimsApiSpecSpecClaimsConfirmPostMutationOptions(options), queryClient);
+      return useMutation(getGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePostMutationOptions(options), queryClient);
     }
 
-export type generateExperimentApiSpecSpecExperimentGeneratePostResponse200 = {
+export type generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse200 = {
   data: GenerateExperimentResponse
   status: 200
 }
 
-export type generateExperimentApiSpecSpecExperimentGeneratePostResponse422 = {
+export type generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse422 = {
   data: HTTPValidationError
   status: 422
 }
 
-export type generateExperimentApiSpecSpecExperimentGeneratePostResponseSuccess = (generateExperimentApiSpecSpecExperimentGeneratePostResponse200) & {
+export type generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponseSuccess = (generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse200) & {
   headers: Headers;
 };
-export type generateExperimentApiSpecSpecExperimentGeneratePostResponseError = (generateExperimentApiSpecSpecExperimentGeneratePostResponse422) & {
+export type generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponseError = (generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse409 | generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse422) & {
   headers: Headers;
 };
 
-export type generateExperimentApiSpecSpecExperimentGeneratePostResponse = (generateExperimentApiSpecSpecExperimentGeneratePostResponseSuccess | generateExperimentApiSpecSpecExperimentGeneratePostResponseError)
+export type generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse = (generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponseSuccess | generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponseError)
 
-export const getGenerateExperimentApiSpecSpecExperimentGeneratePostUrl = () => {
-
-
+export const getGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostUrl = (sessionId: string,) => {
 
 
-  return `/api/spec/spec/experiment/generate`
+
+
+  return `/api/spec/spec/sessions/${sessionId}/experiment-plan/generate`
 }
 
 /**
  * @summary Generate Experiment
  */
-export const generateExperimentApiSpecSpecExperimentGeneratePost = async (generateExperimentApiSpecSpecExperimentGeneratePostBodyItem: GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem[], options?: Parameters<typeof customFetch>[1]): Promise<generateExperimentApiSpecSpecExperimentGeneratePostResponse> => {
+export const generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost = async (sessionId: string,
+    generateExperimentRequest: GenerateExperimentRequest, options?: Parameters<typeof customFetch>[1]): Promise<generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse> => {
 
-  return customFetch<generateExperimentApiSpecSpecExperimentGeneratePostResponse>(getGenerateExperimentApiSpecSpecExperimentGeneratePostUrl(),
+  return customFetch<generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostResponse>(getGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostUrl(sessionId),
   {
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(generateExperimentApiSpecSpecExperimentGeneratePostBodyItem)
+    body: JSON.stringify(generateExperimentRequest)
   }
 );}
 
@@ -2372,11 +2664,11 @@ export const generateExperimentApiSpecSpecExperimentGeneratePost = async (genera
 
 
 
-export const getGenerateExperimentApiSpecSpecExperimentGeneratePostMutationOptions = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateExperimentApiSpecSpecExperimentGeneratePost>>, TError,{data: BodyType<GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem[]>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof generateExperimentApiSpecSpecExperimentGeneratePost>>, TError,{data: BodyType<GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem[]>}, TContext> => {
+export const getGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost>>, TError,{sessionId: string;data: BodyType<GenerateExperimentRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost>>, TError,{sessionId: string;data: BodyType<GenerateExperimentRequest>}, TContext> => {
 
-const mutationKey = ['generateExperimentApiSpecSpecExperimentGeneratePost'];
+const mutationKey = ['generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
       options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
       options
@@ -2386,10 +2678,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof generateExperimentApiSpecSpecExperimentGeneratePost>>, {data: BodyType<GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem[]>}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost>>, {sessionId: string;data: BodyType<GenerateExperimentRequest>}> = (props) => {
+          const {sessionId,data} = props ?? {};
 
-          return  generateExperimentApiSpecSpecExperimentGeneratePost(data,requestOptions)
+          return  generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost(sessionId,data,requestOptions)
         }
 
 
@@ -2399,62 +2691,68 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
   return  { mutationFn, ...mutationOptions }}
 
-    export type GenerateExperimentApiSpecSpecExperimentGeneratePostMutationResult = NonNullable<Awaited<ReturnType<typeof generateExperimentApiSpecSpecExperimentGeneratePost>>>
-    export type GenerateExperimentApiSpecSpecExperimentGeneratePostMutationBody = BodyType<GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem[]>
-    export type GenerateExperimentApiSpecSpecExperimentGeneratePostMutationError = ErrorType<HTTPValidationError>
+    export type GenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostMutationResult = NonNullable<Awaited<ReturnType<typeof generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost>>>
+    export type GenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostMutationBody = BodyType<GenerateExperimentRequest>
+    export type GenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostMutationError = ErrorType<OperationalError | HTTPValidationError>
 
     /**
  * @summary Generate Experiment
  */
-export const useGenerateExperimentApiSpecSpecExperimentGeneratePost = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateExperimentApiSpecSpecExperimentGeneratePost>>, TError,{data: BodyType<GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem[]>}, TContext>, request?: SecondParameter<typeof customFetch>}
+export const useGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost>>, TError,{sessionId: string;data: BodyType<GenerateExperimentRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
  , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof generateExperimentApiSpecSpecExperimentGeneratePost>>,
+        Awaited<ReturnType<typeof generateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost>>,
         TError,
-        {data: BodyType<GenerateExperimentApiSpecSpecExperimentGeneratePostBodyItem[]>},
+        {sessionId: string;data: BodyType<GenerateExperimentRequest>},
         TContext
       > => {
-      return useMutation(getGenerateExperimentApiSpecSpecExperimentGeneratePostMutationOptions(options), queryClient);
+      return useMutation(getGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePostMutationOptions(options), queryClient);
     }
 
-export type confirmExperimentApiSpecSpecExperimentConfirmPostResponse200 = {
-  data: unknown
+export type checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse200 = {
+  data: CheckFeasibilityResponse
   status: 200
 }
 
-export type confirmExperimentApiSpecSpecExperimentConfirmPostResponse422 = {
+export type checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse422 = {
   data: HTTPValidationError
   status: 422
 }
 
-export type confirmExperimentApiSpecSpecExperimentConfirmPostResponseSuccess = (confirmExperimentApiSpecSpecExperimentConfirmPostResponse200) & {
+export type checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponseSuccess = (checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse200) & {
   headers: Headers;
 };
-export type confirmExperimentApiSpecSpecExperimentConfirmPostResponseError = (confirmExperimentApiSpecSpecExperimentConfirmPostResponse422) & {
+export type checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponseError = (checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse409 | checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse422) & {
   headers: Headers;
 };
 
-export type confirmExperimentApiSpecSpecExperimentConfirmPostResponse = (confirmExperimentApiSpecSpecExperimentConfirmPostResponseSuccess | confirmExperimentApiSpecSpecExperimentConfirmPostResponseError)
+export type checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse = (checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponseSuccess | checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponseError)
 
-export const getConfirmExperimentApiSpecSpecExperimentConfirmPostUrl = () => {
-
-
+export const getCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostUrl = (sessionId: string,) => {
 
 
-  return `/api/spec/spec/experiment/confirm`
+
+
+  return `/api/spec/spec/sessions/${sessionId}/feasibility/check`
 }
 
 /**
- * @summary Confirm Experiment
+ * @summary Check Feasibility
  */
-export const confirmExperimentApiSpecSpecExperimentConfirmPost = async (appModulesSpecSchemasConfirmRequest: AppModulesSpecSchemasConfirmRequest, options?: Parameters<typeof customFetch>[1]): Promise<confirmExperimentApiSpecSpecExperimentConfirmPostResponse> => {
+export const checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost = async (sessionId: string,
+    checkFeasibilityRequest: CheckFeasibilityRequest, options?: Parameters<typeof customFetch>[1]): Promise<checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse> => {
 
-  return customFetch<confirmExperimentApiSpecSpecExperimentConfirmPostResponse>(getConfirmExperimentApiSpecSpecExperimentConfirmPostUrl(),
+  return customFetch<checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostResponse>(getCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostUrl(sessionId),
   {
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(appModulesSpecSchemasConfirmRequest)
+    body: JSON.stringify(checkFeasibilityRequest)
   }
 );}
 
@@ -2462,11 +2760,11 @@ export const confirmExperimentApiSpecSpecExperimentConfirmPost = async (appModul
 
 
 
-export const getConfirmExperimentApiSpecSpecExperimentConfirmPostMutationOptions = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmExperimentApiSpecSpecExperimentConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof confirmExperimentApiSpecSpecExperimentConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext> => {
+export const getCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost>>, TError,{sessionId: string;data: BodyType<CheckFeasibilityRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost>>, TError,{sessionId: string;data: BodyType<CheckFeasibilityRequest>}, TContext> => {
 
-const mutationKey = ['confirmExperimentApiSpecSpecExperimentConfirmPost'];
+const mutationKey = ['checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
       options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
       options
@@ -2476,10 +2774,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof confirmExperimentApiSpecSpecExperimentConfirmPost>>, {data: BodyType<AppModulesSpecSchemasConfirmRequest>}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost>>, {sessionId: string;data: BodyType<CheckFeasibilityRequest>}> = (props) => {
+          const {sessionId,data} = props ?? {};
 
-          return  confirmExperimentApiSpecSpecExperimentConfirmPost(data,requestOptions)
+          return  checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost(sessionId,data,requestOptions)
         }
 
 
@@ -2489,119 +2787,22 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
   return  { mutationFn, ...mutationOptions }}
 
-    export type ConfirmExperimentApiSpecSpecExperimentConfirmPostMutationResult = NonNullable<Awaited<ReturnType<typeof confirmExperimentApiSpecSpecExperimentConfirmPost>>>
-    export type ConfirmExperimentApiSpecSpecExperimentConfirmPostMutationBody = BodyType<AppModulesSpecSchemasConfirmRequest>
-    export type ConfirmExperimentApiSpecSpecExperimentConfirmPostMutationError = ErrorType<HTTPValidationError>
-
-    /**
- * @summary Confirm Experiment
- */
-export const useConfirmExperimentApiSpecSpecExperimentConfirmPost = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof confirmExperimentApiSpecSpecExperimentConfirmPost>>, TError,{data: BodyType<AppModulesSpecSchemasConfirmRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
- , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof confirmExperimentApiSpecSpecExperimentConfirmPost>>,
-        TError,
-        {data: BodyType<AppModulesSpecSchemasConfirmRequest>},
-        TContext
-      > => {
-      return useMutation(getConfirmExperimentApiSpecSpecExperimentConfirmPostMutationOptions(options), queryClient);
-    }
-
-export type checkFeasibilityApiSpecSpecFeasibilityCheckPostResponse200 = {
-  data: FeasibilityReport
-  status: 200
-}
-
-export type checkFeasibilityApiSpecSpecFeasibilityCheckPostResponse422 = {
-  data: HTTPValidationError
-  status: 422
-}
-
-export type checkFeasibilityApiSpecSpecFeasibilityCheckPostResponseSuccess = (checkFeasibilityApiSpecSpecFeasibilityCheckPostResponse200) & {
-  headers: Headers;
-};
-export type checkFeasibilityApiSpecSpecFeasibilityCheckPostResponseError = (checkFeasibilityApiSpecSpecFeasibilityCheckPostResponse422) & {
-  headers: Headers;
-};
-
-export type checkFeasibilityApiSpecSpecFeasibilityCheckPostResponse = (checkFeasibilityApiSpecSpecFeasibilityCheckPostResponseSuccess | checkFeasibilityApiSpecSpecFeasibilityCheckPostResponseError)
-
-export const getCheckFeasibilityApiSpecSpecFeasibilityCheckPostUrl = (params: CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams,) => {
-  const normalizedParams = new URLSearchParams();
-
-  Object.entries(params || {}).forEach(([key, value]) => {
-
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? 'null' : String(value))
-    }
-  });
-
-  const stringifiedParams = normalizedParams.toString();
-
-  return stringifiedParams.length > 0 ? `/api/spec/spec/feasibility/check?${stringifiedParams}` : `/api/spec/spec/feasibility/check`
-}
-
-/**
- * @summary Check Feasibility
- */
-export const checkFeasibilityApiSpecSpecFeasibilityCheckPost = async (params: CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams, options?: Parameters<typeof customFetch>[1]): Promise<checkFeasibilityApiSpecSpecFeasibilityCheckPostResponse> => {
-
-  return customFetch<checkFeasibilityApiSpecSpecFeasibilityCheckPostResponse>(getCheckFeasibilityApiSpecSpecFeasibilityCheckPostUrl(params),
-  {
-    ...options,
-    method: 'POST'
-
-
-  }
-);}
-
-
-
-
-
-export const getCheckFeasibilityApiSpecSpecFeasibilityCheckPostMutationOptions = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecFeasibilityCheckPost>>, TError,{params: CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecFeasibilityCheckPost>>, TError,{params: CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams}, TContext> => {
-
-const mutationKey = ['checkFeasibilityApiSpecSpecFeasibilityCheckPost'];
-const {mutation: mutationOptions, request: requestOptions} = options ?
-      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
-      options
-      : {...options, mutation: {...options.mutation, mutationKey}}
-      : {mutation: { mutationKey, }, request: undefined};
-
-
-
-
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecFeasibilityCheckPost>>, {params: CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams}> = (props) => {
-          const {params} = props ?? {};
-
-          return  checkFeasibilityApiSpecSpecFeasibilityCheckPost(params,requestOptions)
-        }
-
-
-
-
-
-
-  return  { mutationFn, ...mutationOptions }}
-
-    export type CheckFeasibilityApiSpecSpecFeasibilityCheckPostMutationResult = NonNullable<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecFeasibilityCheckPost>>>
-
-    export type CheckFeasibilityApiSpecSpecFeasibilityCheckPostMutationError = ErrorType<HTTPValidationError>
+    export type CheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostMutationResult = NonNullable<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost>>>
+    export type CheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostMutationBody = BodyType<CheckFeasibilityRequest>
+    export type CheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostMutationError = ErrorType<OperationalError | HTTPValidationError>
 
     /**
  * @summary Check Feasibility
  */
-export const useCheckFeasibilityApiSpecSpecFeasibilityCheckPost = <TError = ErrorType<HTTPValidationError>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecFeasibilityCheckPost>>, TError,{params: CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams}, TContext>, request?: SecondParameter<typeof customFetch>}
+export const useCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost>>, TError,{sessionId: string;data: BodyType<CheckFeasibilityRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
  , queryClient?: QueryClient): UseMutationResult<
-        Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecFeasibilityCheckPost>>,
+        Awaited<ReturnType<typeof checkFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost>>,
         TError,
-        {params: CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams},
+        {sessionId: string;data: BodyType<CheckFeasibilityRequest>},
         TContext
       > => {
-      return useMutation(getCheckFeasibilityApiSpecSpecFeasibilityCheckPostMutationOptions(options), queryClient);
+      return useMutation(getCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPostMutationOptions(options), queryClient);
     }
 
 export type healthApiJudgementHealthGetResponse200 = {

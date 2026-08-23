@@ -4,9 +4,9 @@
  * SpecResearch Loop
  * OpenAPI spec version: 0.1.0
  */
-import type { ClaimEvidenceCard } from './claimEvidenceCard';
+import type { CardResponse } from './cardResponse';
 
-export interface GenerateClaimsResponse {
+export interface CardBatchMutationResponse {
+  cards: CardResponse[];
   version: number;
-  cards: ClaimEvidenceCard[];
 }

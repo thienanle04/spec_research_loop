@@ -5,6 +5,4 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type CheckFeasibilityApiSpecSpecFeasibilityCheckPostParams = {
-plan_desc: string;
-};
+export type ReplaceCardsRequestBodiesItem = { [key: string]: unknown };
