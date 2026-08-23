@@ -1,2 +1,2 @@
 /** Spec feature — Research Spec construction UI. */
-export {};
+export * from "./SpecConstructionWizard";

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7
     cors_origins: str = "http://localhost:3000"
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_default_model: str = "gpt-4o-mini"
 
     @property
     def cors_origin_list(self) -> list[str]:

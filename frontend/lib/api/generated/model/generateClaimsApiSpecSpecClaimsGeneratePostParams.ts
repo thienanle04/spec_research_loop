@@ -5,4 +5,6 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type HealthApiSpecHealthGet200 = {[key: string]: string};
+export type GenerateClaimsApiSpecSpecClaimsGeneratePostParams = {
+contribution_desc: string;
+};

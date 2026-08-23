@@ -76,7 +76,7 @@ Shared: `app/core`, `app/db`, `app/ports` (LLM, object storage), `app/adapters`,
 | Data | Postgres + S3-compatible object store | [0003](./docs/adr/0003-postgres-s3-persistence.md) |
 | Long work | SSE, in-request async streaming | [0004](./docs/adr/0004-sse-in-request-streaming.md) |
 | Auth | Email/password Accounts, JWT Bearer | [0005](./docs/adr/0005-email-password-jwt-accounts.md) |
-| LLMs | Provider port + adapters | [0006](./docs/adr/0006-llm-provider-port.md) |
+| LLMs | Provider port + adapters | [0006](./docs/adr/0006-llm-provider-port.md), [0022](./docs/adr/0022-complete-only-llm-port.md) |
 
 ## Tooling
 
