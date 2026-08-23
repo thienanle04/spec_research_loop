@@ -6,7 +6,7 @@
  */
 import type { WorkflowNode } from './workflowNode';
 
-export interface ConfirmRequest {
+export interface AppModulesLoopSchemasConfirmRequest {
   node: WorkflowNode;
   /** @minimum 1 */
   expected_version: number;
