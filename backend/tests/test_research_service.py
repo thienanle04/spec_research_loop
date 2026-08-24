@@ -10,15 +10,22 @@ import pytest
 from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.research.adapters.fake_source import FakeScholarlySourcePort
 from app.modules.research.normalization import normalize_doi, normalize_url
-from app.modules.research.ports import DocumentText, ScholarlyRecord, SourcePreferences
+from app.modules.research.ports import (
+    DocumentText,
+    ScholarlyRecord,
+    SourcePreferences,
+    VerificationResult,
+)
 from app.modules.research.schemas import (
     GroundingStatus,
     ResearchGenerateRequest,
     ResearchInputs,
+    VerificationStatus,
 )
 from app.modules.research.service import (
     ResearchService,
     _compose_search_queries,
+    _json_value,
     _rank_relevant_records,
 )
 from app.ports.llm import LlmProviderError
@@ -30,6 +37,23 @@ def test_normalize_doi_and_url() -> None:
         normalize_url("Example.COM/work/?utm_source=test&view=full#section")
         == "https://example.com/work?view=full"
     )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '<think>Need four queries.</think>\n{"queries":["claim evidence"]}',
+        'Here is the JSON:\n```json\n{"queries":["claim evidence"]}\n```',
+        'Reasoning before the answer. {"queries":["claim evidence"]} Done.',
+    ],
+)
+def test_json_value_extracts_structured_output_from_model_wrappers(raw: str) -> None:
+    assert _json_value(raw, dict) == {"queries": ["claim evidence"]}
+
+
+def test_json_value_still_rejects_unstructured_model_output() -> None:
+    with pytest.raises(json.JSONDecodeError):
+        _json_value("I could not produce the requested queries.", dict)
 
 
 @pytest.mark.asyncio
@@ -451,7 +475,113 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
     assert (
         narrative["candidate"]["search_audit"]["counter_evidence_analyzed_count"] == 2
     )
+    counter_results = narrative["candidate"]["search_audit"][
+        "counter_evidence_results"
+    ]
+    assert len(counter_results) == 2
+    assert all(result["title"] for result in counter_results)
+    assert all(result["rationale"] for result in counter_results)
+    assert narrative["candidate"]["search_audit"]["counter_evidence_assessment"]
     assert narrative["candidate"]["evidence_check"]["ready"] is True
+    assert warnings == []
+
+
+@pytest.mark.asyncio
+async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
+    llm = FakeLlmPort()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    prior_result = {
+        "result_key": "prior-counter-1",
+        "title": "Existing claim-level verifier",
+        "authors": ["Lee"],
+        "year": 2025,
+        "provider": "fixture",
+        "provider_source_id": "prior-counter-1",
+        "abstract": "Already verifies evidence for every generated claim.",
+        "verification_status": "verified",
+        "impact": "gap_not_supported",
+        "rationale": "This method already addresses the proposed limitation.",
+    }
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {"kind": "problem", "body": {"text": "Unsupported claims"}}
+                ]
+            },
+            "research_inputs": {
+                "narrative": {"keywords": ["claim verification"]}
+            },
+            "related_work": {
+                "narrative": {
+                    "search_queries": ["claim verification"],
+                    "candidate_count": 1,
+                },
+                "projected": {
+                    "citations": [
+                        {
+                            "id": "citation-1",
+                            "citation_key": "smith-2025",
+                            "title": "Claim verification",
+                            "abstract": "Evaluates aggregate feedback.",
+                            "provider": "fixture",
+                            "verification_status": "verified",
+                        }
+                    ],
+                    "related_work": [
+                        {
+                            "citation_id": "citation-1",
+                            "what_was_done": "Optimizes prompts with aggregate scores",
+                            "limitation": "Uses aggregate feedback",
+                            "grounding_status": "grounded",
+                        }
+                    ],
+                },
+            },
+        },
+        "working_draft": {
+            "narrative": {
+                "candidate": {
+                    "statement": "No system verifies evidence for every claim.",
+                    "search_audit": {
+                        "counter_evidence_outcome": "gap_not_supported",
+                        "counter_evidence_assessment": (
+                            "Existing work already performs claim-level verification."
+                        ),
+                        "counter_evidence_results": [prior_result],
+                    },
+                }
+            }
+        },
+    }
+
+    _, warnings = await service._generate_gaps(context)
+    analysis_prompt = next(
+        call["prompt"]
+        for call in llm.calls
+        if "research-gap-analysis" in call["system"]
+    )
+    synthesis_prompt = next(
+        call["prompt"]
+        for call in llm.calls
+        if "research-gap-synthesis" in call["system"]
+    )
+    counter_query_prompt = next(
+        call["prompt"]
+        for call in llm.calls
+        if "research-counter-query" in call["system"]
+    )
+
+    for prompt in (analysis_prompt, synthesis_prompt, counter_query_prompt):
+        assert "gap_not_supported" in prompt
+        assert "Existing claim-level verifier" in prompt
+        assert "already addresses the proposed limitation" in prompt
+    assert '"required_counter_evidence_keys": ["prior-counter-1"]' in analysis_prompt
     assert warnings == []
 
 
@@ -1087,6 +1217,38 @@ async def test_listwise_reranker_falls_back_when_candidate_coverage_is_incomplet
 
 
 @pytest.mark.asyncio
+async def test_counter_query_generation_accepts_json_after_reasoning_wrapper() -> None:
+    llm = FakeLlmPort(
+        responses={
+            "research-counter-query": (
+                "<think>Generate falsification branches.</think>\n"
+                '```json\n{"queries":["claim verification competing methods",'
+                '"claim verification equivalent approach",'
+                '"claim verification replication benchmark",'
+                '"claim verification conflicting findings"]}\n```'
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort([]),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    result = await service._search_counter_evidence(
+        idea={"problems": ["Unsupported claims"]},
+        inputs=ResearchInputs(keywords=["claim verification"]),
+        provisional_statement="It remains unclear whether verification reduces errors.",
+        related_work_queries=["claim verification"],
+        preferences=SourcePreferences(),
+    )
+
+    assert result.queries[0] == "claim verification competing methods"
+    assert not any("deterministic English queries" in item for item in result.warnings)
+
+
+@pytest.mark.asyncio
 async def test_counter_evidence_search_analyzes_only_top_five_relevant_results() -> (
     None
 ):
@@ -1109,10 +1271,11 @@ async def test_counter_evidence_search_analyzes_only_top_five_relevant_results()
             provider_source_id="irrelevant",
         )
     ]
+    verifier = _RecordingVerifier()
     service = ResearchService(
         _UnusedDb(),  # type: ignore[arg-type]
         source=FakeScholarlySourcePort(records),
-        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        verifier=verifier,  # type: ignore[arg-type]
         llm=FakeLlmPort(),
     )
 
@@ -1133,6 +1296,12 @@ async def test_counter_evidence_search_analyzes_only_top_five_relevant_results()
     assert len(result.queries) >= 3
     assert result.candidate_count == 8
     assert len(result.records) == 5
+    assert len(result.selected_records) == 5
+    assert len(verifier.records) == 5
+    assert all(
+        record.metadata["counter_verification_status"] == "verified"
+        for record in result.records
+    )
     assert all(
         "Claim evidence verification" in record.title for record in result.records
     )
@@ -1291,6 +1460,19 @@ class _UnusedDb:
 class _UnusedVerifier:
     async def verify(self, **_kwargs: Any) -> Any:
         raise AssertionError("Verifier should not be called")
+
+
+class _RecordingVerifier:
+    def __init__(self) -> None:
+        self.records: list[ScholarlyRecord] = []
+
+    async def verify(self, *, citation: ScholarlyRecord) -> VerificationResult:
+        self.records.append(citation)
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            messages=["Identifier and title match the scholarly provider"],
+            record=citation,
+        )
 
 
 class _QuotaLlm:

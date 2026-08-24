@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import OperationalErrorException
 from app.modules.loop.catalog import CardKind, WorkflowNode
-from app.modules.loop.models import Card, NodeHead, StageRevision
+from app.modules.loop.models import Card
 from app.modules.research.models import Citation, RelatedWorkFinding
 from app.modules.research.schemas import GapCardBody
 
@@ -132,79 +132,14 @@ class ResearchStagePort:
             except ValidationError as exc:
                 raise OperationalErrorException(
                     status_code=status.HTTP_409_CONFLICT,
-                    code="gap_evidence_not_ready",
-                    detail=(
-                        "Gap Candidate must include a valid source-verification and "
-                        "counter-evidence search audit before Confirm."
-                    ),
+                    code="gap_candidate_invalid",
+                    detail="Gap Candidate data is invalid and cannot be confirmed.",
                 ) from exc
             if not candidate.is_confirmable():
                 raise OperationalErrorException(
                     status_code=status.HTTP_409_CONFLICT,
-                    code="gap_evidence_not_ready",
-                    detail=(
-                        "Gap Candidate needs verified Citations, grounded findings, and a "
-                        "conclusive counter-evidence search before Confirm."
-                    ),
-                )
-            related_head = await self._db.scalar(
-                select(NodeHead).where(
-                    NodeHead.session_id == session_id,
-                    NodeHead.node == WorkflowNode.RELATED_WORK.value,
-                )
-            )
-            revision_id = related_head.stage_revision_id if related_head else None
-            if revision_id is None:
-                raise OperationalErrorException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    code="gap_evidence_not_ready",
-                    detail="Gap Candidate has no confirmed Related Work revision.",
-                )
-            citations = await self._citations(
-                session_id=session_id,
-                revision_id=revision_id,
-            )
-            findings = await self._findings(
-                session_id=session_id,
-                revision_id=revision_id,
-            )
-            verified = {
-                row.citation_key
-                for row in citations
-                if row.verification_status == "verified"
-            }
-            citation_keys = {row.id: row.citation_key for row in citations}
-            grounded = {
-                citation_keys[row.citation_id]
-                for row in findings
-                if row.grounding_status == "grounded"
-                and row.citation_id in citation_keys
-            }
-            actual_eligible = verified & grounded
-            if not set(candidate.supporting_citation_keys) <= actual_eligible:
-                raise OperationalErrorException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    code="gap_evidence_not_ready",
-                    detail=(
-                        "Gap supporting Citations must be verified and linked to grounded "
-                        "findings in the confirmed Related Work revision."
-                    ),
-                )
-            related_revision = await self._db.scalar(
-                select(StageRevision).where(StageRevision.id == revision_id)
-            )
-            confirmed_queries = (
-                related_revision.narrative.get("search_queries", [])
-                if related_revision is not None
-                else []
-            )
-            if candidate.search_audit.related_work_queries != confirmed_queries:
-                raise OperationalErrorException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    code="gap_evidence_not_ready",
-                    detail=(
-                        "Gap search audit does not match the confirmed Related Work queries."
-                    ),
+                    code="gap_candidate_invalid",
+                    detail="Gap Candidate must include a non-empty statement before Confirm.",
                 )
             return {"candidate": candidate.model_dump(mode="json")}
         if node != WorkflowNode.RELATED_WORK.value:

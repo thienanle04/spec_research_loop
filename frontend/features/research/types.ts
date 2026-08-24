@@ -14,6 +14,32 @@ export type ResearchInputs = {
   preferred_sources: PreferredSources;
 };
 
+export type CounterEvidenceOutcome =
+  | "no_direct_counter_evidence"
+  | "gap_narrowed"
+  | "gap_not_supported"
+  | "inconclusive";
+
+export type CounterEvidenceResult = {
+  result_key: string;
+  title: string;
+  authors: string[];
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  url: string | null;
+  provider: string | null;
+  provider_source_id: string | null;
+  abstract: string | null;
+  retrieval_score: number | null;
+  reranker_score: number | null;
+  discovery_queries: string[];
+  verification_status: "pending" | "verified" | "warning" | "rejected";
+  verification_messages: string[];
+  impact: CounterEvidenceOutcome;
+  rationale: string;
+};
+
 export type GapCandidate = {
   statement: string;
   supporting_citation_keys: string[];
@@ -26,11 +52,9 @@ export type GapCandidate = {
     related_work_analyzed_count: number;
     counter_evidence_candidate_count: number;
     counter_evidence_analyzed_count: number;
-    counter_evidence_outcome:
-      | "no_direct_counter_evidence"
-      | "gap_narrowed"
-      | "gap_not_supported"
-      | "inconclusive";
+    counter_evidence_outcome: CounterEvidenceOutcome;
+    counter_evidence_assessment: string;
+    counter_evidence_results: CounterEvidenceResult[];
     completed_at: string | null;
     complete: boolean;
   };
@@ -77,6 +101,60 @@ function record(value: unknown): Record<string, unknown> {
 
 function nonnegativeNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function optionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function counterEvidenceResults(value: unknown): CounterEvidenceResult[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    const item = record(raw);
+    if (typeof item.result_key !== "string" || typeof item.title !== "string") return [];
+    const rawVerification = item.verification_status;
+    const verificationStatus =
+      rawVerification === "verified" ||
+      rawVerification === "warning" ||
+      rawVerification === "rejected"
+        ? rawVerification
+        : "pending";
+    const rawImpact = item.impact;
+    const impact: CounterEvidenceOutcome =
+      rawImpact === "no_direct_counter_evidence" ||
+      rawImpact === "gap_narrowed" ||
+      rawImpact === "gap_not_supported"
+        ? rawImpact
+        : "inconclusive";
+    return [
+      {
+        result_key: item.result_key,
+        title: item.title,
+        authors: strings(item.authors),
+        year: optionalNumber(item.year),
+        venue: optionalString(item.venue),
+        doi: optionalString(item.doi),
+        url: optionalString(item.url),
+        provider: optionalString(item.provider),
+        provider_source_id: optionalString(item.provider_source_id),
+        abstract: optionalString(item.abstract),
+        retrieval_score: optionalNumber(item.retrieval_score),
+        reranker_score: optionalNumber(item.reranker_score),
+        discovery_queries: strings(item.discovery_queries),
+        verification_status: verificationStatus,
+        verification_messages: strings(item.verification_messages),
+        impact,
+        rationale:
+          typeof item.rationale === "string" && item.rationale.trim()
+            ? item.rationale
+            : "This result was not included in the validated assessment.",
+      },
+    ];
+  });
 }
 
 export function researchInputsFrom(value: Record<string, unknown>): ResearchInputs {
@@ -141,6 +219,11 @@ export function gapCandidateFrom(value: unknown): GapCandidate | null {
       counter_evidence_candidate_count: nonnegativeNumber(audit.counter_evidence_candidate_count),
       counter_evidence_analyzed_count: nonnegativeNumber(audit.counter_evidence_analyzed_count),
       counter_evidence_outcome: counterEvidenceOutcome,
+      counter_evidence_assessment:
+        typeof audit.counter_evidence_assessment === "string"
+          ? audit.counter_evidence_assessment
+          : "",
+      counter_evidence_results: counterEvidenceResults(audit.counter_evidence_results),
       completed_at: typeof audit.completed_at === "string" ? audit.completed_at : null,
       complete: audit.complete === true,
     },

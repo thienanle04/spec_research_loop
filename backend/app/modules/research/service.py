@@ -47,6 +47,7 @@ from app.modules.research.schemas import (
     CitationResponse,
     CitationUpsertEvent,
     CounterEvidenceOutcome,
+    CounterEvidenceResult,
     DoneEvent,
     DraftPatchEvent,
     ErrorEvent,
@@ -92,10 +93,17 @@ class _GapQuestionAnswers(BaseModel):
     importance: str = Field(min_length=1)
     testability: str = Field(min_length=1)
     covered_citation_keys: list[str] = Field(min_length=1)
+    addressed_counter_evidence_keys: list[str] = Field(default_factory=list)
 
 
 class _GapSynthesis(BaseModel):
     statement: str = Field(min_length=1)
+
+
+class _CounterEvidenceFinding(BaseModel):
+    result_key: str = Field(min_length=1)
+    impact: CounterEvidenceOutcome
+    rationale: str = Field(min_length=1)
 
 
 class _CounterEvidenceAssessment(BaseModel):
@@ -103,6 +111,7 @@ class _CounterEvidenceAssessment(BaseModel):
     statement: str = Field(min_length=1)
     assessment: str = Field(min_length=1)
     covered_result_keys: list[str] = Field(default_factory=list)
+    findings: list[_CounterEvidenceFinding] = Field(default_factory=list)
 
 
 class _RerankItem(BaseModel):
@@ -118,6 +127,7 @@ class _RerankResponse(BaseModel):
 class _CounterEvidenceSearch:
     queries: list[str]
     records: list[ScholarlyRecord]
+    selected_records: list[ScholarlyRecord]
     candidate_count: int
     complete: bool
     warnings: list[str]
@@ -1019,6 +1029,12 @@ class ResearchService:
             item for item in related_work if item.get("citation_key") in valid_keys
         ]
         idea = _idea_context(context)
+        previous_counter_feedback = _previous_counter_feedback(context)
+        required_counter_keys = [
+            str(item.get("result_key"))
+            for item in previous_counter_feedback.get("results", [])
+            if item.get("result_key")
+        ]
         warnings: list[str] = []
         statement = _fallback_gap_statement(eligible_findings)
         if valid_keys:
@@ -1029,14 +1045,20 @@ class ResearchService:
                         + "research-gap-analysis: perform private source-grounded analysis and "
                         "return only one JSON object with exactly these keys: prior_work, "
                         "limitation, importance, testability (non-empty strings), and "
-                        "covered_citation_keys (string array). Read and compare EVERY item in "
-                        "citations and related_work; each supplied citation must materially "
+                        "covered_citation_keys and addressed_counter_evidence_keys (string "
+                        "arrays). Read and compare EVERY item in citations and related_work; "
+                        "each supplied citation must materially "
                         "inform at least one answer, and covered_citation_keys must contain "
                         "every required_citation_key. Answer: what prior research accomplished, "
                         "what remains limited across the body of work, why the limitation "
                         "matters, and what experiment can test it. Ground the analysis in the "
                         "supplied findings and evidence. Do not claim proven novelty. Do not "
-                        "use markdown or add explanatory text outside JSON."
+                        "If previous_counter_feedback is supplied, do not repeat a Gap that "
+                        "was narrowed, unsupported, or inconclusive. Explicitly use every prior "
+                        "result to formulate a materially revised, narrower, and searchable "
+                        "limitation; addressed_counter_evidence_keys must contain every "
+                        "required_counter_evidence_key. Do not use markdown or add explanatory "
+                        "text outside JSON."
                     ),
                     prompt=json.dumps(
                         {
@@ -1045,6 +1067,8 @@ class ResearchService:
                             "citations": eligible_citations,
                             "related_work": eligible_findings,
                             "required_citation_keys": valid_keys,
+                            "previous_counter_feedback": previous_counter_feedback,
+                            "required_counter_evidence_keys": required_counter_keys,
                         },
                         default=str,
                         ensure_ascii=False,
@@ -1055,6 +1079,12 @@ class ResearchService:
                 )
                 if set(valid_keys) - set(answers.covered_citation_keys):
                     raise ValueError("Gap analysis did not cover every eligible source")
+                if set(required_counter_keys) - set(
+                    answers.addressed_counter_evidence_keys
+                ):
+                    raise ValueError(
+                        "Gap analysis did not address every prior counter-evidence result"
+                    )
             except Exception as exc:  # noqa: BLE001 - conservative source-linked fallback
                 warnings.append(
                     "Gap analysis used a conservative source-linked fallback: "
@@ -1071,11 +1101,14 @@ class ResearchService:
                             "2 to 4 sentences. State what existing approaches do and what "
                             "remains unclear or insufficient. Do not expose field labels, "
                             "source lists, or separate answers. Do not claim proven novelty."
+                            " When previous_counter_feedback is supplied, the new statement must "
+                            "materially address it instead of restating the previous Gap."
                         ),
                         prompt=json.dumps(
                             {
                                 "idea": idea,
                                 "analysis": answers.model_dump(mode="json"),
+                                "previous_counter_feedback": previous_counter_feedback,
                             },
                             default=str,
                             ensure_ascii=False,
@@ -1110,6 +1143,7 @@ class ResearchService:
             provisional_statement=statement,
             related_work_queries=related_queries,
             preferences=source_preferences,
+            previous_counter_feedback=previous_counter_feedback,
         )
         warnings.extend(counter_search.warnings)
         assessment, assessment_warnings = await self._assess_counter_evidence(
@@ -1119,6 +1153,10 @@ class ResearchService:
         )
         warnings.extend(assessment_warnings)
         statement = assessment.statement
+        counter_results = _counter_evidence_results(
+            counter_search.selected_records,
+            assessment.findings,
+        )
 
         audit_complete = bool(related_queries) and counter_search.complete
         audit = GapSearchAudit(
@@ -1144,6 +1182,8 @@ class ResearchService:
             counter_evidence_candidate_count=counter_search.candidate_count,
             counter_evidence_analyzed_count=len(counter_search.records),
             counter_evidence_outcome=assessment.outcome,
+            counter_evidence_assessment=assessment.assessment,
+            counter_evidence_results=counter_results,
             completed_at=datetime.now(UTC),
             complete=audit_complete,
         )
@@ -1177,6 +1217,7 @@ class ResearchService:
         provisional_statement: str,
         related_work_queries: list[str],
         preferences: SourcePreferences,
+        previous_counter_feedback: dict[str, Any] | None = None,
     ) -> _CounterEvidenceSearch:
         warnings: list[str] = []
         try:
@@ -1188,7 +1229,9 @@ class ResearchService:
                     "the stated limitation, synonymous names for the proposed combination, "
                     "recent surveys, benchmarks, and conflicting findings. Do not treat an "
                     "empty result set as evidence of novelty. Keep each query at no more than "
-                    "eight content words."
+                    "eight content words. If previous_counter_feedback is supplied, target the "
+                    "revised unresolved limitation and do not merely repeat searches for the "
+                    "already-addressed Gap."
                 ),
                 prompt=json.dumps(
                     {
@@ -1196,6 +1239,7 @@ class ResearchService:
                         "research_inputs": inputs.model_dump(mode="json"),
                         "provisional_gap_candidate": provisional_statement,
                         "prior_queries": related_work_queries,
+                        "previous_counter_feedback": previous_counter_feedback or {},
                     },
                     ensure_ascii=False,
                 ),
@@ -1273,13 +1317,57 @@ class ResearchService:
             ),
         )
         warnings.extend(rerank.warnings)
+        selected_records = rerank.records[:5]
+        await self._verify_counter_evidence(selected_records)
         return _CounterEvidenceSearch(
             queries=queries,
-            records=rerank.records[:5],
+            records=[
+                record
+                for record in selected_records
+                if record.metadata.get("counter_verification_status")
+                != VerificationStatus.REJECTED.value
+            ],
+            selected_records=selected_records,
             candidate_count=len(unique),
             complete=bool(queries) and failures == 0,
             warnings=warnings,
         )
+
+    async def _verify_counter_evidence(
+        self,
+        records: list[ScholarlyRecord],
+    ) -> None:
+        """Verify top metadata-only results without fetching or analyzing full text."""
+        if not records:
+            return
+        try:
+            if isinstance(self._verifier, BatchCitationVerifier):
+                verifications = await self._verifier.verify_many(citations=records)
+            else:
+                verifications = [
+                    await self._verifier.verify(citation=record) for record in records
+                ]
+            if len(verifications) != len(records):
+                raise ValueError("Counter-evidence verification coverage was incomplete")
+        except Exception as exc:  # noqa: BLE001 - retain retrieved metadata with a warning
+            message = (
+                "Counter-evidence source identity could not be rechecked: "
+                f"{_llm_failure_summary(exc)}"
+            )
+            for record in records:
+                record.metadata["counter_verification_status"] = (
+                    VerificationStatus.WARNING.value
+                )
+                record.metadata["counter_verification_messages"] = [message]
+            return
+
+        for record, verification in zip(records, verifications, strict=True):
+            if verification.record is not None:
+                _merge_verified_counter_record(record, verification.record)
+            record.metadata["counter_verification_status"] = verification.status.value
+            record.metadata["counter_verification_messages"] = list(
+                verification.messages
+            )
 
     async def _assess_counter_evidence(
         self,
@@ -1312,14 +1400,18 @@ class ResearchService:
                 system=(
                     _idea_language_instruction(idea)
                     + "research-counter-analysis: return only one JSON object with exactly "
-                    "outcome, statement, assessment, and covered_result_keys. outcome must "
+                    "outcome, statement, assessment, covered_result_keys, and findings. "
+                    "findings must contain exactly one object per result with result_key, "
+                    "impact, and a concise source-specific rationale. outcome and each impact "
+                    "must "
                     "be one of no_direct_counter_evidence, gap_narrowed, gap_not_supported, "
                     "or inconclusive. Read every supplied result and actively look for work "
                     "that already addresses the proposed limitation or uses synonymous "
                     "terminology. Revise the statement when the Gap must be narrowed. If a "
                     "result already addresses it, use gap_not_supported. Never infer novelty "
-                    "from missing results or weak metadata. covered_result_keys must include "
-                    "every required_result_key."
+                    "from missing results or weak metadata. Treat warning verification as lower "
+                    "confidence and never rely on rejected results. covered_result_keys and the "
+                    "finding result_keys must include every required_result_key exactly once."
                 ),
                 prompt=json.dumps(
                     {
@@ -1338,6 +1430,26 @@ class ResearchService:
             if set(required_keys) - set(assessment.covered_result_keys):
                 raise ValueError(
                     "Counter-evidence analysis did not cover every top result"
+                )
+            finding_keys = [item.result_key for item in assessment.findings]
+            if len(set(finding_keys)) != len(finding_keys):
+                raise ValueError("Counter-evidence analysis returned duplicate findings")
+            if set(finding_keys) != set(required_keys):
+                raise ValueError(
+                    "Counter-evidence analysis did not assess every top result"
+                )
+            impacts = {item.impact for item in assessment.findings}
+            if CounterEvidenceOutcome.GAP_NOT_SUPPORTED in impacts:
+                expected_outcome = CounterEvidenceOutcome.GAP_NOT_SUPPORTED
+            elif CounterEvidenceOutcome.GAP_NARROWED in impacts:
+                expected_outcome = CounterEvidenceOutcome.GAP_NARROWED
+            elif impacts == {CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE}:
+                expected_outcome = CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+            else:
+                expected_outcome = CounterEvidenceOutcome.INCONCLUSIVE
+            if assessment.outcome is not expected_outcome:
+                raise ValueError(
+                    "Counter-evidence outcome was inconsistent with source findings"
                 )
             return assessment, []
         except Exception as exc:  # noqa: BLE001 - absence must remain inconclusive
@@ -1682,17 +1794,54 @@ class ResearchService:
 
 def _json_value(raw: str, expected: type[dict | list]) -> Any:
     cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
-    value = json.loads(cleaned)
-    if not isinstance(value, expected):
-        raise TypeError(f"Expected {expected.__name__} JSON")
-    return value
+    candidates: list[str] = []
+
+    # Reasoning-capable OpenAI-compatible models may put a valid answer after a
+    # <think> block or inside a fenced block despite the JSON-only instruction.
+    # Prefer those answer-shaped regions before scanning the entire response.
+    think_end = cleaned.rfind("</think>")
+    if think_end >= 0:
+        candidates.append(cleaned[think_end + len("</think>") :].strip())
+    candidates.extend(
+        match.group(1).strip()
+        for match in re.finditer(
+            r"```(?:json)?\s*([\s\S]*?)```",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+    )
+    candidates.append(cleaned)
+
+    decoder = json.JSONDecoder()
+    decode_error: json.JSONDecodeError | None = None
+    seen: set[str] = set()
+    opener = "{" if expected is dict else "["
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            decode_error = exc
+        else:
+            if isinstance(value, expected):
+                return value
+
+        # Accept a valid JSON value surrounded by prose/reasoning, while still
+        # requiring the decoded value to have the caller's expected container type.
+        for match in re.finditer(re.escape(opener), candidate):
+            try:
+                value, _ = decoder.raw_decode(candidate[match.start() :])
+            except json.JSONDecodeError as exc:
+                decode_error = exc
+                continue
+            if isinstance(value, expected):
+                return value
+
+    if decode_error is not None:
+        raise decode_error
+    raise TypeError(f"Expected {expected.__name__} JSON")
 
 
 def _research_inputs_from_model(raw: str, idea: dict[str, Any]) -> ResearchInputs:
@@ -2139,11 +2288,118 @@ def _counter_record_payload(record: ScholarlyRecord) -> dict[str, Any]:
         "year": record.year,
         "venue": record.venue,
         "doi": record.doi,
+        "url": record.url,
         "provider": record.provider,
         "provider_source_id": record.provider_source_id,
         "abstract": str(record.abstract or "")[:1_500],
         "retrieval_score": record.metadata.get("retrieval_score"),
+        "reranker_score": record.metadata.get("reranker_score"),
         "discovery_queries": record.metadata.get("discovery_queries", []),
+        "verification_status": record.metadata.get(
+            "counter_verification_status", VerificationStatus.PENDING.value
+        ),
+        "verification_messages": record.metadata.get(
+            "counter_verification_messages", []
+        ),
+    }
+
+
+def _counter_evidence_results(
+    records: list[ScholarlyRecord],
+    findings: list[_CounterEvidenceFinding],
+) -> list[CounterEvidenceResult]:
+    findings_by_key = {item.result_key: item for item in findings}
+    results: list[CounterEvidenceResult] = []
+    for record in records:
+        result_key = _record_result_key(record)
+        finding = findings_by_key.get(result_key)
+        verification_messages = _string_list(
+            record.metadata.get("counter_verification_messages")
+        )
+        results.append(
+            CounterEvidenceResult(
+                result_key=result_key,
+                title=record.title,
+                authors=record.authors,
+                year=record.year,
+                venue=record.venue,
+                doi=record.doi,
+                url=record.url,
+                provider=record.provider,
+                provider_source_id=record.provider_source_id,
+                abstract=record.abstract,
+                retrieval_score=record.metadata.get("retrieval_score"),
+                reranker_score=record.metadata.get("reranker_score"),
+                discovery_queries=_string_list(
+                    record.metadata.get("discovery_queries")
+                ),
+                verification_status=record.metadata.get(
+                    "counter_verification_status", VerificationStatus.PENDING.value
+                ),
+                verification_messages=verification_messages,
+                impact=(
+                    finding.impact
+                    if finding is not None
+                    else CounterEvidenceOutcome.INCONCLUSIVE
+                ),
+                rationale=(
+                    finding.rationale
+                    if finding is not None
+                    else (
+                        " ".join(verification_messages)
+                        or "This result was not included in the validated assessment."
+                    )
+                ),
+            )
+        )
+    return results
+
+
+def _merge_verified_counter_record(
+    record: ScholarlyRecord,
+    resolved: ScholarlyRecord,
+) -> None:
+    """Apply provider-resolved metadata while retaining discovery/rerank provenance."""
+    original_metadata = dict(record.metadata)
+    for field_name in (
+        "title",
+        "authors",
+        "year",
+        "venue",
+        "doi",
+        "url",
+        "provider",
+        "provider_source_id",
+        "abstract",
+        "retrieved_at",
+    ):
+        value = getattr(resolved, field_name)
+        if value not in (None, "", []):
+            setattr(record, field_name, value)
+    record.metadata = {**resolved.metadata, **original_metadata}
+
+
+def _previous_counter_feedback(context: dict[str, Any]) -> dict[str, Any]:
+    """Return prior negative/inconclusive audit data for the next Gap regeneration."""
+    narrative = context.get("working_draft", {}).get("narrative", {})
+    if not isinstance(narrative, dict):
+        return {}
+    raw_candidate = narrative.get("candidate")
+    try:
+        candidate = GapCardBody.model_validate(raw_candidate)
+    except ValidationError:
+        return {}
+    audit = candidate.search_audit
+    if audit.counter_evidence_outcome is CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE:
+        return {}
+    return {
+        "previous_statement": candidate.statement,
+        "outcome": audit.counter_evidence_outcome.value,
+        "assessment": audit.counter_evidence_assessment,
+        "results": [
+            item.model_dump(mode="json")
+            for item in audit.counter_evidence_results[:5]
+        ],
     }
 
 

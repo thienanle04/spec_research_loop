@@ -22,7 +22,6 @@ import { ResearchStagePanel } from "./ResearchStagePanel";
 import {
   gapCandidateFrom,
   gapCandidateFromNarrative,
-  isCompleteGap,
   researchInputsFrom,
   type GapCandidate,
   type ResearchStreamEvent,
@@ -101,7 +100,7 @@ export function ResearchStageContainer({
         ? citations.length > 0 &&
           findings.length > 0 &&
           findings.every((finding) => citations.some((citation) => citation.id === finding.citation_id))
-        : isCompleteGap(selectedGap);
+        : Boolean(selectedGap?.statement.trim());
 
   useEffect(() => {
     onConfirmabilityChange?.(confirmable);

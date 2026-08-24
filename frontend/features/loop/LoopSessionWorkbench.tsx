@@ -261,6 +261,20 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const editingExperimentDraft =
     editingWorkingDraft && (workingDraftNode === WorkflowNode.experiment_plan || workingDraftNode === WorkflowNode.feasibility);
   const editingStructuredDraft = editingResearchDraft || editingContributionDraft || editingClaimsDraft || editingExperimentDraft;
+  const decisions =
+    decisionsQuery.data?.status === 200 ? decisionsQuery.data.data : [];
+  const latestDecision = decisions[decisions.length - 1];
+  const workingDraftWasLastConfirmed =
+    editingWorkingDraft &&
+    workingDraftHead?.status === NodeHeadStatus.current &&
+    latestDecision?.kind === "confirm" &&
+    latestDecision.node === workingDraftNode &&
+    new Date(latestDecision.created_at).getTime() === new Date(session.updated_at).getTime();
+  const persistedContinueTarget = workingDraftWasLastConfirmed
+    ? continueTargetAfterConfirm(session, workingDraftNode)
+    : null;
+  const availableContinueTarget = continueTarget ?? persistedContinueTarget;
+  const continuing = prepareMutation.isPending || patchWorkingDraft.isPending;
   const confirmDisabled =
     generating ||
     grillEditing ||
@@ -392,21 +406,14 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         void runGenerate(next);
         return;
       }
-      const contributionComplete = workingDraftNode === WorkflowNode.contribution;
-      setContinueTarget(
-        contributionComplete ? null : continueTargetAfterConfirm(next, workingDraftNode),
-      );
-      setConfirmationMessage(
-        contributionComplete
-          ? "Saved."
-          : "Saved. Select Continue to proceed to the next step.",
-      );
+      setContinueTarget(continueTargetAfterConfirm(next, workingDraftNode));
+      setConfirmationMessage("Saved. Select Continue to proceed to the next step.");
     });
   }
 
   function continueWork() {
-    if (!continueTarget) return;
-    const target = continueTarget;
+    if (!availableContinueTarget) return;
+    const target = availableContinueTarget;
     setContinueTarget(null);
     setConfirmationMessage(null);
     setContinueWarning(null);
@@ -483,7 +490,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         </nav>
       </aside>
 
-      <div className="grid gap-4 lg:col-span-9">
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:col-span-9">
         <p>
           <Link className="text-sm text-in-progress underline-offset-4 hover:underline" href="/sessions">
             ← All Loop Sessions
@@ -568,8 +575,8 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   {confirmationMessage}
                 </p>
               ) : null}
-              {continueTarget ? (
-                <Button onClick={continueWork}>Continue</Button>
+              {availableContinueTarget ? (
+                <Button disabled={continuing} onClick={continueWork}>Continue</Button>
               ) : null}
             </div>
           </>
@@ -607,7 +614,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               {actions.canStart || actions.canRecompute || actions.editableNodes.length > 0 ? (
                 <div className="grid gap-3">
                   {actions.canStart &&
-                  !continueTarget &&
+                  !availableContinueTarget &&
                   !(
                     editingWorkingDraft &&
                     workingDraftNode === WorkflowNode.idea_decomposition

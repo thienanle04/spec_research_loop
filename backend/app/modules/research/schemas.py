@@ -35,6 +35,28 @@ class CounterEvidenceOutcome(StrEnum):
     INCONCLUSIVE = "inconclusive"
 
 
+class CounterEvidenceResult(BaseModel):
+    """A persisted metadata-only assessment of one counter-evidence source."""
+
+    result_key: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = Field(default=None, ge=1000, le=9999)
+    venue: str | None = None
+    doi: str | None = None
+    url: str | None = None
+    provider: str | None = None
+    provider_source_id: str | None = None
+    abstract: str | None = None
+    retrieval_score: float | None = Field(default=None, ge=0, le=1)
+    reranker_score: float | None = Field(default=None, ge=0, le=1)
+    discovery_queries: list[str] = Field(default_factory=list)
+    verification_status: VerificationStatus = VerificationStatus.PENDING
+    verification_messages: list[str] = Field(default_factory=list)
+    impact: CounterEvidenceOutcome = CounterEvidenceOutcome.INCONCLUSIVE
+    rationale: str = "This result was not included in the validated assessment."
+
+
 class ResearchNode(StrEnum):
     RESEARCH_INPUTS = "research_inputs"
     RELATED_WORK = "related_work"
@@ -144,6 +166,8 @@ class GapSearchAudit(BaseModel):
     counter_evidence_outcome: CounterEvidenceOutcome = (
         CounterEvidenceOutcome.INCONCLUSIVE
     )
+    counter_evidence_assessment: str = ""
+    counter_evidence_results: list[CounterEvidenceResult] = Field(default_factory=list)
     completed_at: datetime | None = None
     complete: bool = False
 
@@ -164,22 +188,9 @@ class GapCardBody(BaseModel):
     evidence_check: GapEvidenceCheck = Field(default_factory=GapEvidenceCheck)
 
     def is_confirmable(self) -> bool:
-        supporting = set(self.supporting_citation_keys)
-        eligible = set(self.evidence_check.eligible_citation_keys)
-        return (
-            self.status is GapStatus.CANDIDATE
-            and bool(supporting)
-            and supporting <= eligible
-            and self.evidence_check.ready
-            and self.search_audit.complete
-            and bool(self.search_audit.related_work_queries)
-            and bool(self.search_audit.counter_evidence_queries)
-            and self.search_audit.counter_evidence_outcome
-            not in {
-                CounterEvidenceOutcome.GAP_NOT_SUPPORTED,
-                CounterEvidenceOutcome.INCONCLUSIVE,
-            }
-        )
+        # Evidence readiness is advisory. An Account may confirm a Gap Candidate
+        # after reviewing the warnings, including a negative or inconclusive audit.
+        return bool(self.statement.strip())
 
 
 class ResearchGenerateRequest(BaseModel):

@@ -774,8 +774,17 @@ class LoopService:
                 and head.stage_revision_id is not None
             ):
                 rev = revisions[head.stage_revision_id]
+                narrative = dict(rev.narrative)
+                if node is WorkflowNode.GAP and any(
+                    card.get("kind") == CardKind.GAP.value
+                    for card in rev.card_snapshot
+                ):
+                    # The generated candidate is copied into the confirmed Gap Card.
+                    # Keep it in the Stage Revision for history, but avoid storing the
+                    # same logical Gap twice in the assembled Spec Version document.
+                    narrative.pop("candidate", None)
                 nodes[node.value] = {
                     "card_snapshot": rev.card_snapshot,
-                    "narrative": rev.narrative,
+                    "narrative": narrative,
                 }
         return {"nodes": nodes}

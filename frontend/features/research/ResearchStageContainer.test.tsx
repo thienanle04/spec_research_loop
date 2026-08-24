@@ -222,6 +222,8 @@ describe("ResearchStageContainer", () => {
         counter_evidence_candidate_count: 5,
         counter_evidence_analyzed_count: 5,
         counter_evidence_outcome: "no_direct_counter_evidence",
+        counter_evidence_assessment: "No direct counter-evidence was found.",
+        counter_evidence_results: [],
         completed_at: "2026-08-24T00:00:00Z",
         complete: true,
       },

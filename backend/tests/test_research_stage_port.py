@@ -139,57 +139,16 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
         body={
             "statement": "Claim-level feedback remains underexplored.",
             "supporting_citation_keys": ["opro-2023"],
-            "status": "proposed",
+            "status": "insufficient_evidence",
         },
         expected_version=gap_draft["version"],
     )
     assert incomplete_gap.status_code == 201, incomplete_gap.text
-    blocked = await client.post(
-        f"/api/loop/sessions/{session_id}/confirm",
-        json={
-            "node": "gap",
-            "expected_version": incomplete_gap.json()["version"],
-        },
-    )
-    assert blocked.status_code == 409
-    assert blocked.json()["code"] == "gap_evidence_not_ready"
-
-    gap_card = await client.patch(
-        f"/api/loop/sessions/{session_id}/cards/{incomplete_gap.json()['id']}",
-        json={
-            "body": {
-                "statement": "Claim-level feedback remains underexplored.",
-                "supporting_citation_keys": ["opro-2023"],
-                "status": "candidate",
-                "search_audit": {
-                    "related_work_queries": ["claim verification"],
-                    "counter_evidence_queries": ["claim verification competing methods"],
-                    "providers": ["fixture"],
-                    "related_work_candidate_count": 1,
-                    "related_work_analyzed_count": 1,
-                    "counter_evidence_candidate_count": 1,
-                    "counter_evidence_analyzed_count": 1,
-                    "counter_evidence_outcome": "no_direct_counter_evidence",
-                    "completed_at": "2026-08-24T00:00:00Z",
-                    "complete": True,
-                },
-                "evidence_check": {
-                    "verified_citation_keys": ["opro-2023"],
-                    "grounded_citation_keys": ["opro-2023"],
-                    "eligible_citation_keys": ["opro-2023"],
-                    "ready": True,
-                    "messages": [],
-                },
-            },
-            "expected_version": incomplete_gap.json()["version"],
-        },
-    )
-    assert gap_card.status_code == 200, gap_card.text
     gap_confirmed = await _confirm(
         client,
         session_id,
         "gap",
-        gap_card.json()["version"],
+        incomplete_gap.json()["version"],
     )
 
     async with factory() as db:

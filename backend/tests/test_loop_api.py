@@ -947,3 +947,12 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     assert payload["valid_spec_version_id"] == payload["produced_spec_version"]["id"]
     assert "idea_interpretation" in payload["produced_spec_version"]["document"]["nodes"]
     assert "feasibility" in payload["produced_spec_version"]["document"]["nodes"]
+    gap_document = payload["produced_spec_version"]["document"]["nodes"]["gap"]
+    assert "candidate" not in gap_document["narrative"]
+    assert gap_document["card_snapshot"] == [
+        {
+            "id": card.json()["id"],
+            "kind": "gap",
+            "body": candidate,
+        }
+    ]

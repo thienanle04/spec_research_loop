@@ -102,6 +102,7 @@ class FakeLlmPort:
             citations = payload.get("citations", [])
             related_work = payload.get("related_work", [])
             keys = [item["citation_key"] for item in citations]
+            counter_keys = payload.get("required_counter_evidence_keys", [])
             return json.dumps(
                 {
                     "prior_work": "Prior systems optimize outputs or prompts using aggregate feedback.",
@@ -112,6 +113,7 @@ class FakeLlmPort:
                     "importance": "Localized feedback can make optimization more reliable.",
                     "testability": "Compare unsupported-claim rates on held-out sources.",
                     "covered_citation_keys": keys,
+                    "addressed_counter_evidence_keys": counter_keys,
                 }
             )
         if "research-gap-synthesis" in system:
@@ -137,6 +139,18 @@ class FakeLlmPort:
                     ),
                     "covered_result_keys": [
                         item["result_key"] for item in results if item.get("result_key")
+                    ],
+                    "findings": [
+                        {
+                            "result_key": item["result_key"],
+                            "impact": "no_direct_counter_evidence",
+                            "rationale": (
+                                "The supplied metadata does not directly resolve the "
+                                "provisional limitation."
+                            ),
+                        }
+                        for item in results
+                        if item.get("result_key")
                     ],
                 }
             )
