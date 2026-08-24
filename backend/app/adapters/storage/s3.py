@@ -1,10 +1,12 @@
 """S3-compatible object storage adapter (MinIO / R2 / S3)."""
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 import aioboto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 from app.core.config import get_settings
 from app.ports.storage import ObjectStoragePort
@@ -33,7 +35,10 @@ class S3ObjectStorage(ObjectStoragePort):
         async with self._client() as client:
             try:
                 await client.head_bucket(Bucket=settings.s3_bucket)
-            except Exception:
+            except ClientError as exc:
+                error_code = str(exc.response.get("Error", {}).get("Code", ""))
+                if error_code not in {"404", "NoSuchBucket", "NotFound"}:
+                    raise
                 await client.create_bucket(Bucket=settings.s3_bucket)
 
     async def put_bytes(self, *, key: str, data: bytes, content_type: str) -> str:

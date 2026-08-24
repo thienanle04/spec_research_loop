@@ -9,8 +9,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
-  useCreateCardApiLoopSessionsSessionIdCardsPost,
   useGenerateContributionDirectionsApiSpecSessionsSessionIdContributionDirectionsGeneratePost,
+  useReplaceCardsApiLoopSessionsSessionIdCardsPut,
 } from "@/lib/api/generated/endpoints";
 import {
   CardKind,
@@ -87,7 +87,7 @@ export function ContributionStageContainer({
   const queryClient = useQueryClient();
   const { queue, status } = useLoopSessionSave();
   const generateDirections = useGenerateContributionDirectionsApiSpecSessionsSessionIdContributionDirectionsGeneratePost();
-  const createCard = useCreateCardApiLoopSessionsSessionIdCardsPost();
+  const replaceCards = useReplaceCardsApiLoopSessionsSessionIdCardsPut();
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
   const contributionCards = session.cards.filter((item) => item.kind === CardKind.contribution);
   const restored = savedSelection(contributionCards);
@@ -107,13 +107,17 @@ export function ContributionStageContainer({
 
   useEffect(() => {
     setDirections(directionsFrom(session.working_draft_narrative));
-    const saved = savedSelection(contributionCards);
-    if (contributionCards.length === 0) return;
+  }, [session.working_draft_narrative]);
+
+  useEffect(() => {
+    const cards = session.cards.filter((item) => item.kind === CardKind.contribution);
+    if (cards.length === 0) return;
+    const saved = savedSelection(cards);
     setSelectedId(saved.selectedId);
     setPrimaryId(saved.primaryId);
     setSecondaryIds(saved.secondaryIds);
     setOtherText(saved.otherText);
-  }, [session.cards, session.working_draft_narrative]);
+  }, [session.cards]);
 
   useEffect(() => {
     onRunningChange?.(running);
@@ -148,6 +152,10 @@ export function ContributionStageContainer({
       );
       if (response.status !== 200) throw new Error("Could not generate contribution directions");
       setDirections(response.data.directions);
+      setSelectedId(null);
+      setPrimaryId(null);
+      setSecondaryIds([]);
+      setOtherText("");
       updateSession((current) => ({
         ...current,
         version: response.data.version,
@@ -185,33 +193,25 @@ export function ContributionStageContainer({
   async function saveSelection() {
     setError(null);
     try {
-      for (const body of saveBodies) {
-        const response = await queue.enqueue(() =>
-          createCard.mutateAsync({
-            sessionId,
-            data: {
-              kind: CardKind.contribution,
-              body,
-              expected_version: currentSession().version,
-            },
-          }),
-        );
-        if (response.status !== 201) throw new Error("Could not save the Contribution Card");
-        updateSession((current) => ({
-          ...current,
-          version: response.data.version,
-          cards: [
-            ...current.cards,
-            {
-              id: response.data.id,
-              kind: response.data.kind,
-              body: response.data.body,
-              created_at: response.data.created_at,
-              updated_at: response.data.updated_at,
-            },
-          ],
-        }));
-      }
+      const response = await queue.enqueue(() =>
+        replaceCards.mutateAsync({
+          sessionId,
+          data: {
+            kind: CardKind.contribution,
+            bodies: saveBodies,
+            expected_version: currentSession().version,
+          },
+        }),
+      );
+      if (response.status !== 200) throw new Error("Could not save the Contribution Cards");
+      updateSession((current) => ({
+        ...current,
+        version: response.data.version,
+        cards: [
+          ...current.cards.filter((card) => card.kind !== CardKind.contribution),
+          ...response.data.cards,
+        ],
+      }));
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }

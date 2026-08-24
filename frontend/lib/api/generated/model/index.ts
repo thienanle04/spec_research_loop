@@ -40,7 +40,7 @@ export * from './healthApiIdentityHealthGet200';
 export * from './healthApiJudgementHealthGet200';
 export * from './healthApiLoopHealthGet200';
 export * from './healthApiResearchHealthGet200';
-export * from './healthApiSpecSpecHealthGet200';
+export * from './healthApiSpecHealthGet200';
 export * from './hTTPValidationError';
 export * from './loginRequest';
 export * from './loopSessionResponse';

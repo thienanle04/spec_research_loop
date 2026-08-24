@@ -33,6 +33,17 @@ class ScholarlyRecord:
 
 
 @dataclass(slots=True)
+class DocumentText:
+    """Normalized scholarly text ready for S3 persistence and passage retrieval."""
+
+    text: str
+    source_url: str | None = None
+    source_kind: str = "abstract"
+    original_content_type: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class VerificationResult:
     status: VerificationStatus
     messages: list[str] = field(default_factory=list)
@@ -67,7 +78,61 @@ class ScholarlySourcePort(Protocol):
 
 
 @runtime_checkable
+class MultiQueryScholarlySourcePort(Protocol):
+    async def search_many(
+        self,
+        *,
+        queries: list[str],
+        preferences: SourcePreferences | None = None,
+        limit: int = 10,
+    ) -> list[ScholarlyRecord]:
+        """Search several logical queries using a provider-efficient request plan."""
+        ...
+
+
+@runtime_checkable
+class BatchScholarlySourcePort(Protocol):
+    async def get_sources(
+        self,
+        *,
+        identifiers: list[str],
+    ) -> list[ScholarlyRecord | None]:
+        """Resolve multiple identifiers while preserving the input order."""
+        ...
+
+
+@runtime_checkable
+class CitationGraphPort(Protocol):
+    async def expand_related(
+        self,
+        *,
+        seeds: list[ScholarlyRecord],
+        limit: int = 20,
+    ) -> list[ScholarlyRecord]:
+        """Expand seed papers through a provider's related-paper graph."""
+        ...
+
+
+@runtime_checkable
+class DocumentTextPort(Protocol):
+    async def fetch_text(self, *, record: ScholarlyRecord) -> DocumentText | None:
+        """Fetch and normalize the best available text for one scholarly record."""
+        ...
+
+
+@runtime_checkable
 class CitationVerifier(Protocol):
     async def verify(self, *, citation: ScholarlyRecord) -> VerificationResult:
         """Verify Citation identity and metadata against a source."""
+        ...
+
+
+@runtime_checkable
+class BatchCitationVerifier(Protocol):
+    async def verify_many(
+        self,
+        *,
+        citations: list[ScholarlyRecord],
+    ) -> list[VerificationResult]:
+        """Verify multiple Citations in one provider operation when supported."""
         ...

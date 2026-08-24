@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
-  useGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost,
-  useCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost,
+  getGetSessionApiLoopSessionsSessionIdGetQueryKey,
+  useGenerateExperimentApiSpecSessionsSessionIdExperimentPlanGeneratePost,
+  useCheckFeasibilityApiSpecSessionsSessionIdFeasibilityCheckPost,
   usePatchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatch,
 } from "@/lib/api/generated/endpoints";
 import {
@@ -18,8 +19,11 @@ import {
   WorkflowNode,
 } from "@/lib/api/generated/model";
 import { useLoopSessionSave } from "../loop/loop-session-save";
-import { FormattedText } from "../loop/WorkingDraftNarrativeEditor";
-import { Target, Activity, FlaskConical, Beaker, Lightbulb, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Target, Activity, FlaskConical, Beaker, Lightbulb, AlertTriangle, CheckCircle2, ChevronRight } from "lucide-react";
+
+function FormattedText({ text }: { text: string }) {
+  return <span className="whitespace-pre-wrap">{text}</span>;
+}
 
 export function ExperimentPlanningStageContainer({
   sessionId,
@@ -33,10 +37,12 @@ export function ExperimentPlanningStageContainer({
   onConfirmabilityChange?: (confirmable: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const generateExperiment = useGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost();
-  const checkFeasibility = useCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost();
+  const generateExperiment = useGenerateExperimentApiSpecSessionsSessionIdExperimentPlanGeneratePost();
+  const checkFeasibility = useCheckFeasibilityApiSpecSessionsSessionIdFeasibilityCheckPost();
   const patchDraft = usePatchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatch();
-  const { queue, saving, sessionKey } = useLoopSessionSave();
+  const { queue, status } = useLoopSessionSave();
+  const saving = status === "saving";
+  const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const [error, setError] = useState<string | null>(null);
   

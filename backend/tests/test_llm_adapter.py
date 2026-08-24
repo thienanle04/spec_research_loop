@@ -1,9 +1,11 @@
 """Tests for the live LLM adapter response contract without network access."""
 
+import json
 from typing import Self
 
 import httpx
 import pytest
+from pydantic import BaseModel
 
 from app.adapters.llm.fit_webui import (
     FitWebUiLlmPort,
@@ -15,8 +17,19 @@ from app.adapters.llm.fit_webui import (
     _response_text as fit_webui_response_text,
 )
 from app.core.config import get_settings
+from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.research.deps import get_research_llm
-from app.ports.llm import LlmProviderError
+from app.modules.spec.deps import FakeSpecLlmPort
+from app.modules.spec.schemas import (
+    FeasibilityReport,
+    GenerateClaimsResponse,
+    GenerateExperimentResponse,
+)
+from app.ports.llm import LlmPort, LlmProviderError
+
+
+class _StructuredResult(BaseModel):
+    value: str
 
 
 def test_fit_webui_response_text_reads_chat_completion() -> None:
@@ -166,3 +179,67 @@ def test_research_llm_binding_selects_fit_webui(
         assert isinstance(get_research_llm(), FitWebUiLlmPort)
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "adapter",
+    [
+        FakeLlmPort(responses={"structured": '{"value":"fake"}'}),
+        FitWebUiLlmPort(api_key="sk-test", default_model="Qwen3.6-27B"),
+    ],
+)
+async def test_research_llm_adapters_implement_port(
+    adapter: FakeLlmPort | FitWebUiLlmPort,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert isinstance(adapter, LlmPort)
+
+    if isinstance(adapter, FitWebUiLlmPort):
+        async def fake_complete(**_kwargs: object) -> str:
+            return '{"value":"live"}'
+
+        monkeypatch.setattr(adapter, "complete", fake_complete)
+        expected = "live"
+    else:
+        expected = "fake"
+
+    result = await adapter.complete_structured(
+        system="structured",
+        prompt="{}",
+        schema=_StructuredResult,
+    )
+    assert result == _StructuredResult(value=expected)
+
+
+@pytest.mark.asyncio
+async def test_fake_spec_llm_implements_port() -> None:
+    adapter = FakeSpecLlmPort()
+
+    assert isinstance(adapter, LlmPort)
+    chunks = [
+        chunk
+        async for chunk in adapter.stream(system="directions", prompt="{}")
+    ]
+    assert len(chunks) == 1
+    assert len(json.loads(chunks[0])) == 3
+
+    claims = await adapter.complete_structured(
+        system="claims",
+        prompt="{}",
+        schema=GenerateClaimsResponse,
+    )
+    experiment = await adapter.complete_structured(
+        system="experiment",
+        prompt="{}",
+        schema=GenerateExperimentResponse,
+    )
+    feasibility = await adapter.complete_structured(
+        system="feasibility",
+        prompt="{}",
+        schema=FeasibilityReport,
+    )
+
+    assert claims.cards[0].id == "claim-1"
+    assert experiment.plan.metrics == ["Unsupported claim rate"]
+    assert feasibility.is_feasible is True

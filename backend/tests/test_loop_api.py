@@ -1,5 +1,6 @@
 """HTTP seam tests for /api/loop (ADR 0020)."""
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -880,12 +881,57 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     session_id = created["id"]
     interpreted = await _confirm(client, session_id, "idea_interpretation", created["version"])
     decomposed = await _confirm(client, session_id, "idea_decomposition", interpreted["version"])
-    expected_version = decomposed["version"]
+    inputs = await _prepare(client, session_id, "related_work", decomposed["version"])
+    inputs_confirmed = await _confirm(
+        client, session_id, "research_inputs", inputs["version"]
+    )
+    related = await _prepare(
+        client, session_id, "related_work", inputs_confirmed["version"]
+    )
+    related_generation = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/related_work/generate",
+        json={"expected_version": related["version"], "max_results": 5},
+    )
+    related_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in related_generation.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    related_confirmed = await _confirm(
+        client, session_id, "related_work", related_events[-1]["version"]
+    )
+    gap = await _prepare(
+        client, session_id, "related_work", related_confirmed["version"]
+    )
+    gap_generation = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/gap/generate",
+        json={"expected_version": gap["version"]},
+    )
+    gap_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in gap_generation.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    candidate = next(
+        event["narrative"]["candidate"]
+        for event in gap_events
+        if event["type"] == "draft_patch"
+    )
+    card = await client.post(
+        f"/api/loop/sessions/{session_id}/cards",
+        json={
+            "kind": "gap",
+            "body": candidate,
+            "expected_version": gap_events[-1]["version"],
+        },
+    )
+    assert card.status_code == 201, card.text
+    gap_confirmed = await _confirm(
+        client, session_id, "gap", card.json()["version"]
+    )
+    expected_version = gap_confirmed["version"]
     for stage, node in (
-        ("related_work", "research_inputs"),
-        ("related_work", "related_work"),
-        ("related_work", "gap"),
-            ("related_work", "contribution"),
+        ("related_work", "contribution"),
         ("claims_evidence", "claims"),
         ("claims_evidence", "evidence"),
         ("experiment_planning", "experiment_plan"),

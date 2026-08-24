@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { getApiErrorMessage } from "@/lib/api/config";
+import { customFetch } from "@/lib/api/mutator";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
   getListCitationsApiResearchSessionsSessionIdCitationsGetQueryKey,
@@ -65,6 +66,7 @@ export function ResearchStageContainer({
   const [partialCitations, setPartialCitations] = useState<CitationResponse[]>([]);
   const [generatedGapCandidate, setGeneratedGapCandidate] = useState<GapCandidate | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [pinningCitationId, setPinningCitationId] = useState<string | null>(null);
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   useEffect(() => {
@@ -228,6 +230,28 @@ export function ResearchStageContainer({
     }
   }
 
+  async function toggleCitationPin(citation: CitationResponse) {
+    const pinned = Boolean((citation as CitationResponse & { pinned?: boolean }).pinned);
+    setPinningCitationId(citation.id);
+    setSaveError(null);
+    try {
+      await customFetch(
+        `/api/research/sessions/${sessionId}/citations/${citation.id}/selection`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ pinned: !pinned }),
+        },
+      );
+      await queryClient.invalidateQueries({
+        queryKey: getListCitationsApiResearchSessionsSessionIdCitationsGetQueryKey(sessionId),
+      });
+    } catch (error) {
+      setSaveError(getApiErrorMessage(error));
+    } finally {
+      setPinningCitationId(null);
+    }
+  }
+
   return (
     <ResearchStagePanel
       node={researchNode}
@@ -246,6 +270,8 @@ export function ResearchStageContainer({
       onInputsChange={handleInputsChange}
       onGenerate={() => void generate()}
       onAbort={stream.abort}
+      pinningCitationId={pinningCitationId}
+      onToggleCitationPin={(citation) => void toggleCitationPin(citation)}
       onSelectGap={selectGap}
     />
   );

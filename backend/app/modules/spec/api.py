@@ -1,4 +1,4 @@
-from typing import Annotated, Any
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -10,19 +10,19 @@ from app.modules.identity.deps import get_current_account
 from app.modules.identity.models import Account
 from app.modules.spec.deps import get_spec_llm
 from app.modules.spec.schemas import (
+    CheckFeasibilityRequest,
+    CheckFeasibilityResponse,
     ContributionDirectionsRequest,
     ContributionDirectionsResponse,
     GenerateClaimsRequest,
     GenerateClaimsResponse,
     GenerateExperimentRequest,
     GenerateExperimentResponse,
-    CheckFeasibilityRequest,
-    CheckFeasibilityResponse
 )
 from app.modules.spec.service import SpecService
 from app.ports.llm import LlmPort
 
-router = APIRouter(prefix="/spec", tags=["Spec Construction"])
+router = APIRouter(tags=["Spec Construction"])
 
 @router.get("/health")
 async def health() -> dict[str, str]:

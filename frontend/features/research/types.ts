@@ -17,7 +17,30 @@ export type ResearchInputs = {
 export type GapCandidate = {
   statement: string;
   supporting_citation_keys: string[];
-  status: "proposed";
+  status: "candidate" | "insufficient_evidence" | "proposed";
+  search_audit: {
+    related_work_queries: string[];
+    counter_evidence_queries: string[];
+    providers: string[];
+    related_work_candidate_count: number;
+    related_work_analyzed_count: number;
+    counter_evidence_candidate_count: number;
+    counter_evidence_analyzed_count: number;
+    counter_evidence_outcome:
+      | "no_direct_counter_evidence"
+      | "gap_narrowed"
+      | "gap_not_supported"
+      | "inconclusive";
+    completed_at: string | null;
+    complete: boolean;
+  };
+  evidence_check: {
+    verified_citation_keys: string[];
+    grounded_citation_keys: string[];
+    eligible_citation_keys: string[];
+    ready: boolean;
+    messages: string[];
+  };
 };
 
 export type ResearchStreamEvent =
@@ -44,6 +67,16 @@ function strings(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function nonnegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
 export function researchInputsFrom(value: Record<string, unknown>): ResearchInputs {
@@ -80,10 +113,44 @@ export function gapCandidateFrom(value: unknown): GapCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
   if (typeof item.statement !== "string") return null;
+  const audit = record(item.search_audit);
+  const evidence = record(item.evidence_check);
+  const rawStatus = item.status;
+  const status =
+    rawStatus === "candidate" || rawStatus === "insufficient_evidence" || rawStatus === "proposed"
+      ? rawStatus
+      : "insufficient_evidence";
+  const rawOutcome = audit.counter_evidence_outcome;
+  const counterEvidenceOutcome =
+    rawOutcome === "no_direct_counter_evidence" ||
+    rawOutcome === "gap_narrowed" ||
+    rawOutcome === "gap_not_supported" ||
+    rawOutcome === "inconclusive"
+      ? rawOutcome
+      : "inconclusive";
   return {
     statement: item.statement as string,
     supporting_citation_keys: strings(item.supporting_citation_keys),
-    status: "proposed",
+    status,
+    search_audit: {
+      related_work_queries: strings(audit.related_work_queries),
+      counter_evidence_queries: strings(audit.counter_evidence_queries),
+      providers: strings(audit.providers),
+      related_work_candidate_count: nonnegativeNumber(audit.related_work_candidate_count),
+      related_work_analyzed_count: nonnegativeNumber(audit.related_work_analyzed_count),
+      counter_evidence_candidate_count: nonnegativeNumber(audit.counter_evidence_candidate_count),
+      counter_evidence_analyzed_count: nonnegativeNumber(audit.counter_evidence_analyzed_count),
+      counter_evidence_outcome: counterEvidenceOutcome,
+      completed_at: typeof audit.completed_at === "string" ? audit.completed_at : null,
+      complete: audit.complete === true,
+    },
+    evidence_check: {
+      verified_citation_keys: strings(evidence.verified_citation_keys),
+      grounded_citation_keys: strings(evidence.grounded_citation_keys),
+      eligible_citation_keys: strings(evidence.eligible_citation_keys),
+      ready: evidence.ready === true,
+      messages: strings(evidence.messages),
+    },
   };
 }
 
@@ -92,5 +159,15 @@ export function gapCandidateFromNarrative(value: Record<string, unknown>): GapCa
 }
 
 export function isCompleteGap(candidate: GapCandidate | null): boolean {
-  return Boolean(candidate?.statement.trim());
+  if (!candidate?.statement.trim() || candidate.status !== "candidate") return false;
+  const supporting = new Set(candidate.supporting_citation_keys);
+  const eligible = new Set(candidate.evidence_check.eligible_citation_keys);
+  return (
+    supporting.size > 0 &&
+    [...supporting].every((key) => eligible.has(key)) &&
+    candidate.evidence_check.ready &&
+    candidate.search_audit.complete &&
+    candidate.search_audit.counter_evidence_outcome !== "gap_not_supported" &&
+    candidate.search_audit.counter_evidence_outcome !== "inconclusive"
+  );
 }

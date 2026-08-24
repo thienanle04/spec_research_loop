@@ -212,7 +212,26 @@ describe("ResearchStageContainer", () => {
     const generated = {
       statement: "Original generated Gap.",
       supporting_citation_keys: ["smith-2025"],
-      status: "proposed",
+      status: "candidate",
+      search_audit: {
+        related_work_queries: ["claim verification"],
+        counter_evidence_queries: ["claim verification competing methods"],
+        providers: ["fixture"],
+        related_work_candidate_count: 5,
+        related_work_analyzed_count: 5,
+        counter_evidence_candidate_count: 5,
+        counter_evidence_analyzed_count: 5,
+        counter_evidence_outcome: "no_direct_counter_evidence",
+        completed_at: "2026-08-24T00:00:00Z",
+        complete: true,
+      },
+      evidence_check: {
+        verified_citation_keys: ["smith-2025"],
+        grounded_citation_keys: ["smith-2025"],
+        eligible_citation_keys: ["smith-2025"],
+        ready: true,
+        messages: [],
+      },
     };
     const saved = { ...generated, statement: "Edited and saved Gap." };
 

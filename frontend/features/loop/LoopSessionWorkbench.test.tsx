@@ -974,6 +974,58 @@ describe("LoopSessionWorkbench", () => {
     });
   });
 
+  it("continues from reconfirmed Research Inputs to current Related Work", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    const currentHeads = heads({
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.empty,
+    });
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 8,
+          working_draft_node: WorkflowNode.research_inputs,
+          node_heads: currentHeads,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 9,
+      working_draft_node: WorkflowNode.research_inputs,
+      node_heads: currentHeads,
+    });
+    const reopenedRelatedWork = session({
+      version: 10,
+      working_draft_node: WorkflowNode.related_work,
+      node_heads: currentHeads,
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    const prepareMutate = vi.fn();
+    const patchMutate = vi
+      .fn()
+      .mockResolvedValue({ status: 200, data: reopenedRelatedWork });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
+    patchHook.mockReturnValue({ mutateAsync: patchMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(patchMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { node: WorkflowNode.related_work, expected_version: 9 },
+    });
+    expect(prepareMutate).not.toHaveBeenCalled();
+  });
+
   it("does not offer Continue after confirming Contribution Direction", async () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     getHook.mockReturnValue({

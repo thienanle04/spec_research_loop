@@ -90,11 +90,34 @@ async def test_related_work_stream_persists_citations_and_findings(
 
     listed = await client.get(f"/api/research/sessions/{session_id}/citations")
     assert len(listed.json()) == 2
+    assert all(item["text_object_key"] for item in listed.json())
+    assert all(item["text_checksum"] for item in listed.json())
+    assert all(item["text_source_kind"] == "abstract" for item in listed.json())
     listed_findings = await client.get(f"/api/research/sessions/{session_id}/findings")
     assert listed_findings.status_code == 200
     assert len(listed_findings.json()) == 2
     assert all(item["citation_id"] for item in listed_findings.json())
     assert all(item["supporting_passage"] for item in listed_findings.json())
+    assert all(item["source_object_key"] for item in listed_findings.json())
+
+    pinned_ids = {item["id"] for item in listed.json()}
+    for pinned_id in pinned_ids:
+        pinned = await client.patch(
+            f"/api/research/sessions/{session_id}/citations/{pinned_id}/selection",
+            json={"pinned": True},
+        )
+        assert pinned.status_code == 200, pinned.text
+        assert pinned.json()["pinned"] is True
+
+    rerun = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/related_work/generate",
+        json={"expected_version": events[-1]["version"], "max_results": 1},
+    )
+    assert rerun.status_code == 200, rerun.text
+    after_rerun = await client.get(f"/api/research/sessions/{session_id}/citations")
+    assert len(after_rerun.json()) == 2
+    assert {item["id"] for item in after_rerun.json()} == pinned_ids
+    assert all(item["pinned"] for item in after_rerun.json())
     async with get_session_factory()() as db:
         findings = list(
             (
@@ -144,6 +167,11 @@ async def test_gap_stream_uses_confirmed_citation_support(client: AsyncClient) -
     candidate = patch["narrative"]["candidate"]
     assert candidate["statement"]
     assert candidate["supporting_citation_keys"]
+    assert candidate["status"] == "candidate"
+    assert candidate["search_audit"]["complete"] is True
+    assert len(candidate["search_audit"]["related_work_queries"]) >= 4
+    assert len(candidate["search_audit"]["counter_evidence_queries"]) >= 3
+    assert candidate["evidence_check"]["ready"] is True
     assert "prior_work" not in candidate
     assert events[-1]["type"] == "done"
 

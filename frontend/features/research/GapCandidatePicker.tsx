@@ -31,12 +31,14 @@ export function GapCandidatePicker({ candidate, selectedGap, disabled, onSelect 
     );
   }
 
+  const evidenceReady = isCompleteGap(editing);
+
   return (
     <section aria-label="Gap Candidate" className="grid gap-4">
       <div>
         <h3 className="font-medium">Gap Candidate</h3>
         <p className="text-sm text-muted-foreground">
-          This concise candidate synthesizes all confirmed Related Work. You can edit the summary before saving it.
+          This candidate synthesizes the top five Related Work results and a separate counter-evidence search. You can edit the summary without changing its audit.
         </p>
       </div>
       <div className="grid gap-4 rounded-md border border-navy p-4">
@@ -49,10 +51,23 @@ export function GapCandidatePicker({ candidate, selectedGap, disabled, onSelect 
             onChange={(event) => setEditing({ ...editing, statement: event.target.value })}
           />
         </label>
+        <div className="grid gap-1 rounded-md bg-muted/50 p-3 text-sm" role="status">
+          <p className="font-medium">
+            {evidenceReady ? "Evidence-ready Gap Candidate" : "Insufficient evidence"}
+          </p>
+          <p className="text-muted-foreground">
+            {editing.search_audit.related_work_analyzed_count} Related Work result(s) and {editing.search_audit.counter_evidence_analyzed_count} counter-evidence result(s) analyzed.
+          </p>
+          {!evidenceReady ? (
+            <p className="text-pending">
+              Saving is disabled until verified Citations, grounded passages, and a conclusive search audit are available.
+            </p>
+          ) : null}
+        </div>
         <Button
           type="button"
           className="justify-self-start"
-          disabled={disabled || !isCompleteGap(editing)}
+          disabled={disabled || !evidenceReady}
           onClick={() => void onSelect(editing)}
         >
           {selectedGap ? "Save Gap Candidate changes" : "Save Gap Candidate"}

@@ -27,6 +27,8 @@ type Props = {
   onInputsChange: (inputs: ResearchInputs) => void;
   onGenerate: () => void;
   onAbort: () => void;
+  pinningCitationId?: string | null;
+  onToggleCitationPin?: (citation: CitationResponse) => void;
   onSelectGap: (candidate: GapCandidate) => Promise<void> | void;
 };
 
@@ -89,7 +91,12 @@ export function ResearchStagePanel(props: Props) {
             onAbort={props.onAbort}
           />
           {props.saveError ? <p role="alert" className="text-sm text-destructive">{props.saveError}</p> : null}
-          <RelatedWorkMatrix citations={props.citations} findings={props.findings} />
+          <RelatedWorkMatrix
+            citations={props.citations}
+            findings={props.findings}
+            pinningCitationId={props.pinningCitationId}
+            onToggleCitationPin={props.onToggleCitationPin}
+          />
         </CardContent>
       </Card>
     );

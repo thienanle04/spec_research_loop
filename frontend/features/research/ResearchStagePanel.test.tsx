@@ -39,7 +39,26 @@ const finding: RelatedWorkFindingResponse = {
 const gap: GapCandidate = {
   statement: "Research loops need multi-benchmark verification.",
   supporting_citation_keys: [citation.citation_key],
-  status: "proposed",
+  status: "candidate",
+  search_audit: {
+    related_work_queries: ["research loop verification"],
+    counter_evidence_queries: ["research loop competing methods"],
+    providers: ["fixture"],
+    related_work_candidate_count: 8,
+    related_work_analyzed_count: 5,
+    counter_evidence_candidate_count: 7,
+    counter_evidence_analyzed_count: 5,
+    counter_evidence_outcome: "no_direct_counter_evidence",
+    completed_at: "2026-08-24T00:00:00Z",
+    complete: true,
+  },
+  evidence_check: {
+    verified_citation_keys: [citation.citation_key],
+    grounded_citation_keys: [citation.citation_key],
+    eligible_citation_keys: [citation.citation_key],
+    ready: true,
+    messages: [],
+  },
 };
 
 function props(node: WorkflowNode) {
@@ -149,5 +168,26 @@ describe("ResearchStagePanel", () => {
     expect(panel.onGenerate).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: "Save Gap Candidate" }));
     expect(panel.onSelectGap).toHaveBeenCalledWith(gap);
+  });
+
+  it("blocks saving when the Gap search audit is inconclusive", () => {
+    const insufficient: GapCandidate = {
+      ...gap,
+      status: "insufficient_evidence",
+      search_audit: {
+        ...gap.search_audit,
+        counter_evidence_outcome: "inconclusive",
+      },
+    };
+
+    render(
+      <ResearchStagePanel
+        {...props(WorkflowNode.gap)}
+        gapCandidate={insufficient}
+      />,
+    );
+
+    expect(screen.getByText("Insufficient evidence")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Gap Candidate" })).toBeDisabled();
   });
 });

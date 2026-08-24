@@ -98,6 +98,7 @@ function newerSession(
 type ContinueTarget = {
   stage: LoopStage;
   prepare: boolean;
+  node?: WorkflowNode;
 };
 
 function continueTargetAfterConfirm(
@@ -105,6 +106,14 @@ function continueTargetAfterConfirm(
   confirmedNode: WorkflowNode,
 ): ContinueTarget | null {
   const currentStage = stageForWorkflowNode(confirmedNode);
+  const currentStageNodes = catalogStage(currentStage).nodes as readonly WorkflowNode[];
+  const confirmedIndex = currentStageNodes.indexOf(confirmedNode);
+  const nextNode = currentStageNodes[confirmedIndex + 1];
+  const nextNodeHead = next.node_heads.find((head) => head.node === nextNode);
+  if (nextNode && nextNodeHead?.status === NodeHeadStatus.current) {
+    return { stage: currentStage, prepare: false, node: nextNode };
+  }
+
   const currentActions = deriveStageActions({
     stage: currentStage,
     nodeHeads: next.node_heads,
@@ -401,6 +410,17 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     setContinueTarget(null);
     setConfirmationMessage(null);
     setContinueWarning(null);
+    if (target.node) {
+      void applyTransition((version) =>
+        patchWorkingDraft.mutateAsync({
+          sessionId,
+          data: { node: target.node, expected_version: version },
+        }),
+      ).then((patched) => {
+        if (patched) router.replace(`/sessions/${sessionId}?stage=${target.stage}`);
+      });
+      return;
+    }
     if (!target.prepare) {
       router.replace(`/sessions/${sessionId}?stage=${target.stage}`);
       return;

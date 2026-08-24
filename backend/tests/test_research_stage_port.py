@@ -75,6 +75,16 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
         "related_work",
         inputs_confirmed["version"],
     )
+    related_search = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=related_draft["version"],
+        narrative={
+            "search_queries": ["claim verification"],
+            "candidate_count": 1,
+            "citation_count": 1,
+        },
+    )
 
     citation_id: UUID
     factory = get_session_factory()
@@ -113,7 +123,7 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
         client,
         session_id,
         "related_work",
-        related_draft["version"],
+        related_search.json()["version"],
     )
     first_revision_id = _head(related_confirmed, "related_work")["stage_revision_id"]
     gap_draft = await _prepare(
@@ -122,7 +132,7 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
         "related_work",
         related_confirmed["version"],
     )
-    gap_card = await _create_card(
+    incomplete_gap = await _create_card(
         client,
         session_id,
         kind="gap",
@@ -133,7 +143,48 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
         },
         expected_version=gap_draft["version"],
     )
-    assert gap_card.status_code == 201, gap_card.text
+    assert incomplete_gap.status_code == 201, incomplete_gap.text
+    blocked = await client.post(
+        f"/api/loop/sessions/{session_id}/confirm",
+        json={
+            "node": "gap",
+            "expected_version": incomplete_gap.json()["version"],
+        },
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "gap_evidence_not_ready"
+
+    gap_card = await client.patch(
+        f"/api/loop/sessions/{session_id}/cards/{incomplete_gap.json()['id']}",
+        json={
+            "body": {
+                "statement": "Claim-level feedback remains underexplored.",
+                "supporting_citation_keys": ["opro-2023"],
+                "status": "candidate",
+                "search_audit": {
+                    "related_work_queries": ["claim verification"],
+                    "counter_evidence_queries": ["claim verification competing methods"],
+                    "providers": ["fixture"],
+                    "related_work_candidate_count": 1,
+                    "related_work_analyzed_count": 1,
+                    "counter_evidence_candidate_count": 1,
+                    "counter_evidence_analyzed_count": 1,
+                    "counter_evidence_outcome": "no_direct_counter_evidence",
+                    "completed_at": "2026-08-24T00:00:00Z",
+                    "complete": True,
+                },
+                "evidence_check": {
+                    "verified_citation_keys": ["opro-2023"],
+                    "grounded_citation_keys": ["opro-2023"],
+                    "eligible_citation_keys": ["opro-2023"],
+                    "ready": True,
+                    "messages": [],
+                },
+            },
+            "expected_version": incomplete_gap.json()["version"],
+        },
+    )
+    assert gap_card.status_code == 200, gap_card.text
     gap_confirmed = await _confirm(
         client,
         session_id,

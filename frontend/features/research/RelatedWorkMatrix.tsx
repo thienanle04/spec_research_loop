@@ -1,10 +1,19 @@
-import { FileText } from "lucide-react";
+import { FileText, Pin, PinOff } from "lucide-react";
 
 import type { CitationResponse, RelatedWorkFindingResponse } from "@/lib/api/generated/model";
 
 type Props = {
   citations: CitationResponse[];
   findings: RelatedWorkFindingResponse[];
+  pinningCitationId?: string | null;
+  onToggleCitationPin?: (citation: CitationResponse) => void;
+};
+
+type RetrievalCitation = CitationResponse & {
+  pinned?: boolean;
+  retrieval_score?: number | null;
+  text_source_kind?: string | null;
+  text_char_count?: number | null;
 };
 
 type EvidenceKey = "what_was_done" | "method_or_feedback" | "limitation";
@@ -36,7 +45,12 @@ function EvidenceSupport({ evidence }: { evidence: SourceEvidence }) {
   );
 }
 
-export function RelatedWorkMatrix({ citations, findings }: Props) {
+export function RelatedWorkMatrix({
+  citations,
+  findings,
+  pinningCitationId,
+  onToggleCitationPin,
+}: Props) {
   const citationsById = new Map(citations.map((citation) => [citation.id, citation]));
 
   return (
@@ -68,6 +82,7 @@ export function RelatedWorkMatrix({ citations, findings }: Props) {
                 const citation = citationsById.get(finding.citation_id);
                 const href = sourceHref(citation);
                 const title = citation?.title ?? "Citation not found";
+                const retrieval = citation as RetrievalCitation | undefined;
                 return (
                   <tr key={finding.id} className="border-t align-top">
                     <td className="border-r p-3">
@@ -86,6 +101,35 @@ export function RelatedWorkMatrix({ citations, findings }: Props) {
                       <p className="mt-1 text-xs text-muted-foreground">
                         {citation?.year ? `(${citation.year})` : citation?.citation_key}
                       </p>
+                      {retrieval ? (
+                        <div className="mt-2 flex flex-wrap gap-1 text-[11px] text-muted-foreground">
+                          {typeof retrieval.retrieval_score === "number" ? (
+                            <span className="rounded bg-muted px-1.5 py-0.5">
+                              Relevance {Math.round(retrieval.retrieval_score * 100)}%
+                            </span>
+                          ) : null}
+                          {retrieval.text_source_kind ? (
+                            <span className="rounded bg-muted px-1.5 py-0.5">
+                              {retrieval.text_source_kind.replaceAll("_", " ")}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {citation && onToggleCitationPin ? (
+                        <button
+                          type="button"
+                          className="mt-2 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                          disabled={pinningCitationId === citation.id}
+                          onClick={() => onToggleCitationPin(citation)}
+                        >
+                          {retrieval?.pinned ? (
+                            <PinOff aria-hidden="true" className="size-3" />
+                          ) : (
+                            <Pin aria-hidden="true" className="size-3" />
+                          )}
+                          {retrieval?.pinned ? "Unpin" : "Keep on rerun"}
+                        </button>
+                      ) : null}
                     </td>
                     <td className="border-r p-3 leading-6">
                       {finding.what_was_done}

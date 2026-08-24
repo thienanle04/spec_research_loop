@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -99,6 +100,21 @@ class Citation(Base):
     provider_source_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
     retrieved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    pinned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    retrieval_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    text_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text_source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text_source_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    text_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    text_char_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    text_retrieved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     verification_status: Mapped[str] = mapped_column(
@@ -197,6 +213,8 @@ class RelatedWorkFinding(Base):
     limitation: Mapped[str] = mapped_column(Text, nullable=False)
     relevance: Mapped[str | None] = mapped_column(Text, nullable=True)
     supporting_passage: Mapped[str] = mapped_column(Text, nullable=False)
+    source_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_location: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     grounding_status: Mapped[str] = mapped_column(

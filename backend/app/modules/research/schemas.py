@@ -22,7 +22,17 @@ class GroundingStatus(StrEnum):
 
 
 class GapStatus(StrEnum):
+    CANDIDATE = "candidate"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    # Backward-compatible read support for Gap Cards created before search audits.
     PROPOSED = "proposed"
+
+
+class CounterEvidenceOutcome(StrEnum):
+    NO_DIRECT_COUNTER_EVIDENCE = "no_direct_counter_evidence"
+    GAP_NARROWED = "gap_narrowed"
+    GAP_NOT_SUPPORTED = "gap_not_supported"
+    INCONCLUSIVE = "inconclusive"
 
 
 class ResearchNode(StrEnum):
@@ -55,6 +65,15 @@ class CitationBase(BaseModel):
     provider_source_id: str | None = Field(default=None, max_length=255)
     abstract: str | None = None
     retrieved_at: datetime | None = None
+    is_active: bool = True
+    pinned: bool = False
+    retrieval_score: float | None = Field(default=None, ge=0, le=1)
+    text_object_key: str | None = None
+    text_source_url: str | None = None
+    text_source_kind: str | None = None
+    text_checksum: str | None = None
+    text_char_count: int | None = Field(default=None, ge=0)
+    text_retrieved_at: datetime | None = None
     verification_status: VerificationStatus = VerificationStatus.PENDING
     metadata: dict = Field(
         default_factory=dict,
@@ -93,6 +112,8 @@ class RelatedWorkFindingBase(BaseModel):
     limitation: str = Field(min_length=1)
     relevance: str | None = None
     supporting_passage: str = Field(min_length=1)
+    source_object_key: str | None = None
+    source_location: str | None = None
     evidence: dict[str, SourceEvidence] = Field(default_factory=dict)
     confidence: float | None = Field(default=None, ge=0, le=1)
     grounding_status: GroundingStatus = GroundingStatus.PENDING
@@ -112,15 +133,62 @@ class RelatedWorkFindingResponse(RelatedWorkFindingBase):
     model_config = {"from_attributes": True}
 
 
+class GapSearchAudit(BaseModel):
+    related_work_queries: list[str] = Field(default_factory=list)
+    counter_evidence_queries: list[str] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
+    related_work_candidate_count: int = Field(default=0, ge=0)
+    related_work_analyzed_count: int = Field(default=0, ge=0, le=5)
+    counter_evidence_candidate_count: int = Field(default=0, ge=0)
+    counter_evidence_analyzed_count: int = Field(default=0, ge=0, le=5)
+    counter_evidence_outcome: CounterEvidenceOutcome = (
+        CounterEvidenceOutcome.INCONCLUSIVE
+    )
+    completed_at: datetime | None = None
+    complete: bool = False
+
+
+class GapEvidenceCheck(BaseModel):
+    verified_citation_keys: list[str] = Field(default_factory=list)
+    grounded_citation_keys: list[str] = Field(default_factory=list)
+    eligible_citation_keys: list[str] = Field(default_factory=list)
+    ready: bool = False
+    messages: list[str] = Field(default_factory=list)
+
+
 class GapCardBody(BaseModel):
     statement: str = Field(min_length=1)
     supporting_citation_keys: list[str] = Field(default_factory=list)
-    status: GapStatus = GapStatus.PROPOSED
+    status: GapStatus = GapStatus.INSUFFICIENT_EVIDENCE
+    search_audit: GapSearchAudit = Field(default_factory=GapSearchAudit)
+    evidence_check: GapEvidenceCheck = Field(default_factory=GapEvidenceCheck)
+
+    def is_confirmable(self) -> bool:
+        supporting = set(self.supporting_citation_keys)
+        eligible = set(self.evidence_check.eligible_citation_keys)
+        return (
+            self.status is GapStatus.CANDIDATE
+            and bool(supporting)
+            and supporting <= eligible
+            and self.evidence_check.ready
+            and self.search_audit.complete
+            and bool(self.search_audit.related_work_queries)
+            and bool(self.search_audit.counter_evidence_queries)
+            and self.search_audit.counter_evidence_outcome
+            not in {
+                CounterEvidenceOutcome.GAP_NOT_SUPPORTED,
+                CounterEvidenceOutcome.INCONCLUSIVE,
+            }
+        )
 
 
 class ResearchGenerateRequest(BaseModel):
     expected_version: int = Field(ge=1)
     max_results: int = Field(default=5, ge=1, le=5)
+
+
+class CitationSelectionUpdate(BaseModel):
+    pinned: bool
 
 
 class ProgressEvent(BaseModel):

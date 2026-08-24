@@ -320,19 +320,40 @@ class LoopService:
             account_id=account_id,
             expected_version=expected_version,
         )
-        existing = sorted(
+        remaining = sorted(
             (card for card in session.cards if card.kind_enum() == kind),
             key=lambda card: (card.created_at, str(card.id)),
         )
         saved_cards: list[Card] = []
-        for card, body in zip(existing, bodies, strict=False):
+        for body in bodies:
+            role = body.get("role")
+            direction_id = body.get("direction_id")
+            card = next(
+                (
+                    item
+                    for item in remaining
+                    if role is not None
+                    and item.body.get("role") == role
+                    and direction_id is not None
+                    and item.body.get("direction_id") == direction_id
+                ),
+                None,
+            )
+            if card is None and role is not None:
+                card = next(
+                    (item for item in remaining if item.body.get("role") == role),
+                    None,
+                )
+            if card is None and remaining:
+                card = remaining[0]
+            if card is None:
+                card = Card(session_id=session.id, kind=kind.value, body=body)
+                self._db.add(card)
+            else:
+                remaining.remove(card)
             card.body = body
             saved_cards.append(card)
-        for body in bodies[len(existing) :]:
-            card = Card(session_id=session.id, kind=kind.value, body=body)
-            self._db.add(card)
-            saved_cards.append(card)
-        for card in existing[len(bodies) :]:
+        for card in remaining:
             await self._db.delete(card)
         await self._db.commit()
         for card in saved_cards:

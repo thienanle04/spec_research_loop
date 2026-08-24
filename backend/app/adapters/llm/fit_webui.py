@@ -1,8 +1,10 @@
 """FIT@HCMUS WebUI OpenAI-compatible chat-completions adapter."""
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+from pydantic import TypeAdapter
 
 from app.ports.llm import LlmProviderError
 
@@ -24,6 +26,15 @@ class FitWebUiLlmPort:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
         self._max_tokens = max_tokens
+
+    async def stream(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        model: str | None = None,
+    ) -> AsyncIterator[str]:
+        yield await self.complete(system=system, prompt=prompt, model=model)
 
     async def complete(
         self,
@@ -64,6 +75,17 @@ class FitWebUiLlmPort:
             ) from exc
         _raise_for_status(response)
         return _response_text(response.json())
+
+    async def complete_structured[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        model: str | None = None,
+    ) -> T:
+        response = await self.complete(system=system, prompt=prompt, model=model)
+        return TypeAdapter(schema).validate_json(response)
 
 
 def _raise_for_status(response: httpx.Response) -> None:

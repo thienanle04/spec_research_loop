@@ -109,6 +109,16 @@ def _http_error_message(status_code: int) -> str:
 def _to_record(item: dict) -> ScholarlyRecord:
     location = item.get("primary_location") or {}
     source = location.get("source") or {}
+    best_oa_location = item.get("best_oa_location") or {}
+    metadata = dict(item)
+    metadata.update(
+        {
+            "discovery_types": ["keyword"],
+            "provider_ids": {"openalex": item.get("id")},
+            "full_text_url": best_oa_location.get("pdf_url")
+            or location.get("pdf_url"),
+        }
+    )
     return ScholarlyRecord(
         title=item.get("display_name") or "Untitled source",
         authors=[
@@ -123,7 +133,7 @@ def _to_record(item: dict) -> ScholarlyRecord:
         provider_source_id=item.get("id"),
         abstract=_abstract(item.get("abstract_inverted_index")),
         retrieved_at=datetime.now(UTC),
-        metadata=item,
+        metadata=metadata,
     )
 
 
