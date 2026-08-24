@@ -6,8 +6,9 @@
  */
 
 export interface FeasibilityReport {
-  estimated_vram: string;
-  estimated_time: string;
   is_feasible: boolean;
-  suggestions: string[];
+  conclusion: string;
+  required_resources: string[];
+  potential_bottlenecks: string[];
+  mitigation_strategies: string[];
 }

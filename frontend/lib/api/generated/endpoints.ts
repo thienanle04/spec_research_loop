@@ -31,6 +31,7 @@ import type {
   CheckFeasibilityRequest,
   CheckFeasibilityResponse,
   CitationResponse,
+  CitationSelectionUpdate,
   ConfirmRequest,
   ContributionDirectionsRequest,
   ContributionDirectionsResponse,
@@ -2187,6 +2188,99 @@ export function useListCitationsApiResearchSessionsSessionIdCitationsGet<TData =
 
 
 
+
+export type updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponse200 = {
+  data: CitationResponse
+  status: 200
+}
+
+export type updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponseSuccess = (updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponse200) & {
+  headers: Headers;
+};
+export type updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponseError = (updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponse422) & {
+  headers: Headers;
+};
+
+export type updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponse = (updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponseSuccess | updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponseError)
+
+export const getUpdateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchUrl = (sessionId: string,
+    citationId: string,) => {
+
+
+
+
+  return `/api/research/sessions/${sessionId}/citations/${citationId}/selection`
+}
+
+/**
+ * @summary Update Citation Selection
+ */
+export const updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch = async (sessionId: string,
+    citationId: string,
+    citationSelectionUpdate: CitationSelectionUpdate, options?: Parameters<typeof customFetch>[1]): Promise<updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponse> => {
+
+  return customFetch<updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchResponse>(getUpdateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchUrl(sessionId,citationId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(citationSelectionUpdate)
+  }
+);}
+
+
+
+
+
+export const getUpdateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchMutationOptions = <TError = ErrorType<HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch>>, TError,{sessionId: string;citationId: string;data: BodyType<CitationSelectionUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch>>, TError,{sessionId: string;citationId: string;data: BodyType<CitationSelectionUpdate>}, TContext> => {
+
+const mutationKey = ['updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch>>, {sessionId: string;citationId: string;data: BodyType<CitationSelectionUpdate>}> = (props) => {
+          const {sessionId,citationId,data} = props ?? {};
+
+          return  updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch(sessionId,citationId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchMutationResult = NonNullable<Awaited<ReturnType<typeof updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch>>>
+    export type UpdateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchMutationBody = BodyType<CitationSelectionUpdate>
+    export type UpdateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchMutationError = ErrorType<HTTPValidationError>
+
+    /**
+ * @summary Update Citation Selection
+ */
+export const useUpdateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch = <TError = ErrorType<HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch>>, TError,{sessionId: string;citationId: string;data: BodyType<CitationSelectionUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof updateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatch>>,
+        TError,
+        {sessionId: string;citationId: string;data: BodyType<CitationSelectionUpdate>},
+        TContext
+      > => {
+      return useMutation(getUpdateCitationSelectionApiResearchSessionsSessionIdCitationsCitationIdSelectionPatchMutationOptions(options), queryClient);
+    }
 
 export type listFindingsApiResearchSessionsSessionIdFindingsGetResponse200 = {
   data: RelatedWorkFindingResponse[]

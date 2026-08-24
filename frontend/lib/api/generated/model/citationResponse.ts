@@ -24,6 +24,15 @@ export interface CitationResponse {
   provider_source_id?: string | null;
   abstract?: string | null;
   retrieved_at?: string | null;
+  is_active?: boolean;
+  pinned?: boolean;
+  retrieval_score?: number | null;
+  text_object_key?: string | null;
+  text_source_url?: string | null;
+  text_source_kind?: string | null;
+  text_checksum?: string | null;
+  text_char_count?: number | null;
+  text_retrieved_at?: string | null;
   verification_status?: VerificationStatus;
   metadata?: CitationResponseMetadata;
   id: string;

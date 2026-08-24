@@ -16,6 +16,7 @@ export * from './checkFeasibilityRequest';
 export * from './checkFeasibilityResponse';
 export * from './citationResponse';
 export * from './citationResponseMetadata';
+export * from './citationSelectionUpdate';
 export * from './claimEvidenceCard';
 export * from './confirmRequest';
 export * from './contributionDirection';

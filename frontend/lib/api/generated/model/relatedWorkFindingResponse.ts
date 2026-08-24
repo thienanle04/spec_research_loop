@@ -17,6 +17,8 @@ export interface RelatedWorkFindingResponse {
   relevance?: string | null;
   /** @minLength 1 */
   supporting_passage: string;
+  source_object_key?: string | null;
+  source_location?: string | null;
   evidence?: RelatedWorkFindingResponseEvidence;
   confidence?: number | null;
   grounding_status?: GroundingStatus;

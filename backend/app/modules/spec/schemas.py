@@ -54,10 +54,11 @@ class GenerateExperimentResponse(BaseModel):
 
 # --- FEASIBILITY ---
 class FeasibilityReport(BaseModel):
-    estimated_vram: str
-    estimated_time: str
     is_feasible: bool
-    suggestions: list[str]
+    conclusion: str
+    required_resources: list[str]
+    potential_bottlenecks: list[str]
+    mitigation_strategies: list[str]
 
 class CheckFeasibilityRequest(BaseModel):
     expected_version: int = Field(ge=1)

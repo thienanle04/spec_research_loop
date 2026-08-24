@@ -325,7 +325,12 @@ class SpecService:
         Context hiện tại của dự án:
         {json.dumps(context, default=str, ensure_ascii=False)}
         
-        Hãy đánh giá tính khả thi (Feasibility). Đưa ra ước lượng VRAM (estimated_vram), thời gian chạy (estimated_time), và các gợi ý điều chỉnh nếu cần (suggestions). Trả về is_feasible.
+        Hãy đánh giá tính khả thi (Feasibility) của kế hoạch thử nghiệm này. Trả về các thông tin sau:
+        - is_feasible: Kết luận chung có khả thi không
+        - conclusion: Lời giải thích tóm tắt cho kết luận
+        - required_resources: Danh sách các tài nguyên cần thiết (VD: VRAM, Data, Compute Time)
+        - potential_bottlenecks: Danh sách các nút thắt hoặc vấn đề tiềm ẩn có thể xảy ra
+        - mitigation_strategies: Danh sách các phương án giải quyết/giảm thiểu rủi ro
         """
         report = await self._llm.complete_structured(
             system=system, prompt=prompt, schema=FeasibilityReport
