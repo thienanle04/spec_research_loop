@@ -45,7 +45,7 @@ The Produced Spec Version when it is not stale; otherwise the Loop Session has n
 _Avoid_: current spec, head
 
 **Working Draft**:
-The session's current editing Workflow Node plus narrative JSONB. In-progress typed attachments are working rows with no Stage Revision. Navigating away or reopening a current Workflow Node keeps the last Stage Revision current; only a confirm whose content changed marks descendants Stale. Interpretation stores a structured turn list (the research idea, Grilling Question clusters, Account replies). Grilling Questions are not Cards. Confirm is allowed once every visible cluster has a reply; exhausted is a hint, not a gate. Saving an earlier Account reply drops later turns.
+The session's current editing Workflow Node plus narrative JSONB. In-progress typed attachments are working rows with no Stage Revision. Node-scoped narratives are retained while another Workflow Node is being edited, so navigating away and returning does not discard unconfirmed generated work. Navigating away or reopening a current Workflow Node keeps the last Stage Revision current; only a confirm whose content changed marks descendants Stale. Interpretation stores a structured turn list (the research idea, Grilling Question clusters, Account replies). Grilling Questions are not Cards. Confirm is allowed once every visible cluster has a reply; exhausted is a hint, not a gate. Saving an earlier Account reply drops later turns.
 _Avoid_: temp, cache, unsaved changes
 
 **Loop Stage**:

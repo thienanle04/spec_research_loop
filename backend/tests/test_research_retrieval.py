@@ -14,7 +14,11 @@ from app.modules.research.adapters import (
 from app.modules.research.adapters.document_text import _html_text, _normalize_text
 from app.modules.research.models import Citation
 from app.modules.research.ports import DocumentText, ScholarlyRecord
-from app.modules.research.service import ResearchService, _deduplicate_records
+from app.modules.research.service import (
+    ResearchService,
+    _deduplicate_records,
+    _is_usable_research_document,
+)
 
 
 class _DocumentSource:
@@ -87,6 +91,28 @@ def test_deduplicate_merges_provider_provenance_and_best_text() -> None:
         "semantic_scholar": "S1",
     }
     assert merged[0].metadata["full_text_url"].endswith("paper.pdf")
+
+
+def test_full_text_requirement_rejects_missing_or_abstract_only_documents() -> None:
+    abstract = DocumentText(text="Provider abstract", source_kind="abstract")
+    full_text = DocumentText(text="Downloaded paper text", source_kind="full_text_pdf")
+
+    assert not _is_usable_research_document(
+        None,
+        require_downloadable_full_text=True,
+    )
+    assert not _is_usable_research_document(
+        abstract,
+        require_downloadable_full_text=True,
+    )
+    assert _is_usable_research_document(
+        full_text,
+        require_downloadable_full_text=True,
+    )
+    assert _is_usable_research_document(
+        abstract,
+        require_downloadable_full_text=False,
+    )
 
 
 @pytest.mark.asyncio

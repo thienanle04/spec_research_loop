@@ -93,7 +93,7 @@ async def test_source_preferences_are_applied_by_provider_port() -> None:
 async def test_search_queries_use_english_while_outputs_follow_idea_language() -> None:
     llm = FakeLlmPort(
         responses={
-            "research-inputs": '{"keywords":["kiểm chứng tuyên bố"]}',
+            "research-inputs": '{"keywords":["scientific claim verification"]}',
             "research-query": '{"queries":["scientific claim verification"]}',
             "research-analysis": (
                 '{"what_was_done":"Kiểm tra từng tuyên bố",'
@@ -181,7 +181,7 @@ async def test_search_queries_use_english_while_outputs_follow_idea_language() -
     )
     gap, _ = await service._generate_gaps(context)
 
-    assert "kiểm chứng tuyên bố" in inputs["keywords"]
+    assert "scientific claim verification" in inputs["keywords"]
     assert queries[0] == "scientific claim verification"
     assert len(queries) >= 4
     assert any("survey OR review" in query for query in queries)
@@ -191,10 +191,16 @@ async def test_search_queries_use_english_while_outputs_follow_idea_language() -
     assert any("research-rerank" in call["system"] for call in llm.calls)
     query_call = next(call for call in llm.calls if "research-query" in call["system"])
     assert "English regardless of the input language" in query_call["system"]
+    research_inputs_call = next(
+        call for call in llm.calls if "research-inputs" in call["system"]
+    )
+    assert "Write every keyword in English" in research_inputs_call["system"]
+    assert "idea's language" in research_inputs_call["system"]
     user_facing_calls = [
         call
         for call in llm.calls
         if "research-query" not in call["system"]
+        and "research-inputs" not in call["system"]
         and "research-counter-query" not in call["system"]
         and "research-rerank" not in call["system"]
     ]
@@ -545,6 +551,21 @@ async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
             },
         },
         "working_draft": {
+            "card_snapshot": [
+                {
+                    "kind": "gap",
+                    "body": {
+                        "statement": "Edited saved Gap takes precedence.",
+                        "search_audit": {
+                            "counter_evidence_outcome": "gap_not_supported",
+                            "counter_evidence_assessment": (
+                                "Existing work already performs claim-level verification."
+                            ),
+                            "counter_evidence_results": [prior_result],
+                        },
+                    },
+                }
+            ],
             "narrative": {
                 "candidate": {
                     "statement": "No system verifies evidence for every claim.",
@@ -579,10 +600,69 @@ async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
 
     for prompt in (analysis_prompt, synthesis_prompt, counter_query_prompt):
         assert "gap_not_supported" in prompt
+        assert "Edited saved Gap takes precedence." in prompt
+        assert "No system verifies evidence for every claim." not in prompt
         assert "Existing claim-level verifier" in prompt
         assert "already addresses the proposed limitation" in prompt
     assert '"required_counter_evidence_keys": ["prior-counter-1"]' in analysis_prompt
     assert warnings == []
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_analysis_repairs_missing_required_fields() -> None:
+    records = [
+        ScholarlyRecord(
+            title=f"Counter evidence {identifier}",
+            abstract="Evaluates an existing claim verification method.",
+            provider="fixture",
+            provider_source_id=identifier,
+        )
+        for identifier in ("first", "second")
+    ]
+    llm = FakeLlmPort(
+        responses={
+            "research-counter-analysis-repair": json.dumps(
+                {
+                    "outcome": "no_direct_counter_evidence",
+                    "statement": "The limitation remains testable.",
+                    "assessment": "Neither result directly resolves the limitation.",
+                    "covered_result_keys": ["first", "second"],
+                    "findings": [
+                        {
+                            "result_key": identifier,
+                            "impact": "no_direct_counter_evidence",
+                            "rationale": "The metadata does not report the proposed check.",
+                        }
+                        for identifier in ("first", "second")
+                    ],
+                }
+            ),
+            "research-counter-analysis": json.dumps(
+                {
+                    "outcome": "inconclusive",
+                    "statement": "The limitation remains testable.",
+                }
+            ),
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    assessment, warnings = await service._assess_counter_evidence(
+        idea={},
+        provisional_statement="The limitation remains testable.",
+        records=records,
+    )
+
+    assert assessment.outcome.value == "no_direct_counter_evidence"
+    assert {item.result_key for item in assessment.findings} == {"first", "second"}
+    assert warnings == []
+    assert len(llm.calls) == 2
+    assert "research-counter-analysis-repair" in llm.calls[1]["system"]
 
 
 @pytest.mark.asyncio
@@ -954,16 +1034,16 @@ async def test_research_inputs_flatten_only_core_role_aware_concepts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_research_inputs_prefer_normalized_model_terms_over_vietnamese_fragments() -> (
+async def test_research_inputs_generate_english_keywords_for_a_vietnamese_idea() -> (
     None
 ):
     llm = FakeLlmPort(
         responses={
             "research-inputs": (
-                '{"keywords":["khối lượng hành chính",'
-                '"khối lượng công việc giáo viên","chấm điểm tự động",'
-                '"điểm danh tự động","tương tác thầy trò",'
-                '"thời gian giảng dạy"]}'
+                '{"keywords":["teacher administrative workload",'
+                '"teacher workload","automated grading",'
+                '"automated attendance","teacher-student interaction",'
+                '"instructional time"]}'
             )
         }
     )
@@ -1006,19 +1086,18 @@ async def test_research_inputs_prefer_normalized_model_terms_over_vietnamese_fra
 
     assert warnings == []
     assert narrative["keywords"] == [
-        "khối lượng hành chính",
-        "khối lượng công việc giáo viên",
-        "chấm điểm tự động",
-        "điểm danh tự động",
-        "tương tác thầy trò",
-        "thời gian giảng dạy",
+        "teacher administrative workload",
+        "teacher workload",
+        "automated grading",
+        "automated attendance",
+        "teacher-student interaction",
+        "instructional time",
     ]
-    assert not set(narrative["keywords"]) & {
-        "giáo viên mất",
-        "mất quá nhiều",
-        "nhiều thời gian",
-        "nhiệm vụ hành",
-    }
+    assert "Write every keyword in English" in llm.calls[0]["system"]
+    assert "regardless of the input idea's language" in llm.calls[0]["system"]
+    assert "write every generated user-facing value in that same language" not in (
+        llm.calls[0]["system"]
+    )
 
 
 @pytest.mark.asyncio
@@ -1175,6 +1254,55 @@ async def test_listwise_reranker_reorders_candidates_and_preserves_heuristic_met
     assert second.metadata["heuristic_retrieval_score"] == 0.7
     assert second.metadata["reranker_rank"] == 1
     assert second.metadata["reranker_score"] == 0.95
+
+
+@pytest.mark.asyncio
+async def test_listwise_reranker_repairs_invalid_model_json() -> None:
+    records = [
+        ScholarlyRecord(
+            title=f"Candidate {identifier}",
+            provider="fixture",
+            provider_source_id=identifier,
+            metadata={"retrieval_score": score},
+        )
+        for identifier, score in (("first", 0.8), ("second", 0.7))
+    ]
+    llm = FakeLlmPort(
+        responses={
+            "research-rerank-repair": json.dumps(
+                {
+                    "rankings": [
+                        {"result_key": "second", "relevance_score": 0.9},
+                        {"result_key": "first", "relevance_score": 0.4},
+                    ]
+                }
+            ),
+            "research-rerank": "The ranking is: second, then first.",
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    outcome = await service._rerank_records(
+        records,
+        idea={},
+        inputs=ResearchInputs(),
+        queries=["evidence review"],
+        objective="Build Related Work.",
+    )
+
+    assert outcome.applied is True
+    assert not outcome.warnings
+    assert [record.provider_source_id for record in outcome.records] == [
+        "second",
+        "first",
+    ]
+    assert len(llm.calls) == 2
+    assert "research-rerank-repair" in llm.calls[1]["system"]
 
 
 @pytest.mark.asyncio

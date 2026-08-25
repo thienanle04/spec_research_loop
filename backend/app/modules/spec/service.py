@@ -128,6 +128,8 @@ class SpecService:
         narrative: dict,
         session: LoopSession,
     ) -> int:
+        saved_narratives = dict(session.working_draft_narratives)
+        saved_narratives[session.working_draft_node] = narrative
         result = await self._db.execute(
             update(LoopSession)
             .where(
@@ -137,6 +139,7 @@ class SpecService:
             )
             .values(
                 working_draft_narrative=narrative,
+                working_draft_narratives=saved_narratives,
                 version=LoopSession.version + 1,
             )
             .returning(LoopSession.version)

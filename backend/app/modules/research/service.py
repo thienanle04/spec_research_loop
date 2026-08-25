@@ -15,13 +15,13 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.errors import OperationalErrorException
-from app.modules.loop.catalog import NodeHeadStatus, WorkflowNode, ancestors
-from app.modules.loop.models import LoopSession, NodeHead
+from app.modules.loop.catalog import CardKind, NodeHeadStatus, WorkflowNode, ancestors
+from app.modules.loop.models import Card, LoopSession, NodeHead
 from app.modules.loop.service import LoopService
 from app.modules.research.models import Citation, RelatedWorkFinding
 from app.modules.research.normalization import (
@@ -286,7 +286,7 @@ class ResearchService:
                 narrative, warnings = await self._generate_research_inputs(run.context)
                 for warning in warnings:
                     yield self._warning(run.node, "llm_fallback", warning)
-                await self._set_narrative(run.session_id, narrative)
+                await self._set_narrative(run.session_id, run.node.value, narrative)
                 yield self._event(DraftPatchEvent(node=run.node, narrative=narrative))
             elif run.node is ResearchNode.RELATED_WORK:
                 async for event in self._generate_related_work(run):
@@ -297,7 +297,8 @@ class ResearchService:
                 narrative, warnings = await self._generate_gaps(run.context)
                 for warning in warnings:
                     yield self._warning(run.node, "llm_fallback", warning)
-                await self._set_narrative(run.session_id, narrative)
+                await self._set_narrative(run.session_id, run.node.value, narrative)
+                await self._delete_working_gap_card(run.session_id)
                 yield self._event(DraftPatchEvent(node=run.node, narrative=narrative))
 
             await self._db.commit()
@@ -424,21 +425,48 @@ class ResearchService:
             yield self._warning(run.node, "rerank_fallback", warning)
         ranked_records = rerank.records
         ranked_candidate_count = len(ranked_records)
-        unique_records = ranked_records[: run.body.max_results]
-        for rank, record in enumerate(unique_records, start=1):
-            record.metadata["relevance_rank"] = rank
 
-        # Reruns preserve prior rows and S3 references. Only current results and
-        # explicitly pinned Citations remain active for projection and freeze.
+        # Keep the old working rows available until the replacement generation
+        # succeeds. The surrounding transaction restores them if generation fails.
         await self._db.execute(
             update(Citation)
             .where(
                 Citation.session_id == run.session_id,
                 Citation.stage_revision_id.is_(None),
             )
-            .values(is_active=Citation.pinned)
+            .values(is_active=False, pinned=False)
             .execution_options(synchronize_session=False)
         )
+        prepared_records: list[
+            tuple[ScholarlyRecord, Citation, DocumentText, list[str]]
+        ] = []
+        skipped_inaccessible_count = 0
+        require_full_text = get_settings().research_require_downloadable_full_text
+        for record in ranked_records:
+            if len(prepared_records) >= run.body.max_results:
+                break
+            data = self._record_create(record)
+            citation, _ = await self._upsert_citation(
+                session_id=run.session_id,
+                data=data,
+            )
+            citation.is_active = True
+            document, text_warnings = await self._persist_document_text(
+                session_id=run.session_id,
+                citation=citation,
+                record=record,
+            )
+            if not _is_usable_research_document(
+                document,
+                require_downloadable_full_text=require_full_text,
+            ):
+                citation.is_active = False
+                skipped_inaccessible_count += 1
+                continue
+            record.metadata["relevance_rank"] = len(prepared_records) + 1
+            prepared_records.append((record, citation, document, text_warnings))
+
+        unique_records = [record for record, _, _, _ in prepared_records]
         total = max(len(unique_records), 1)
         batch_verifications = None
         if isinstance(self._verifier, BatchCitationVerifier):
@@ -463,13 +491,10 @@ class ResearchService:
                         else type(exc).__name__
                     ),
                 )
-        for index, record in enumerate(unique_records, start=1):
-            data = self._record_create(record)
-            citation, _ = await self._upsert_citation(
-                session_id=run.session_id,
-                data=data,
-            )
-            citation.is_active = True
+        for index, (record, citation, document, text_warnings) in enumerate(
+            prepared_records,
+            start=1,
+        ):
             try:
                 verification = (
                     batch_verifications[index - 1]
@@ -490,11 +515,6 @@ class ResearchService:
                     f"Citation verification failed: {type(exc).__name__}",
                 )
 
-            document, text_warnings = await self._persist_document_text(
-                session_id=run.session_id,
-                citation=citation,
-                record=record,
-            )
             for warning in text_warnings:
                 yield self._warning(run.node, "document_text", warning)
 
@@ -526,6 +546,10 @@ class ResearchService:
                 )
             )
 
+        await self._delete_replaced_related_work(
+            run.session_id,
+            retained_citation_ids=[citation.id for _, citation, _, _ in prepared_records],
+        )
         narrative = dict(run.context.get("working_draft", {}).get("narrative", {}))
         narrative.update(
             {
@@ -538,6 +562,7 @@ class ResearchService:
                 "reranked_candidate_count": rerank.candidate_count,
                 "reranking_applied": rerank.applied,
                 "analyzed_result_count": len(unique_records),
+                "skipped_inaccessible_count": skipped_inaccessible_count,
                 "selection_rule": (
                     "llm_listwise_rerank" if rerank.applied else "top_relevance_score"
                 ),
@@ -545,7 +570,7 @@ class ResearchService:
                 "preferred_sources": preferred.model_dump(mode="json"),
             }
         )
-        await self._set_narrative(run.session_id, narrative)
+        await self._set_narrative(run.session_id, run.node.value, narrative)
         yield self._event(DraftPatchEvent(node=run.node, narrative=narrative))
 
     async def _generate_research_inputs(
@@ -556,12 +581,15 @@ class ResearchService:
             idea = _idea_context(context)
             raw = await self._llm.complete(
                 system=(
-                    _idea_language_instruction(idea)
-                    + "research-inputs: return only JSON in exactly this shape: "
+                    "research-inputs: return only JSON in exactly this shape: "
                     '{"keywords":["specific scholarly noun phrase"],'
                     '"preferred_sources":{"peer_reviewed_papers":true,'
                     '"official_proceedings":true,"author_materials":true,'
-                    '"sourced_surveys":true}}. Treat each supplied Card role differently. '
+                    '"sourced_surveys":true}}. Write every keyword in English regardless '
+                    "of the input idea's language. Translate Vietnamese and other non-English "
+                    "concepts into canonical English academic terminology while preserving "
+                    "acronyms and technical names. Never emit a non-English keyword. "
+                    "Treat each supplied Card role differently. "
                     "Privately extract the population, context, artifact or task, intervention "
                     "or exposure, outcome, and relationship from Problem and Research Question "
                     "Cards. Return 5 to 8 established academic search concepts covering those "
@@ -779,53 +807,71 @@ class ResearchService:
                 ],
             )
 
+        rerank_system = (
+            "research-rerank: return only JSON in exactly this shape: "
+            '{"rankings":[{"result_key":"...","relevance_score":0.0}]}. '
+            "Rerank every supplied scholarly candidate for the stated objective. "
+            "Use the confirmed Problem, Research Questions, Research Inputs, and "
+            "search queries. Prioritize direct coverage of the research relationship, "
+            "method, outcome, evaluation, and limitations. Prefer evidence-rich "
+            "candidates over broad keyword matches. Use only supplied metadata; do not "
+            "infer missing facts. Return every candidate result_key exactly once, no "
+            "unknown keys, ordered from most to least relevant. relevance_score must be "
+            "between 0 and 1. Do not use markdown, reasoning, or explanations."
+        )
+        rerank_request = {
+            "objective": objective,
+            "idea": idea,
+            "research_inputs": inputs.model_dump(mode="json"),
+            "search_queries": queries,
+            "candidates": [
+                {
+                    "result_key": key,
+                    "title": record.title,
+                    "abstract": str(record.abstract or "")[:1_200],
+                    "year": record.year,
+                    "venue": record.venue,
+                    "heuristic_score": record.metadata.get("retrieval_score"),
+                    "discovery_types": record.metadata.get("discovery_types", []),
+                }
+                for key, record in keyed
+            ],
+        }
         try:
             raw = await self._llm.complete(
-                system=(
-                    "research-rerank: return only JSON in exactly this shape: "
-                    '{"rankings":[{"result_key":"...","relevance_score":0.0}]}. '
-                    "Rerank every supplied scholarly candidate for the stated objective. "
-                    "Use the confirmed Problem, Research Questions, Research Inputs, and "
-                    "search queries. Prioritize direct coverage of the research relationship, "
-                    "method, outcome, evaluation, and limitations. Prefer evidence-rich "
-                    "candidates over broad keyword matches. Use only supplied metadata; do not "
-                    "infer missing facts. Return every candidate result_key exactly once, no "
-                    "unknown keys, ordered from most to least relevant. relevance_score must be "
-                    "between 0 and 1. Do not use markdown or add explanations."
-                ),
+                system=rerank_system,
                 prompt=json.dumps(
-                    {
-                        "objective": objective,
-                        "idea": idea,
-                        "research_inputs": inputs.model_dump(mode="json"),
-                        "search_queries": queries,
-                        "candidates": [
-                            {
-                                "result_key": key,
-                                "title": record.title,
-                                "abstract": str(record.abstract or "")[:1_200],
-                                "year": record.year,
-                                "venue": record.venue,
-                                "heuristic_score": record.metadata.get(
-                                    "retrieval_score"
-                                ),
-                                "discovery_types": record.metadata.get(
-                                    "discovery_types", []
-                                ),
-                            }
-                            for key, record in keyed
-                        ],
-                    },
+                    rerank_request,
                     default=str,
                     ensure_ascii=False,
                 ),
             )
-            response = _RerankResponse.model_validate(_json_value(raw, dict))
-            returned_keys = [item.result_key for item in response.rankings]
-            if len(set(returned_keys)) != len(returned_keys):
-                raise ValueError("Reranker returned duplicate candidate identifiers")
-            if set(returned_keys) != set(expected_keys):
-                raise ValueError("Reranker did not return every supplied candidate")
+            try:
+                response = _validated_rerank_response(raw, expected_keys)
+            except (ValidationError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                # A reasoning model can ignore JSON-only instructions, truncate the
+                # object, or omit a candidate. Give it one bounded correction attempt
+                # before falling back to the deterministic retrieval order.
+                repaired_raw = await self._llm.complete(
+                    system=(
+                        "research-rerank-repair: correct the previous reranking response. "
+                        "Return only one valid JSON object with a rankings array. Return "
+                        "every required_result_key exactly once, no unknown or duplicate "
+                        "keys, and a relevance_score from 0 to 1 for every item. Do not use "
+                        "markdown, reasoning, or explanations."
+                    ),
+                    prompt=json.dumps(
+                        {
+                            "required_result_keys": expected_keys,
+                            "validation_error": str(exc)[:2_000],
+                            "previous_response": raw[-12_000:],
+                            "original_request": rerank_request,
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    ),
+                )
+                response = _validated_rerank_response(repaired_raw, expected_keys)
 
             by_key = dict(keyed)
             ordered_items = sorted(
@@ -1395,61 +1441,77 @@ class ResearchService:
             )
         payloads = [_counter_record_payload(record) for record in records]
         required_keys = [item["result_key"] for item in payloads]
+        counter_system = (
+            _idea_language_instruction(idea)
+            + "research-counter-analysis: return only one JSON object with exactly "
+            "outcome, statement, assessment, covered_result_keys, and findings. "
+            "Use exactly this shape: "
+            '{"outcome":"inconclusive","statement":"...","assessment":"...",'
+            '"covered_result_keys":["..."],"findings":[{"result_key":"...",'
+            '"impact":"inconclusive","rationale":"..."}]}. '
+            "findings must contain exactly one object per result with result_key, "
+            "impact, and a concise source-specific rationale. outcome and each impact "
+            "must be one of no_direct_counter_evidence, gap_narrowed, "
+            "gap_not_supported, or inconclusive. Read every supplied result and "
+            "actively look for work that already addresses the proposed limitation or "
+            "uses synonymous terminology. Revise the statement when the Gap must be "
+            "narrowed. If a result already addresses it, use gap_not_supported. Never "
+            "infer novelty from missing results or weak metadata. Treat warning "
+            "verification as lower confidence and never rely on rejected results. "
+            "covered_result_keys and the finding result_keys must include every "
+            "required_result_key exactly once. Do not use markdown, reasoning, or "
+            "explanations."
+        )
+        counter_request = {
+            "idea": idea,
+            "provisional_gap_candidate": provisional_statement,
+            "counter_evidence_results": payloads,
+            "required_result_keys": required_keys,
+        }
         try:
             raw = await self._llm.complete(
-                system=(
-                    _idea_language_instruction(idea)
-                    + "research-counter-analysis: return only one JSON object with exactly "
-                    "outcome, statement, assessment, covered_result_keys, and findings. "
-                    "findings must contain exactly one object per result with result_key, "
-                    "impact, and a concise source-specific rationale. outcome and each impact "
-                    "must "
-                    "be one of no_direct_counter_evidence, gap_narrowed, gap_not_supported, "
-                    "or inconclusive. Read every supplied result and actively look for work "
-                    "that already addresses the proposed limitation or uses synonymous "
-                    "terminology. Revise the statement when the Gap must be narrowed. If a "
-                    "result already addresses it, use gap_not_supported. Never infer novelty "
-                    "from missing results or weak metadata. Treat warning verification as lower "
-                    "confidence and never rely on rejected results. covered_result_keys and the "
-                    "finding result_keys must include every required_result_key exactly once."
-                ),
+                system=counter_system,
                 prompt=json.dumps(
-                    {
-                        "idea": idea,
-                        "provisional_gap_candidate": provisional_statement,
-                        "counter_evidence_results": payloads,
-                        "required_result_keys": required_keys,
-                    },
+                    counter_request,
                     default=str,
                     ensure_ascii=False,
                 ),
             )
-            assessment = _CounterEvidenceAssessment.model_validate(
-                _json_value(raw, dict)
-            )
-            if set(required_keys) - set(assessment.covered_result_keys):
-                raise ValueError(
-                    "Counter-evidence analysis did not cover every top result"
+            try:
+                assessment = _validated_counter_evidence_assessment(raw, required_keys)
+            except (ValidationError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                repaired_raw = await self._llm.complete(
+                    system=(
+                        _idea_language_instruction(idea)
+                        + "research-counter-analysis-repair: correct the previous "
+                        "counter-evidence response. Return only one valid JSON object "
+                        "with exactly outcome, statement, assessment, "
+                        "covered_result_keys, and findings. Use exactly this shape: "
+                        '{"outcome":"inconclusive","statement":"...",'
+                        '"assessment":"...","covered_result_keys":["..."],'
+                        '"findings":[{"result_key":"...","impact":"inconclusive",'
+                        '"rationale":"..."}]}. Each finding must have '
+                        "result_key, impact, and rationale. Return every required key "
+                        "exactly once in covered_result_keys and findings. outcome and "
+                        "impact must use only no_direct_counter_evidence, gap_narrowed, "
+                        "gap_not_supported, or inconclusive. Make outcome consistent "
+                        "with the finding impacts. Do not use markdown, reasoning, or "
+                        "explanations."
+                    ),
+                    prompt=json.dumps(
+                        {
+                            "required_result_keys": required_keys,
+                            "validation_error": str(exc)[:2_000],
+                            "previous_response": raw[-12_000:],
+                            "original_request": counter_request,
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    ),
                 )
-            finding_keys = [item.result_key for item in assessment.findings]
-            if len(set(finding_keys)) != len(finding_keys):
-                raise ValueError("Counter-evidence analysis returned duplicate findings")
-            if set(finding_keys) != set(required_keys):
-                raise ValueError(
-                    "Counter-evidence analysis did not assess every top result"
-                )
-            impacts = {item.impact for item in assessment.findings}
-            if CounterEvidenceOutcome.GAP_NOT_SUPPORTED in impacts:
-                expected_outcome = CounterEvidenceOutcome.GAP_NOT_SUPPORTED
-            elif CounterEvidenceOutcome.GAP_NARROWED in impacts:
-                expected_outcome = CounterEvidenceOutcome.GAP_NARROWED
-            elif impacts == {CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE}:
-                expected_outcome = CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
-            else:
-                expected_outcome = CounterEvidenceOutcome.INCONCLUSIVE
-            if assessment.outcome is not expected_outcome:
-                raise ValueError(
-                    "Counter-evidence outcome was inconsistent with source findings"
+                assessment = _validated_counter_evidence_assessment(
+                    repaired_raw,
+                    required_keys,
                 )
             return assessment, []
         except Exception as exc:  # noqa: BLE001 - absence must remain inconclusive
@@ -1711,11 +1773,57 @@ class ResearchService:
         )
         return list(rows.all())
 
-    async def _set_narrative(self, session_id: UUID, narrative: dict[str, Any]) -> None:
+    async def _delete_replaced_related_work(
+        self,
+        session_id: UUID,
+        *,
+        retained_citation_ids: list[UUID],
+    ) -> None:
+        finding_filters = [
+            RelatedWorkFinding.session_id == session_id,
+            RelatedWorkFinding.stage_revision_id.is_(None),
+        ]
+        citation_filters = [
+            Citation.session_id == session_id,
+            Citation.stage_revision_id.is_(None),
+        ]
+        if retained_citation_ids:
+            finding_filters.append(
+                RelatedWorkFinding.citation_id.not_in(retained_citation_ids)
+            )
+            citation_filters.append(Citation.id.not_in(retained_citation_ids))
+        await self._db.execute(delete(RelatedWorkFinding).where(*finding_filters))
+        await self._db.execute(delete(Citation).where(*citation_filters))
+
+    async def _delete_working_gap_card(self, session_id: UUID) -> None:
+        await self._db.execute(
+            delete(Card).where(
+                Card.session_id == session_id,
+                Card.kind == CardKind.GAP.value,
+            )
+        )
+
+    async def _set_narrative(
+        self,
+        session_id: UUID,
+        node: str,
+        narrative: dict[str, Any],
+    ) -> None:
+        saved_narratives = await self._db.scalar(
+            select(LoopSession.working_draft_narratives).where(
+                LoopSession.id == session_id
+            )
+        )
+        next_saved_narratives = dict(saved_narratives or {})
+        next_saved_narratives[node] = narrative
         await self._db.execute(
             update(LoopSession)
             .where(LoopSession.id == session_id)
-            .values(working_draft_narrative=narrative, updated_at=func.now())
+            .values(
+                working_draft_narrative=narrative,
+                working_draft_narratives=next_saved_narratives,
+                updated_at=func.now(),
+            )
             .execution_options(synchronize_session=False)
         )
 
@@ -1842,6 +1950,57 @@ def _json_value(raw: str, expected: type[dict | list]) -> Any:
     if decode_error is not None:
         raise decode_error
     raise TypeError(f"Expected {expected.__name__} JSON")
+
+
+def _validated_rerank_response(
+    raw: str,
+    expected_keys: list[str],
+) -> _RerankResponse:
+    response = _RerankResponse.model_validate(_json_value(raw, dict))
+    returned_keys = [item.result_key for item in response.rankings]
+    if len(set(returned_keys)) != len(returned_keys):
+        raise ValueError("Reranker returned duplicate candidate identifiers")
+    if set(returned_keys) != set(expected_keys):
+        raise ValueError("Reranker did not return every supplied candidate")
+    return response
+
+
+def _validated_counter_evidence_assessment(
+    raw: str,
+    required_keys: list[str],
+) -> _CounterEvidenceAssessment:
+    assessment = _CounterEvidenceAssessment.model_validate(_json_value(raw, dict))
+    if set(assessment.covered_result_keys) != set(required_keys):
+        raise ValueError("Counter-evidence analysis did not cover every top result")
+    finding_keys = [item.result_key for item in assessment.findings]
+    if len(set(finding_keys)) != len(finding_keys):
+        raise ValueError("Counter-evidence analysis returned duplicate findings")
+    if set(finding_keys) != set(required_keys):
+        raise ValueError("Counter-evidence analysis did not assess every top result")
+    impacts = {item.impact for item in assessment.findings}
+    if CounterEvidenceOutcome.GAP_NOT_SUPPORTED in impacts:
+        expected_outcome = CounterEvidenceOutcome.GAP_NOT_SUPPORTED
+    elif CounterEvidenceOutcome.GAP_NARROWED in impacts:
+        expected_outcome = CounterEvidenceOutcome.GAP_NARROWED
+    elif impacts == {CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE}:
+        expected_outcome = CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+    else:
+        expected_outcome = CounterEvidenceOutcome.INCONCLUSIVE
+    if assessment.outcome is not expected_outcome:
+        raise ValueError("Counter-evidence outcome was inconsistent with source findings")
+    return assessment
+
+
+def _is_usable_research_document(
+    document: DocumentText | None,
+    *,
+    require_downloadable_full_text: bool,
+) -> bool:
+    if document is None:
+        return False
+    if require_downloadable_full_text and document.source_kind == "abstract":
+        return False
+    return bool(document.text.strip())
 
 
 def _research_inputs_from_model(raw: str, idea: dict[str, Any]) -> ResearchInputs:
@@ -2380,18 +2539,26 @@ def _merge_verified_counter_record(
 
 
 def _previous_counter_feedback(context: dict[str, Any]) -> dict[str, Any]:
-    """Return prior negative/inconclusive audit data for the next Gap regeneration."""
-    narrative = context.get("working_draft", {}).get("narrative", {})
+    """Return the prior saved/generated Gap for the next regeneration."""
+    working_draft = context.get("working_draft", {})
+    raw_candidate = next(
+        (
+            item.get("body")
+            for item in working_draft.get("card_snapshot", [])
+            if isinstance(item, dict) and item.get("kind") == CardKind.GAP.value
+        ),
+        None,
+    )
+    narrative = working_draft.get("narrative", {})
     if not isinstance(narrative, dict):
-        return {}
-    raw_candidate = narrative.get("candidate")
+        narrative = {}
+    if raw_candidate is None:
+        raw_candidate = narrative.get("candidate")
     try:
         candidate = GapCardBody.model_validate(raw_candidate)
     except ValidationError:
         return {}
     audit = candidate.search_audit
-    if audit.counter_evidence_outcome is CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE:
-        return {}
     return {
         "previous_statement": candidate.statement,
         "outcome": audit.counter_evidence_outcome.value,

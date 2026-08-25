@@ -17,7 +17,7 @@ class FitWebUiLlmPort:
         default_model: str,
         base_url: str = "https://ai-fit.hcmus.edu.vn/openai",
         timeout_seconds: float = 300.0,
-        max_tokens: int = 2_000,
+        max_tokens: int = 4_000,
     ) -> None:
         if not api_key.strip():
             raise ValueError("A FIT WebUI API key is required")
@@ -58,6 +58,7 @@ class FitWebUiLlmPort:
                             {"role": "user", "content": prompt},
                         ],
                         "max_tokens": self._max_tokens,
+                        "response_format": {"type": "json_object"},
                         "stream": False,
                     },
                 )

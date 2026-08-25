@@ -3,7 +3,15 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -36,6 +44,12 @@ class LoopSession(Base):
     working_draft_node: Mapped[str] = mapped_column(String(64), nullable=False)
     working_draft_narrative: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict
+    )
+    working_draft_narratives: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
     )
     produced_spec_version_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), nullable=True

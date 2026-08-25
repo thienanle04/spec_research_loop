@@ -125,7 +125,8 @@ async def test_fit_webui_calls_chat_completions(
             {"role": "system", "content": "system"},
             {"role": "user", "content": "prompt"},
         ],
-        "max_tokens": 2_000,
+        "max_tokens": 4_000,
+        "response_format": {"type": "json_object"},
         "stream": False,
     }
 
