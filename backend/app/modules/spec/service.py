@@ -20,6 +20,7 @@ from app.modules.spec.schemas import (
     ContributionDirectionsResponse,
     GenerateClaimsResponse,
     GenerateExperimentResponse,
+    ExperimentPlan,
     CheckFeasibilityResponse,
     FeasibilityReport,
 )
@@ -197,19 +198,23 @@ class SpecService:
         Dựa vào context sau của dự án (đặc biệt là các Claim đã chọn):
         {json.dumps(context, default=str, ensure_ascii=False)}
         
-        Hãy lên kế hoạch thử nghiệm chi tiết gồm: Baselines, Metrics, Giao thức đánh giá (evaluation_protocol), Ablation Study, và Generalization.
+        Hãy lên kế hoạch thí nghiệm chi tiết. VỚI MỖI CLAIM, hãy tạo một thí nghiệm bao gồm:
+        1. claim: Nội dung của claim
+        2. action: Làm gì - bao nhiêu lần/mẫu/thời gian
+        3. objective: Mục tiêu của thí nghiệm này
+        4. significance: Ý nghĩa của thí nghiệm đối với claim
         """
         response_data = await self._llm.complete_structured(
             system=system,
             prompt=prompt,
-            schema=GenerateExperimentResponse
+            schema=ExperimentPlan
         )
         
         narrative = {
-            "plan": response_data.plan.model_dump(mode="json")
+            "plan": response_data.model_dump(mode="json")
         }
         new_version = await self._update_narrative(session_id, account_id, expected_version, narrative, session)
-        return GenerateExperimentResponse(version=new_version, plan=response_data.plan)
+        return GenerateExperimentResponse(version=new_version, plan=response_data)
 
     async def check_feasibility(
         self,

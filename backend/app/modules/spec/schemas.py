@@ -38,12 +38,14 @@ class GenerateClaimsResponse(BaseModel):
     cards: list[ClaimEvidenceCard]
 
 # --- EXPERIMENT ---
+class ExperimentItem(BaseModel):
+    claim: str
+    action: str
+    objective: str
+    significance: str
+
 class ExperimentPlan(BaseModel):
-    baselines: list[str]
-    metrics: list[str]
-    evaluation_protocol: str
-    ablation_study: list[str]
-    generalization: list[str]
+    experiments: list[ExperimentItem]
 
 class GenerateExperimentRequest(BaseModel):
     expected_version: int = Field(ge=1)

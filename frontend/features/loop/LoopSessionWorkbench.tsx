@@ -416,9 +416,10 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 lg:grid-cols-12">
-      <aside className="grid gap-4 lg:col-span-3 xl:col-span-3">
-        <div className="rounded-md border bg-card p-3 shadow-sm">
+    <div className="space-y-8 pb-12">
+      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 lg:grid-cols-12 lg:items-start">
+        <aside className="grid gap-4 lg:col-span-3 xl:col-span-3 lg:sticky lg:top-6">
+          <div className="rounded-md border bg-card p-3 shadow-sm">
           <p className="text-xs font-medium text-muted-foreground">
             Loop Stage {LOOP_STAGE_CATALOG.findIndex((stage) => stage.id === selectedStage) + 1} of{" "}
             {LOOP_STAGE_CATALOG.length}
@@ -644,7 +645,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               ) : null}
             </CardContent>
           </Card>
-        </section>
+          </section>
+        </div>
+      </div>
+      
+      <div className="mx-auto max-w-7xl grid gap-8 px-4 lg:px-0">
         <DecisionHistory
           decisions={
             decisionsQuery.data?.status === 200 ? decisionsQuery.data.data : []
