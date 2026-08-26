@@ -5,9 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Textarea } from "@/components/ui/textarea";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
-  useCreateCardApiLoopSessionsSessionIdCardsPost,
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
-  useGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost,
+  useCreateCardApiLoopSessionsSessionIdCardsPost,
+  useGenerateClaimsApiSpecSessionsSessionIdClaimsGeneratePost,
 } from "@/lib/api/generated/endpoints";
 import {
   CardKind,
@@ -29,11 +29,11 @@ export function ClaimsEvidenceStageContainer({
   onConfirmabilityChange?: (confirmable: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const generateClaims = useGenerateClaimsApiSpecSpecSessionsSessionIdClaimsGeneratePost();
+  const generateClaims = useGenerateClaimsApiSpecSessionsSessionIdClaimsGeneratePost();
   const createCard = useCreateCardApiLoopSessionsSessionIdCardsPost();
   const { queue, status } = useLoopSessionSave();
-  const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
   const saving = status === "saving";
+  const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);

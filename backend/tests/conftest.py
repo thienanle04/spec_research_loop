@@ -30,6 +30,8 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncClient:
 
     monkeypatch.setenv("DATABASE_URL", TEST_URL)
     monkeypatch.setenv("RESEARCH_SOURCE_PROVIDER", "fake")
+    monkeypatch.setenv("RESEARCH_TEXT_STORAGE", "memory")
+    monkeypatch.setenv("RESEARCH_REQUIRE_DOWNLOADABLE_FULL_TEXT", "false")
     monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "fake")
     get_settings.cache_clear()
     await dispose_engine()

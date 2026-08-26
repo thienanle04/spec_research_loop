@@ -259,41 +259,7 @@ Cần test:
 - Xử lý 401, 409 version conflict và lỗi provider.
 - Refresh query sau khi mutation/SSE hoàn tất.
 
-## 10. Tạo luồng demo độc lập
-
-Thêm một script local như:
-
-```text
-backend/scripts/bootstrap_research_demo.py
-```
-
-Script dùng HTTP API để:
-
-1. Register/login Account demo.
-2. Tạo Loop Session.
-3. Confirm hai node của Grilling bằng fixture narrative/Card.
-4. Prepare `related_work`.
-5. In ra URL:
-
-```text
-http://localhost:3000/sessions/{id}?stage=related_work
-```
-
-Chạy module độc lập:
-
-```powershell
-docker compose up -d postgres
-
-cd backend
-uv run alembic upgrade head
-uv run uvicorn app.main:app --reload --port 8000
-
-cd ../frontend
-pnpm codegen
-pnpm dev
-```
-
-Automated checks:
+## 10. Automated checks
 
 ```powershell
 cd backend
@@ -341,5 +307,4 @@ Module được xem là hoàn thành khi:
 - Thay đổi Citation gây invalidation đúng.
 - Frontend dùng OpenAPI-generated client cho REST và helper riêng cho SSE.
 - Toàn bộ test mặc định chạy bằng fake provider, không cần internet/LLM/module khác.
-- Có bootstrap demo cho manual test.
 - `spec` và `judgement` có thể nhận dữ liệu qua Context Projection mà không truy cập trực tiếp bảng của `research`.

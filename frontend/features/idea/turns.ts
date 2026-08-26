@@ -11,6 +11,12 @@ export type IdeaTurn = {
   text: string;
 };
 
+export type NoteTurn = {
+  role: "account";
+  kind: "note";
+  text: string;
+};
+
 export type AnswersTurn = {
   role: "account";
   kind: "answers";
@@ -23,7 +29,7 @@ export type ModelTurn = {
   questions: GrillingQuestion[];
 };
 
-export type GrillingTurn = IdeaTurn | AnswersTurn | ModelTurn;
+export type GrillingTurn = IdeaTurn | AnswersTurn | NoteTurn | ModelTurn;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -59,6 +65,9 @@ function parseTurn(value: unknown): GrillingTurn | null {
   if (record.role === "account" && record.kind === "idea" && typeof record.text === "string") {
     return { role: "account", kind: "idea", text: record.text };
   }
+  if (record.role === "account" && record.kind === "note" && typeof record.text === "string") {
+    return { role: "account", kind: "note", text: record.text };
+  }
   if (record.role === "account" && record.kind === "answers" && Array.isArray(record.answers)) {
     const answers = record.answers.map(parseAnswer);
     if (answers.some((item) => item === null)) return null;
@@ -72,6 +81,32 @@ function parseTurn(value: unknown): GrillingTurn | null {
     return { role: "model", preamble, questions };
   }
   return null;
+}
+
+export function parseFrame(narrative: Record<string, unknown> | undefined): {
+  intent: string;
+  problem: string;
+  research_question: string;
+} {
+  const raw = narrative?.frame;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { intent: "", problem: "", research_question: "" };
+  }
+  const frame = raw as Record<string, unknown>;
+  return {
+    intent: typeof frame.intent === "string" ? frame.intent : "",
+    problem: typeof frame.problem === "string" ? frame.problem : "",
+    research_question: typeof frame.research_question === "string" ? frame.research_question : "",
+  };
+}
+
+export function frameComplete(narrative: Record<string, unknown> | undefined): boolean {
+  const frame = parseFrame(narrative);
+  return (
+    Boolean(frame.intent.trim()) &&
+    Boolean(frame.problem.trim()) &&
+    Boolean(frame.research_question.trim())
+  );
 }
 
 export function parseTurns(narrative: Record<string, unknown> | undefined): GrillingTurn[] {
@@ -102,8 +137,13 @@ export function clustersAnswered(turns: GrillingTurn[]): boolean {
   let pending = false;
   for (const turn of turns) {
     if (turn.role === "model") {
-      pending = turn.questions.length > 0;
-    } else if (turn.role === "account" && turn.kind === "answers") {
+      const hasQuestions = turn.questions.length > 0;
+      if (hasQuestions && pending) return false;
+      if (hasQuestions) pending = true;
+    } else if (
+      turn.role === "account" &&
+      (turn.kind === "answers" || turn.kind === "note")
+    ) {
       pending = false;
     }
   }
@@ -120,4 +160,8 @@ export function modelTurnBefore(turns: GrillingTurn[], index: number): ModelTurn
 
 export function withEditedTurn(turns: GrillingTurn[], index: number, next: GrillingTurn): GrillingTurn[] {
   return turns.slice(0, index).concat(next);
+}
+
+export function interpretationConfirmable(narrative: Record<string, unknown> | undefined): boolean {
+  return frameComplete(narrative);
 }

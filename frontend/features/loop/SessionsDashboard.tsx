@@ -79,9 +79,6 @@ export function SessionsDashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline">
-            <Link href="/research-demo">Open Research demo</Link>
-          </Button>
           <Button
             disabled={createSession.isPending}
             onClick={() => createSession.mutate({ data: { title: null } })}

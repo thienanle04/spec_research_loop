@@ -1,5 +1,6 @@
 """Fast unit tests for research provider seams and normalization."""
 
+import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -9,11 +10,22 @@ import pytest
 from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.research.adapters.fake_source import FakeScholarlySourcePort
 from app.modules.research.normalization import normalize_doi, normalize_url
-from app.modules.research.ports import ScholarlyRecord, SourcePreferences
-from app.modules.research.schemas import GroundingStatus, ResearchInputs
+from app.modules.research.ports import (
+    DocumentText,
+    ScholarlyRecord,
+    SourcePreferences,
+    VerificationResult,
+)
+from app.modules.research.schemas import (
+    GroundingStatus,
+    ResearchGenerateRequest,
+    ResearchInputs,
+    VerificationStatus,
+)
 from app.modules.research.service import (
     ResearchService,
     _compose_search_queries,
+    _json_value,
     _rank_relevant_records,
 )
 from app.ports.llm import LlmProviderError
@@ -25,6 +37,23 @@ def test_normalize_doi_and_url() -> None:
         normalize_url("Example.COM/work/?utm_source=test&view=full#section")
         == "https://example.com/work?view=full"
     )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '<think>Need four queries.</think>\n{"queries":["claim evidence"]}',
+        'Here is the JSON:\n```json\n{"queries":["claim evidence"]}\n```',
+        'Reasoning before the answer. {"queries":["claim evidence"]} Done.',
+    ],
+)
+def test_json_value_extracts_structured_output_from_model_wrappers(raw: str) -> None:
+    assert _json_value(raw, dict) == {"queries": ["claim evidence"]}
+
+
+def test_json_value_still_rejects_unstructured_model_output() -> None:
+    with pytest.raises(json.JSONDecodeError):
+        _json_value("I could not produce the requested queries.", dict)
 
 
 @pytest.mark.asyncio
@@ -58,6 +87,128 @@ async def test_source_preferences_are_applied_by_provider_port() -> None:
     assert len(records) == 2
     assert records[0].metadata["is_peer_reviewed"] is True
     assert source.search_calls[0][1] is not None
+
+
+@pytest.mark.asyncio
+async def test_search_queries_use_english_while_outputs_follow_idea_language() -> None:
+    llm = FakeLlmPort(
+        responses={
+            "research-inputs": '{"keywords":["scientific claim verification"]}',
+            "research-query": '{"queries":["scientific claim verification"]}',
+            "research-analysis": (
+                '{"what_was_done":"Kiểm tra từng tuyên bố",'
+                '"method_or_feedback":"Đối chiếu bằng chứng",'
+                '"limitation":"Chỉ đánh giá một tập dữ liệu",'
+                '"relevance":"Liên quan trực tiếp đến ý tưởng",'
+                '"supporting_passage":"Kiểm tra từng tuyên bố.",'
+                '"confidence":0.8}'
+            ),
+            "research-gap-analysis": (
+                '{"prior_work":"Các nghiên cứu đã kiểm tra từng tuyên bố",'
+                '"limitation":"Chưa đánh giá trên nhiều lĩnh vực",'
+                '"importance":"Kết quả cần có khả năng khái quát",'
+                '"testability":"So sánh trên nhiều bộ dữ liệu",'
+                '"covered_citation_keys":["nguyen-2026"]}'
+            ),
+            "research-gap-synthesis": (
+                '{"statement":"Các nghiên cứu đã kiểm tra từng tuyên bố, nhưng chưa '
+                'rõ phương pháp có khái quát sang nhiều lĩnh vực hay không."}'
+            ),
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    idea = {
+        "problems": ["Các bản tóm tắt có tuyên bố không được nguồn hỗ trợ"],
+        "research_questions": ["Kiểm chứng từng tuyên bố có giảm lỗi không?"],
+    }
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {"kind": "problem", "body": {"text": idea["problems"][0]}},
+                    {
+                        "kind": "research_question",
+                        "body": {"text": idea["research_questions"][0]},
+                    },
+                ]
+            },
+            "related_work": {
+                "narrative": {
+                    "search_queries": ["scientific claim verification"],
+                    "candidate_count": 1,
+                },
+                "projected": {
+                    "citations": [
+                        {
+                            "id": "citation-1",
+                            "citation_key": "nguyen-2026",
+                            "title": "Kiểm chứng tuyên bố",
+                            "abstract": "Kiểm tra từng tuyên bố.",
+                            "provider": "fixture",
+                            "verification_status": "verified",
+                        }
+                    ],
+                    "related_work": [
+                        {
+                            "citation_id": "citation-1",
+                            "what_was_done": "Kiểm tra từng tuyên bố",
+                            "limitation": "Chỉ đánh giá một tập dữ liệu",
+                            "grounding_status": "grounded",
+                        }
+                    ],
+                },
+            },
+        },
+        "working_draft": {"narrative": {}},
+    }
+
+    inputs, _ = await service._generate_research_inputs(context)
+    queries, _ = await service._generate_queries(
+        ResearchInputs(keywords=["kiểm chứng tuyên bố"]), idea
+    )
+    finding, _ = await service._analyze(
+        ScholarlyRecord(
+            title="Kiểm chứng tuyên bố",
+            abstract="Kiểm tra từng tuyên bố.",
+        ),
+        uuid4(),
+        research_context={"idea": idea, "research_inputs": inputs},
+    )
+    gap, _ = await service._generate_gaps(context)
+
+    assert "scientific claim verification" in inputs["keywords"]
+    assert queries[0] == "scientific claim verification"
+    assert len(queries) >= 4
+    assert any("survey OR review" in query for query in queries)
+    assert finding.what_was_done == "Kiểm tra từng tuyên bố"
+    assert gap["candidate"]["statement"].startswith("Các nghiên cứu")
+    assert len(llm.calls) == 8
+    assert any("research-rerank" in call["system"] for call in llm.calls)
+    query_call = next(call for call in llm.calls if "research-query" in call["system"])
+    assert "English regardless of the input language" in query_call["system"]
+    research_inputs_call = next(
+        call for call in llm.calls if "research-inputs" in call["system"]
+    )
+    assert "Write every keyword in English" in research_inputs_call["system"]
+    assert "idea's language" in research_inputs_call["system"]
+    user_facing_calls = [
+        call
+        for call in llm.calls
+        if "research-query" not in call["system"]
+        and "research-inputs" not in call["system"]
+        and "research-counter-query" not in call["system"]
+        and "research-rerank" not in call["system"]
+    ]
+    assert all(
+        "write every generated user-facing value in that same language"
+        in call["system"]
+        for call in user_facing_calls
+    )
 
 
 @pytest.mark.asyncio
@@ -140,6 +291,63 @@ async def test_analysis_normalizes_fit_webui_field_aliases() -> None:
 
 
 @pytest.mark.asyncio
+async def test_analysis_uses_distinct_content_passages_instead_of_html_or_pdf_dump() -> None:
+    source_text = (
+        "Username Password Remember me Journal Content Search Scope Browse By Title\n"
+        "Abstract\n"
+        "This study evaluates reverse logistics service quality for online shoppers.\n"
+        "Research Methodology\n"
+        "Data were collected from 300 participants using a structured questionnaire.\n"
+        "Limitations\n"
+        "The convenience sample was limited to young adults in Bangalore."
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-analysis": json.dumps(
+                {
+                    "what_was_done": "Evaluates reverse logistics service quality.",
+                    "method_or_feedback": "Uses a questionnaire with 300 participants.",
+                    "limitation": "Uses a local convenience sample.",
+                    "relevance": "Directly relevant.",
+                    "supporting_passage": "Full text (HTML)",
+                    "evidence": {
+                        "what_was_done": {"passage": "Full text (HTML)", "location": "HTML"},
+                        "method_or_feedback": {"passage": "Full text (PDF)", "location": "PDF"},
+                        "limitation": {"passage": "VI. RESEARCH METHODOLOGY", "location": "PDF"},
+                    },
+                    "confidence": 0.8,
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    finding, warnings = await service._analyze(
+        ScholarlyRecord(title="Reverse logistics", abstract=None),
+        uuid4(),
+        research_context={"idea": {}, "research_inputs": {}},
+        document=DocumentText(text=source_text, source_kind="full_text_html"),
+    )
+
+    evidence = finding.evidence
+    assert evidence["what_was_done"].passage.startswith("This study evaluates")
+    assert evidence["method_or_feedback"].passage.startswith("Data were collected")
+    assert evidence["limitation"].passage.startswith("The convenience sample")
+    assert evidence["what_was_done"].location == "Abstract"
+    assert evidence["method_or_feedback"].location == "Research Methodology"
+    assert evidence["limitation"].location == "Limitations"
+    assert len({item.passage for item in evidence.values()}) == 3
+    assert not any("Username Password" in item.passage for item in evidence.values())
+    assert finding.grounding_status is GroundingStatus.GROUNDED
+    assert warnings == []
+
+
+@pytest.mark.asyncio
 async def test_analysis_fallback_hides_validation_implementation_details() -> None:
     llm = FakeLlmPort(responses={"research-analysis": "not-json"})
     service = ResearchService(
@@ -192,6 +400,10 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
                 }
             },
             "related_work": {
+                "narrative": {
+                    "search_queries": ["claim verification"],
+                    "candidate_count": 2,
+                },
                 "projected": {
                     "citations": [
                         {
@@ -199,6 +411,8 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
                             "citation_key": "smith-2025",
                             "title": "Claim verification",
                             "abstract": "Evaluates aggregate feedback.",
+                            "provider": "fixture",
+                            "verification_status": "verified",
                             "metadata": {"large-provider-payload": "must-not-be-sent"},
                         },
                         {
@@ -206,6 +420,8 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
                             "citation_key": "lee-2024",
                             "title": "Evidence feedback",
                             "abstract": "Evaluates textual feedback.",
+                            "provider": "fixture",
+                            "verification_status": "verified",
                         },
                     ],
                     "related_work": [
@@ -213,14 +429,16 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
                             "citation_id": "citation-1",
                             "what_was_done": "Optimizes prompts with aggregate scores",
                             "limitation": "Uses aggregate feedback",
+                            "grounding_status": "grounded",
                         },
                         {
                             "citation_id": "citation-2",
                             "what_was_done": "Refines outputs with textual feedback",
                             "limitation": "Does not verify evidence per claim",
+                            "grounding_status": "grounded",
                         },
                     ],
-                }
+                },
             },
         },
         "working_draft": {"narrative": {}},
@@ -255,8 +473,196 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
         "statement",
         "supporting_citation_keys",
         "status",
+        "search_audit",
+        "evidence_check",
     }
+    assert narrative["candidate"]["status"] == "candidate"
+    assert narrative["candidate"]["search_audit"]["complete"] is True
+    assert (
+        narrative["candidate"]["search_audit"]["counter_evidence_analyzed_count"] == 2
+    )
+    counter_results = narrative["candidate"]["search_audit"][
+        "counter_evidence_results"
+    ]
+    assert len(counter_results) == 2
+    assert all(result["title"] for result in counter_results)
+    assert all(result["rationale"] for result in counter_results)
+    assert narrative["candidate"]["search_audit"]["counter_evidence_assessment"]
+    assert narrative["candidate"]["evidence_check"]["ready"] is True
     assert warnings == []
+
+
+@pytest.mark.asyncio
+async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
+    llm = FakeLlmPort()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    prior_result = {
+        "result_key": "prior-counter-1",
+        "title": "Existing claim-level verifier",
+        "authors": ["Lee"],
+        "year": 2025,
+        "provider": "fixture",
+        "provider_source_id": "prior-counter-1",
+        "abstract": "Already verifies evidence for every generated claim.",
+        "verification_status": "verified",
+        "impact": "gap_not_supported",
+        "rationale": "This method already addresses the proposed limitation.",
+    }
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {"kind": "problem", "body": {"text": "Unsupported claims"}}
+                ]
+            },
+            "research_inputs": {
+                "narrative": {"keywords": ["claim verification"]}
+            },
+            "related_work": {
+                "narrative": {
+                    "search_queries": ["claim verification"],
+                    "candidate_count": 1,
+                },
+                "projected": {
+                    "citations": [
+                        {
+                            "id": "citation-1",
+                            "citation_key": "smith-2025",
+                            "title": "Claim verification",
+                            "abstract": "Evaluates aggregate feedback.",
+                            "provider": "fixture",
+                            "verification_status": "verified",
+                        }
+                    ],
+                    "related_work": [
+                        {
+                            "citation_id": "citation-1",
+                            "what_was_done": "Optimizes prompts with aggregate scores",
+                            "limitation": "Uses aggregate feedback",
+                            "grounding_status": "grounded",
+                        }
+                    ],
+                },
+            },
+        },
+        "working_draft": {
+            "card_snapshot": [
+                {
+                    "kind": "gap",
+                    "body": {
+                        "statement": "Edited saved Gap takes precedence.",
+                        "search_audit": {
+                            "counter_evidence_outcome": "gap_not_supported",
+                            "counter_evidence_assessment": (
+                                "Existing work already performs claim-level verification."
+                            ),
+                            "counter_evidence_results": [prior_result],
+                        },
+                    },
+                }
+            ],
+            "narrative": {
+                "candidate": {
+                    "statement": "No system verifies evidence for every claim.",
+                    "search_audit": {
+                        "counter_evidence_outcome": "gap_not_supported",
+                        "counter_evidence_assessment": (
+                            "Existing work already performs claim-level verification."
+                        ),
+                        "counter_evidence_results": [prior_result],
+                    },
+                }
+            }
+        },
+    }
+
+    _, warnings = await service._generate_gaps(context)
+    analysis_prompt = next(
+        call["prompt"]
+        for call in llm.calls
+        if "research-gap-analysis" in call["system"]
+    )
+    synthesis_prompt = next(
+        call["prompt"]
+        for call in llm.calls
+        if "research-gap-synthesis" in call["system"]
+    )
+    counter_query_prompt = next(
+        call["prompt"]
+        for call in llm.calls
+        if "research-counter-query" in call["system"]
+    )
+
+    for prompt in (analysis_prompt, synthesis_prompt, counter_query_prompt):
+        assert "gap_not_supported" in prompt
+        assert "Edited saved Gap takes precedence." in prompt
+        assert "No system verifies evidence for every claim." not in prompt
+        assert "Existing claim-level verifier" in prompt
+        assert "already addresses the proposed limitation" in prompt
+    assert '"required_counter_evidence_keys": ["prior-counter-1"]' in analysis_prompt
+    assert warnings == []
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_analysis_repairs_missing_required_fields() -> None:
+    records = [
+        ScholarlyRecord(
+            title=f"Counter evidence {identifier}",
+            abstract="Evaluates an existing claim verification method.",
+            provider="fixture",
+            provider_source_id=identifier,
+        )
+        for identifier in ("first", "second")
+    ]
+    llm = FakeLlmPort(
+        responses={
+            "research-counter-analysis-repair": json.dumps(
+                {
+                    "outcome": "no_direct_counter_evidence",
+                    "statement": "The limitation remains testable.",
+                    "assessment": "Neither result directly resolves the limitation.",
+                    "covered_result_keys": ["first", "second"],
+                    "findings": [
+                        {
+                            "result_key": identifier,
+                            "impact": "no_direct_counter_evidence",
+                            "rationale": "The metadata does not report the proposed check.",
+                        }
+                        for identifier in ("first", "second")
+                    ],
+                }
+            ),
+            "research-counter-analysis": json.dumps(
+                {
+                    "outcome": "inconclusive",
+                    "statement": "The limitation remains testable.",
+                }
+            ),
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    assessment, warnings = await service._assess_counter_evidence(
+        idea={},
+        provisional_statement="The limitation remains testable.",
+        records=records,
+    )
+
+    assert assessment.outcome.value == "no_direct_counter_evidence"
+    assert {item.result_key for item in assessment.findings} == {"first", "second"}
+    assert warnings == []
+    assert len(llm.calls) == 2
+    assert "research-counter-analysis-repair" in llm.calls[1]["system"]
 
 
 @pytest.mark.asyncio
@@ -277,6 +683,10 @@ async def test_gap_generation_preserves_valid_analysis_when_synthesis_times_out(
                 ]
             },
             "related_work": {
+                "narrative": {
+                    "search_queries": ["claim verification"],
+                    "candidate_count": 1,
+                },
                 "projected": {
                     "citations": [
                         {
@@ -284,6 +694,8 @@ async def test_gap_generation_preserves_valid_analysis_when_synthesis_times_out(
                             "citation_key": "smith-2025",
                             "title": "Claim verification",
                             "abstract": "Evaluates aggregate feedback.",
+                            "provider": "fixture",
+                            "verification_status": "verified",
                         }
                     ],
                     "related_work": [
@@ -291,9 +703,10 @@ async def test_gap_generation_preserves_valid_analysis_when_synthesis_times_out(
                             "citation_id": "citation-1",
                             "what_was_done": "Optimizes prompts with aggregate scores",
                             "limitation": "Does not verify evidence per claim",
+                            "grounding_status": "grounded",
                         }
                     ],
-                }
+                },
             },
         },
         "working_draft": {"narrative": {}},
@@ -455,9 +868,7 @@ async def test_research_input_schema_mismatch_uses_clean_idea_phrases_without_wa
 
 
 @pytest.mark.asyncio
-async def test_research_inputs_preserve_distinctive_idea_concepts_when_model_omits_them() -> (
-    None
-):
+async def test_research_inputs_do_not_pad_a_complete_model_keyword_set() -> None:
     llm = FakeLlmPort(
         responses={
             "research-inputs": (
@@ -492,8 +903,13 @@ async def test_research_inputs_preserve_distinctive_idea_concepts_when_model_omi
     narrative, warnings = await service._generate_research_inputs(context)
 
     assert warnings == []
-    assert "claim checklist" in narrative["keywords"]
-    assert "paper summaries" in narrative["keywords"]
+    assert narrative["keywords"] == [
+        "claim verification",
+        "factual consistency",
+        "source attribution",
+        "summary evaluation",
+        "language model outputs",
+    ]
 
 
 @pytest.mark.asyncio
@@ -549,7 +965,143 @@ async def test_research_inputs_reject_narrative_fragments_as_search_keywords() -
 
 
 @pytest.mark.asyncio
-async def test_query_generation_restores_idea_anchors_omitted_by_model() -> None:
+async def test_research_inputs_flatten_only_core_role_aware_concepts() -> None:
+    llm = FakeLlmPort(
+        responses={
+            "research-inputs": (
+                '{"problem_concepts":['
+                '{"term":"teacher administrative workload",'
+                '"synonyms":["administrative burden"]},'
+                '{"term":"instructional time","synonyms":[]}],'
+                '"research_question_concepts":['
+                '{"term":"automated grading","synonyms":["automated assessment"]}],'
+                '"constraint_filters":['
+                '{"term":"two-week team deadline","searchable":false},'
+                '{"term":"low-resource schools","searchable":true}],'
+                '"open_question_concepts":['
+                '{"term":"verification workload","synonyms":[]}]} '
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {
+                        "kind": "problem",
+                        "body": {
+                            "text": "Teacher administrative workload reduces instructional time."
+                        },
+                    },
+                    {
+                        "kind": "research_question",
+                        "body": {
+                            "text": "Does automated grading reduce teacher workload?"
+                        },
+                    },
+                    {
+                        "kind": "constraint",
+                        "body": {
+                            "text": "Two-week team deadline in low-resource schools."
+                        },
+                    },
+                    {
+                        "kind": "open_question",
+                        "body": {"text": "Verification workload after automation."},
+                    },
+                ]
+            }
+        },
+        "working_draft": {"narrative": {}},
+    }
+
+    narrative, warnings = await service._generate_research_inputs(context)
+
+    assert warnings == []
+    assert "teacher administrative workload" in narrative["keywords"]
+    assert "automated grading" in narrative["keywords"]
+    assert "administrative burden" in narrative["keywords"]
+    assert "two-week team deadline" not in narrative["keywords"]
+    assert "low-resource schools" not in narrative["keywords"]
+    assert "verification workload" not in narrative["keywords"]
+    assert set(narrative) == {"keywords", "preferred_sources"}
+
+
+@pytest.mark.asyncio
+async def test_research_inputs_generate_english_keywords_for_a_vietnamese_idea() -> (
+    None
+):
+    llm = FakeLlmPort(
+        responses={
+            "research-inputs": (
+                '{"keywords":["teacher administrative workload",'
+                '"teacher workload","automated grading",'
+                '"automated attendance","teacher-student interaction",'
+                '"instructional time"]}'
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {
+                        "kind": "problem",
+                        "body": {
+                            "text": (
+                                "Giáo viên mất quá nhiều thời gian cho nhiệm vụ hành "
+                                "chính, điểm danh và chấm bài khiến họ thiếu thời gian "
+                                "tương tác với học sinh."
+                            )
+                        },
+                    },
+                    {
+                        "kind": "research_question",
+                        "body": {
+                            "text": (
+                                "Tự động hóa chấm điểm và điểm danh có làm tăng thời "
+                                "gian giảng dạy hay không?"
+                            )
+                        },
+                    },
+                ]
+            }
+        },
+        "working_draft": {"narrative": {}},
+    }
+
+    narrative, warnings = await service._generate_research_inputs(context)
+
+    assert warnings == []
+    assert narrative["keywords"] == [
+        "teacher administrative workload",
+        "teacher workload",
+        "automated grading",
+        "automated attendance",
+        "teacher-student interaction",
+        "instructional time",
+    ]
+    assert "Write every keyword in English" in llm.calls[0]["system"]
+    assert "regardless of the input idea's language" in llm.calls[0]["system"]
+    assert "write every generated user-facing value in that same language" not in (
+        llm.calls[0]["system"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_generation_uses_only_model_translated_english_queries() -> None:
     llm = FakeLlmPort(
         responses={"research-query": '{"queries":["language model evaluation"]}'}
     )
@@ -559,19 +1111,376 @@ async def test_query_generation_restores_idea_anchors_omitted_by_model() -> None
         verifier=_UnusedVerifier(),  # type: ignore[arg-type]
         llm=llm,
     )
-    idea = {"problems": ["Claim checklist for paper summaries"]}
+    idea = {"problems": ["Danh sách kiểm tra tuyên bố cho bản tóm tắt bài báo"]}
 
     queries, warnings = await service._generate_queries(
         ResearchInputs(
-            keywords=["claim verification", "factual consistency"],
+            keywords=["kiểm chứng tuyên bố", "tính nhất quán thực tế"],
         ),
         idea,
     )
 
     assert warnings == []
-    assert "claim checklist" in queries
-    assert "paper summaries" in queries
-    assert "language model evaluation" in queries
+    assert queries[0] == "language model evaluation"
+    assert len(queries) >= 4
+    assert "English regardless of the input language" in llm.calls[0]["system"]
+
+
+@pytest.mark.asyncio
+async def test_provider_query_plan_uses_one_multi_query_call_when_available() -> None:
+    class MultiQuerySource:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def search_many(
+            self,
+            *,
+            queries: list[str],
+            preferences: SourcePreferences | None = None,
+            limit: int = 10,
+        ) -> list[ScholarlyRecord]:
+            del preferences, limit
+            self.queries = queries
+            return [ScholarlyRecord(title="Batched result")]
+
+        async def search(self, **_kwargs: object) -> list[ScholarlyRecord]:
+            raise AssertionError("Individual query search should not be used")
+
+        async def get_source(self, *, identifier: str) -> ScholarlyRecord | None:
+            del identifier
+            return None
+
+    source = MultiQuerySource()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=source,
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+    )
+
+    records, failures = await service._search_provider_queries(
+        queries=["claim verification", "fact checking"],
+        preferences=SourcePreferences(),
+        limit=20,
+    )
+
+    assert source.queries == ["claim verification", "fact checking"]
+    assert failures == []
+    assert records[0].metadata["discovery_queries"] == source.queries
+
+
+@pytest.mark.asyncio
+async def test_query_generation_preserves_multiple_model_queries_and_expands_them() -> (
+    None
+):
+    model_queries = [
+        "claim evidence verification",
+        "unsupported claim detection",
+        "claim verification benchmark",
+    ]
+    llm = FakeLlmPort(
+        responses={"research-query": json.dumps({"queries": model_queries})}
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    queries, warnings = await service._generate_queries(
+        ResearchInputs(
+            keywords=["claim evidence verification", "unsupported claim detection"]
+        ),
+        {"problems": ["Unsupported claims in scholarly summaries"]},
+    )
+
+    assert warnings == []
+    assert queries[:3] == model_queries
+    assert len(queries) == 4
+
+
+@pytest.mark.asyncio
+async def test_listwise_reranker_reorders_candidates_and_preserves_heuristic_metadata() -> (
+    None
+):
+    first = ScholarlyRecord(
+        title="Broad language model evaluation",
+        abstract="A general evaluation survey.",
+        provider="fixture",
+        provider_source_id="broad",
+        metadata={"retrieval_score": 0.8},
+    )
+    second = ScholarlyRecord(
+        title="Claim evidence verification for paper summaries",
+        abstract="Evaluates claim-level evidence checks for scholarly summaries.",
+        provider="fixture",
+        provider_source_id="direct",
+        metadata={"retrieval_score": 0.7},
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-rerank": json.dumps(
+                {
+                    "rankings": [
+                        {"result_key": "direct", "relevance_score": 0.95},
+                        {"result_key": "broad", "relevance_score": 0.25},
+                    ]
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    outcome = await service._rerank_records(
+        [first, second],
+        idea={"problems": ["Unsupported claims in paper summaries"]},
+        inputs=ResearchInputs(keywords=["claim evidence verification"]),
+        queries=["claim evidence verification paper summaries"],
+        objective="Build a directly relevant Related Work comparison.",
+    )
+
+    assert outcome.applied is True
+    assert [record.provider_source_id for record in outcome.records] == [
+        "direct",
+        "broad",
+    ]
+    assert second.metadata["heuristic_rank"] == 2
+    assert second.metadata["heuristic_retrieval_score"] == 0.7
+    assert second.metadata["reranker_rank"] == 1
+    assert second.metadata["reranker_score"] == 0.95
+
+
+@pytest.mark.asyncio
+async def test_listwise_reranker_repairs_invalid_model_json() -> None:
+    records = [
+        ScholarlyRecord(
+            title=f"Candidate {identifier}",
+            provider="fixture",
+            provider_source_id=identifier,
+            metadata={"retrieval_score": score},
+        )
+        for identifier, score in (("first", 0.8), ("second", 0.7))
+    ]
+    llm = FakeLlmPort(
+        responses={
+            "research-rerank-repair": json.dumps(
+                {
+                    "rankings": [
+                        {"result_key": "second", "relevance_score": 0.9},
+                        {"result_key": "first", "relevance_score": 0.4},
+                    ]
+                }
+            ),
+            "research-rerank": "The ranking is: second, then first.",
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    outcome = await service._rerank_records(
+        records,
+        idea={},
+        inputs=ResearchInputs(),
+        queries=["evidence review"],
+        objective="Build Related Work.",
+    )
+
+    assert outcome.applied is True
+    assert not outcome.warnings
+    assert [record.provider_source_id for record in outcome.records] == [
+        "second",
+        "first",
+    ]
+    assert len(llm.calls) == 2
+    assert "research-rerank-repair" in llm.calls[1]["system"]
+
+
+@pytest.mark.asyncio
+async def test_listwise_reranker_falls_back_when_candidate_coverage_is_incomplete() -> (
+    None
+):
+    records = [
+        ScholarlyRecord(
+            title=f"Candidate {identifier}",
+            provider="fixture",
+            provider_source_id=identifier,
+            metadata={"retrieval_score": score},
+        )
+        for identifier, score in (("first", 0.8), ("second", 0.7))
+    ]
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(
+            responses={
+                "research-rerank": (
+                    '{"rankings":[{"result_key":"second","relevance_score":0.9}]}'
+                )
+            }
+        ),
+    )
+
+    outcome = await service._rerank_records(
+        records,
+        idea={},
+        inputs=ResearchInputs(),
+        queries=["evidence review"],
+        objective="Build Related Work.",
+    )
+
+    assert outcome.applied is False
+    assert outcome.records == records
+    assert outcome.warnings and "heuristic order" in outcome.warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_counter_query_generation_accepts_json_after_reasoning_wrapper() -> None:
+    llm = FakeLlmPort(
+        responses={
+            "research-counter-query": (
+                "<think>Generate falsification branches.</think>\n"
+                '```json\n{"queries":["claim verification competing methods",'
+                '"claim verification equivalent approach",'
+                '"claim verification replication benchmark",'
+                '"claim verification conflicting findings"]}\n```'
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort([]),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    result = await service._search_counter_evidence(
+        idea={"problems": ["Unsupported claims"]},
+        inputs=ResearchInputs(keywords=["claim verification"]),
+        provisional_statement="It remains unclear whether verification reduces errors.",
+        related_work_queries=["claim verification"],
+        preferences=SourcePreferences(),
+    )
+
+    assert result.queries[0] == "claim verification competing methods"
+    assert not any("deterministic English queries" in item for item in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_search_analyzes_only_top_five_relevant_results() -> (
+    None
+):
+    records = [
+        ScholarlyRecord(
+            title=f"Claim evidence verification benchmark {index}",
+            abstract=(
+                "Evaluates claim evidence verification and unsupported claim detection "
+                f"with comparison protocol {index}."
+            ),
+            provider="fixture",
+            provider_source_id=f"relevant-{index}",
+        )
+        for index in range(7)
+    ] + [
+        ScholarlyRecord(
+            title="Unrelated image segmentation",
+            abstract="Segments medical images.",
+            provider="fixture",
+            provider_source_id="irrelevant",
+        )
+    ]
+    verifier = _RecordingVerifier()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(records),
+        verifier=verifier,  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+    )
+
+    result = await service._search_counter_evidence(
+        idea={"problems": ["Unsupported claims in scholarly summaries"]},
+        inputs=ResearchInputs(
+            keywords=["claim evidence verification", "unsupported claim detection"]
+        ),
+        provisional_statement=(
+            "It remains unclear whether claim-level evidence feedback reduces "
+            "unsupported claims."
+        ),
+        related_work_queries=["claim evidence verification"],
+        preferences=SourcePreferences(),
+    )
+
+    assert result.complete is True
+    assert len(result.queries) >= 3
+    assert result.candidate_count == 8
+    assert len(result.records) == 5
+    assert len(result.selected_records) == 5
+    assert len(verifier.records) == 5
+    assert all(
+        record.metadata["counter_verification_status"] == "verified"
+        for record in result.records
+    )
+    assert all(
+        "Claim evidence verification" in record.title for record in result.records
+    )
+    scores = [float(record.metadata["retrieval_score"]) for record in result.records]
+    assert scores == sorted(scores, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_query_generation_failure_never_sends_vietnamese_to_provider() -> None:
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=_QuotaLlm(),
+    )
+
+    queries, warnings = await service._generate_queries(
+        ResearchInputs(keywords=["kiểm chứng tuyên bố"]),
+        {"problems": ["Tóm tắt bài báo có tuyên bố không được hỗ trợ"]},
+    )
+
+    assert queries[:2] == ["scholarly evidence review", "systematic literature review"]
+    assert len(queries) == 4
+    assert warnings and "conservative fallback" in warnings[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_query",
+    ["kiểm chứng tuyên bố", "kiem chung tuyen bo"],
+)
+async def test_query_generation_rejects_vietnamese_model_output(
+    model_query: str,
+) -> None:
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(
+            responses={"research-query": f'{{"queries":["{model_query}"]}}'}
+        ),
+    )
+
+    queries, warnings = await service._generate_queries(
+        ResearchInputs(keywords=["kiểm chứng tuyên bố"]),
+        {"problems": ["Tóm tắt có tuyên bố không được hỗ trợ"]},
+    )
+
+    assert queries[:2] == ["scholarly evidence review", "systematic literature review"]
+    assert len(queries) == 4
+    assert warnings and "conservative fallback" in warnings[0]
 
 
 def test_query_composition_covers_all_keywords_without_a_five_query_cap() -> None:
@@ -590,9 +1499,25 @@ def test_query_composition_covers_all_keywords_without_a_five_query_cap() -> Non
         {},
     )
 
-    assert len(queries) == 7
     assert queries[0] == "language model evaluation"
-    assert all(keyword in queries for keyword in keywords)
+    assert all(any(keyword in query for query in queries) for keyword in keywords)
+    assert not any(query in keywords for query in queries)
+
+
+def test_query_composition_separates_open_questions_and_ignores_constraints() -> None:
+    queries = _compose_search_queries(
+        [],
+        ResearchInputs(keywords=["automated grading", "teacher workload"]),
+        {
+            "problems": ["Teacher workload from automated grading"],
+            "constraints": ["Two-week team deadline", "Low-resource schools"],
+            "open_questions": ["verification workload"],
+        },
+    )
+
+    assert any("verification workload" in query for query in queries)
+    assert all("two-week team deadline" not in query.casefold() for query in queries)
+    assert all("low-resource schools" not in query.casefold() for query in queries)
 
 
 def test_related_work_ranking_filters_generic_results_and_covers_idea_concepts() -> (
@@ -626,6 +1551,36 @@ def test_related_work_ranking_filters_generic_results_and_covers_idea_concepts()
     }
 
 
+def test_related_work_ranking_uses_english_queries_for_vietnamese_idea() -> None:
+    strong = ScholarlyRecord(
+        title="Evidence verification for scientific paper summaries",
+        abstract="A claim-level checklist detects unsupported statements.",
+    )
+    weak = ScholarlyRecord(
+        title="General language model evaluation",
+        abstract="A broad benchmark of generated text.",
+    )
+
+    ranked, discarded = _rank_relevant_records(
+        [weak, strong],
+        inputs=ResearchInputs(keywords=["kiểm chứng tuyên bố"]),
+        idea={"problems": ["Tuyên bố không được hỗ trợ trong tóm tắt bài báo"]},
+        queries=[
+            '"evidence verification" AND "scientific paper summaries"',
+            '"unsupported statements" AND "claim-level checklist"',
+        ],
+    )
+
+    assert [record.title for record in ranked] == [strong.title, weak.title]
+    assert discarded == 0
+
+
+def test_related_work_generation_is_capped_at_five_results() -> None:
+    assert ResearchGenerateRequest(expected_version=1).max_results == 5
+    with pytest.raises(ValueError):
+        ResearchGenerateRequest(expected_version=1, max_results=6)
+
+
 class _UnusedDb:
     pass
 
@@ -633,6 +1588,19 @@ class _UnusedDb:
 class _UnusedVerifier:
     async def verify(self, **_kwargs: Any) -> Any:
         raise AssertionError("Verifier should not be called")
+
+
+class _RecordingVerifier:
+    def __init__(self) -> None:
+        self.records: list[ScholarlyRecord] = []
+
+    async def verify(self, *, citation: ScholarlyRecord) -> VerificationResult:
+        self.records.append(citation)
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            messages=["Identifier and title match the scholarly provider"],
+            record=citation,
+        )
 
 
 class _QuotaLlm:

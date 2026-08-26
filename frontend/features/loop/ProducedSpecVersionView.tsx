@@ -21,7 +21,7 @@ function unknownFields(value: Record<string, unknown>, knownKeys: readonly strin
 
 function JsonFallback({ value }: { value: unknown }) {
   return (
-    <pre className="overflow-x-auto rounded-md bg-muted/60 p-3 text-xs">
+    <pre className="max-w-full overflow-x-auto rounded-md bg-muted/60 p-3 text-xs">
       {JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -44,7 +44,7 @@ function cardKindLabel(kind: unknown): string {
 function SpecNode({ node, payload }: { node: WorkflowNode; payload: unknown }) {
   if (!isRecord(payload)) {
     return (
-      <div className="grid gap-2">
+      <div className="grid min-w-0 grid-cols-1 gap-2">
         <p className="text-sm font-medium">{WORKFLOW_NODE_LABELS[node]}</p>
         <JsonFallback value={payload} />
       </div>
@@ -53,12 +53,17 @@ function SpecNode({ node, payload }: { node: WorkflowNode; payload: unknown }) {
 
   const narrative = isRecord(payload.narrative) ? payload.narrative : null;
   const narrativeText = narrative ? fieldText(narrative) : null;
-  const unknownNarrative = narrative ? unknownFields(narrative, ["text"]) : null;
   const cards = Array.isArray(payload.card_snapshot) ? payload.card_snapshot : null;
+  const hasConfirmedGapCard =
+    node === WorkflowNode.gap &&
+    Boolean(cards?.some((card) => isRecord(card) && card.kind === CardKind.gap));
+  const unknownNarrative = narrative
+    ? unknownFields(narrative, hasConfirmedGapCard ? ["text", "candidate"] : ["text"])
+    : null;
   const unknownNode = unknownFields(payload, ["narrative", "card_snapshot"]);
 
   return (
-    <div className="grid gap-2">
+    <div className="grid min-w-0 grid-cols-1 gap-2">
       <p className="text-sm font-medium">{WORKFLOW_NODE_LABELS[node]}</p>
       {narrativeText ? <p className="text-sm whitespace-pre-wrap">{narrativeText}</p> : null}
       {unknownNarrative ? <JsonFallback value={unknownNarrative} /> : null}
@@ -75,7 +80,7 @@ function SpecNode({ node, payload }: { node: WorkflowNode; payload: unknown }) {
             const unknownBody = body ? unknownFields(body, ["text"]) : null;
             const unknownCard = unknownFields(card, ["id", "kind", "body"]);
             return (
-              <div key={typeof card.id === "string" ? card.id : index} className="rounded-md border bg-muted/40 px-3 py-2">
+              <div key={typeof card.id === "string" ? card.id : index} className="min-w-0 rounded-md border bg-muted/40 px-3 py-2">
                 <p className="text-sm font-medium">{cardKindLabel(card.kind)}</p>
                 {text ? <p className="text-sm whitespace-pre-wrap">{text}</p> : null}
                 {unknownBody ? <JsonFallback value={unknownBody} /> : null}
@@ -103,7 +108,7 @@ function SpecDocument({ document }: { document: Record<string, unknown> }) {
     : null;
 
   return (
-    <div className="grid gap-4">
+    <div className="grid min-w-0 grid-cols-1 gap-4">
       {nodes ? (
         <>
           {LOOP_STAGE_CATALOG.filter((stage) => stage.nodes.length > 0).map((stage) => {
@@ -112,9 +117,9 @@ function SpecDocument({ document }: { document: Record<string, unknown> }) {
               return null;
             }
             return (
-              <section key={stage.id} aria-label={`${stage.name} in Produced Spec Version`}>
+              <section key={stage.id} className="min-w-0" aria-label={`${stage.name} in Produced Spec Version`}>
                 <h3 className="font-serif text-navy">{stage.name}</h3>
-                <div className="mt-2 grid gap-3">
+                <div className="mt-2 grid min-w-0 grid-cols-1 gap-3">
                   {present.map((node) => (
                     <SpecNode key={node} node={node} payload={nodes[node]} />
                   ))}
@@ -156,7 +161,7 @@ export function ProducedSpecVersionView({
         </CardHeader>
         <CardContent>
           {produced ? (
-            <div className="grid gap-4">
+            <div className="grid min-w-0 grid-cols-1 gap-4">
               {stale ? <p className="text-sm font-medium text-pending">Stale</p> : null}
               <SpecDocument document={produced.document} />
             </div>

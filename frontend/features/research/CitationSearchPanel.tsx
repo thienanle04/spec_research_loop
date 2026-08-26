@@ -28,7 +28,7 @@ export function CitationSearchPanel({
       <div>
         <h3 className="font-medium">Search and analyze</h3>
         <p className="text-sm text-muted-foreground">
-          The system generates search queries from the confirmed Research Inputs, retrieves scholarly sources, and analyzes them against the research idea.
+          The system translates the confirmed Research Inputs into English scholarly queries, then returns and analyzes the five highest-relevance sources.
         </p>
       </div>
       <div className="flex flex-wrap gap-2">

@@ -1,10 +1,12 @@
 """HTTP seam tests for /api/loop (ADR 0020)."""
 
+import json
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient, Response
 
+from app.adapters.llm import FakeLlm, bind_llm_ports
 from app.modules.loop.catalog import WORKFLOW_NODES
 
 CATALOG = [
@@ -52,6 +54,38 @@ async def _create_session(client: AsyncClient, title: str | None = "Latency idea
     return response.json()
 
 
+IDEA_FRAME = {
+    "intent": "You want to cut GPU kernel DRAM traffic by tiling.",
+    "problem": "GPU kernel latency is memory bound",
+    "research_question": "Can tiling cut DRAM traffic?",
+}
+
+
+def _changed_interpretation_narrative(problem: str = "latency") -> dict:
+    return {
+        "exhausted": True,
+        "frame": {
+            "intent": f"You want to study {problem}.",
+            "problem": problem,
+            "research_question": IDEA_FRAME["research_question"],
+        },
+        "turns": [
+            {"role": "account", "kind": "idea", "text": problem},
+            {"role": "model", "preamble": "Done.", "questions": []},
+        ],
+    }
+
+
+def _interpretation_done() -> str:
+    payload = {
+        "exhausted": True,
+        "cards": [],
+        "questions": [],
+        "frame": IDEA_FRAME,
+    }
+    return "No further questions.\n---json---\n" + json.dumps(payload)
+
+
 async def _confirm(
     client: AsyncClient, session_id: str, node: str, expected_version: int
 ) -> dict:
@@ -61,6 +95,48 @@ async def _confirm(
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+async def _generate_idea(
+    client: AsyncClient,
+    session_id: str,
+    expected_version: int,
+    idea: str = "GPU kernel latency",
+    response_text: str | None = None,
+) -> int:
+    bind_llm_ports(
+        {
+            node.value: FakeLlm(response=response_text or _interpretation_done())
+            for node in WORKFLOW_NODES
+        }
+    )
+    response = await client.post(
+        f"/api/idea/sessions/{session_id}/generate",
+        json={"expected_version": expected_version, "message": idea},
+    )
+    assert response.status_code == 200, response.text
+    version = None
+    for block in response.text.split("\n\n"):
+        line = next((item for item in block.split("\n") if item.startswith("data:")), None)
+        if not line:
+            continue
+        event = json.loads(line[5:].strip())
+        if event.get("type") == "done":
+            version = event["version"]
+        if event.get("type") == "error":
+            raise AssertionError(event)
+    assert version is not None
+    return version
+
+
+async def _interpret(
+    client: AsyncClient,
+    session_id: str,
+    expected_version: int,
+    idea: str = "GPU kernel latency",
+) -> dict:
+    version = await _generate_idea(client, session_id, expected_version, idea)
+    return await _confirm(client, session_id, "idea_interpretation", version)
 
 
 async def _prepare(
@@ -323,7 +399,7 @@ async def test_reopening_empty_workflow_node_is_invalid_working_draft_target(
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    interpreted = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    interpreted = await _interpret(client, session_id, created["version"])
     confirmed = await _confirm(client, session_id, "idea_decomposition", interpreted["version"])
     response = await _patch_working_draft(
         client,
@@ -363,7 +439,7 @@ async def test_reopening_current_workflow_node_increments_version(client: AsyncC
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    confirmed = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    confirmed = await _interpret(client, session_id, created["version"])
     response = await _patch_working_draft(
         client,
         session_id,
@@ -386,9 +462,7 @@ async def test_reopening_research_inputs_restores_confirmed_narrative(
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    interpreted = await _confirm(
-        client, session_id, "idea_interpretation", created["version"]
-    )
+    interpreted = await _interpret(client, session_id, created["version"])
     decomposed = await _confirm(
         client, session_id, "idea_decomposition", interpreted["version"]
     )
@@ -467,11 +541,76 @@ async def test_confirm_wrong_node_conflicts(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_confirm_empty_interpretation_conflicts(client: AsyncClient) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    response = await client.post(
+        f"/api/loop/sessions/{created['id']}/confirm",
+        json={"node": "idea_interpretation", "expected_version": created["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "interpretation_not_confirmable"
+
+
+@pytest.mark.asyncio
+async def test_confirm_interpretation_allows_open_cluster(client: AsyncClient) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    open_cluster = (
+        "Need the budget.\n---json---\n"
+        + json.dumps(
+            {
+                "exhausted": False,
+                "cards": [],
+                "questions": [
+                    {"text": "Training or inference?", "options": ["Training", "Inference"]}
+                ],
+                "frame": IDEA_FRAME,
+            }
+        )
+    )
+    version = await _generate_idea(
+        client, created["id"], created["version"], response_text=open_cluster
+    )
+    payload = await _confirm(client, created["id"], "idea_interpretation", version)
+    assert payload["working_draft_node"] == "idea_decomposition"
+
+
+@pytest.mark.asyncio
+async def test_confirm_interpretation_rejects_frame_without_intent(client: AsyncClient) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    two_field = (
+        "Need the budget.\n---json---\n"
+        + json.dumps(
+            {
+                "exhausted": True,
+                "cards": [],
+                "questions": [],
+                "frame": {
+                    "problem": IDEA_FRAME["problem"],
+                    "research_question": IDEA_FRAME["research_question"],
+                },
+            }
+        )
+    )
+    version = await _generate_idea(
+        client, created["id"], created["version"], response_text=two_field
+    )
+    response = await client.post(
+        f"/api/loop/sessions/{created['id']}/confirm",
+        json={"node": "idea_interpretation", "expected_version": version},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "interpretation_not_confirmable"
+
+
+@pytest.mark.asyncio
 async def test_confirm_interpretation_moves_working_draft(client: AsyncClient) -> None:
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    payload = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    payload = await _interpret(client, session_id, created["version"])
     assert payload["working_draft_node"] == "idea_decomposition"
     assert _head(payload, "idea_interpretation")["status"] == "current"
     assert _head(payload, "idea_interpretation")["stage_revision_id"] is not None
@@ -482,7 +621,7 @@ async def test_confirm_interpretation_moves_working_draft(client: AsyncClient) -
     assert len(rows) == 1
     assert rows[0]["kind"] == "confirm"
     assert rows[0]["node"] == "idea_interpretation"
-    assert payload["version"] == created["version"] + 1
+    assert payload["version"] == created["version"] + 2
 
 
 @pytest.mark.asyncio
@@ -490,12 +629,12 @@ async def test_confirm_increments_version_in_the_freeze_transaction(client: Asyn
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    payload = await _confirm(client, session_id, "idea_interpretation", created["version"])
-    assert payload["version"] == 2
+    payload = await _interpret(client, session_id, created["version"])
+    assert payload["version"] == created["version"] + 2
     assert payload["working_draft_node"] == "idea_decomposition"
     assert _head(payload, "idea_interpretation")["status"] == "current"
     fetched = await client.get(f"/api/loop/sessions/{session_id}")
-    assert fetched.json()["version"] == 2
+    assert fetched.json()["version"] == created["version"] + 2
     assert fetched.json()["working_draft_node"] == "idea_decomposition"
 
 
@@ -541,7 +680,7 @@ async def test_identical_confirm_is_noop(client: AsyncClient) -> None:
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    first = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    first = await _interpret(client, session_id, created["version"])
     revision = _head(first, "idea_interpretation")["stage_revision_id"]
     reopened = await _patch_working_draft(
         client,
@@ -574,7 +713,7 @@ async def test_card_write_requires_owning_working_draft(client: AsyncClient) -> 
         "detail": "Card writes require the Working Draft to be the owning Workflow Node",
         "current_version": None,
     }
-    confirmed = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    confirmed = await _interpret(client, session_id, created["version"])
     created_card = await _create_card(
         client,
         session_id,
@@ -599,7 +738,7 @@ async def test_create_card_requires_expected_version(client: AsyncClient) -> Non
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    await _confirm(client, session_id, "idea_interpretation", created["version"])
+    await _interpret(client, session_id, created["version"])
 
     response = await client.post(
         f"/api/loop/sessions/{session_id}/cards",
@@ -614,7 +753,7 @@ async def test_create_and_patch_card_increment_session_version(client: AsyncClie
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    confirmed = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    confirmed = await _interpret(client, session_id, created["version"])
 
     created_card = await _create_card(
         client,
@@ -654,7 +793,7 @@ async def test_stale_card_write_makes_no_partial_change(client: AsyncClient) -> 
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    confirmed = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    confirmed = await _interpret(client, session_id, created["version"])
 
     accepted = await _create_card(
         client,
@@ -709,7 +848,7 @@ async def test_changed_interpretation_marks_decomposition_stale(client: AsyncCli
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    interpreted = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    interpreted = await _interpret(client, session_id, created["version"])
     card = await _create_card(
         client,
         session_id,
@@ -724,7 +863,7 @@ async def test_changed_interpretation_marks_decomposition_stale(client: AsyncCli
         session_id,
         expected_version=decomposed["version"],
         node="idea_interpretation",
-        narrative={"understanding": "latency"},
+        narrative=_changed_interpretation_narrative(),
     )
     assert reopened.status_code == 200
     payload = await _confirm(
@@ -794,7 +933,7 @@ async def test_prepare_grilling_lands_on_stale_decomposition(client: AsyncClient
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    interpreted = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    interpreted = await _interpret(client, session_id, created["version"])
     card = await _create_card(
         client,
         session_id,
@@ -809,7 +948,7 @@ async def test_prepare_grilling_lands_on_stale_decomposition(client: AsyncClient
         session_id,
         expected_version=decomposed["version"],
         node="idea_interpretation",
-        narrative={"understanding": "latency"},
+        narrative=_changed_interpretation_narrative(),
     )
     assert reopened.status_code == 200
     changed = await _confirm(
@@ -831,7 +970,7 @@ async def test_prepare_grilling_conflicts_when_current(client: AsyncClient) -> N
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    interpreted = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    interpreted = await _interpret(client, session_id, created["version"])
     confirmed = await _confirm(client, session_id, "idea_decomposition", interpreted["version"])
     response = await client.post(
         f"/api/loop/sessions/{session_id}/recompute-prepare",
@@ -878,14 +1017,59 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    interpreted = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    interpreted = await _interpret(client, session_id, created["version"])
     decomposed = await _confirm(client, session_id, "idea_decomposition", interpreted["version"])
-    expected_version = decomposed["version"]
+    inputs = await _prepare(client, session_id, "related_work", decomposed["version"])
+    inputs_confirmed = await _confirm(
+        client, session_id, "research_inputs", inputs["version"]
+    )
+    related = await _prepare(
+        client, session_id, "related_work", inputs_confirmed["version"]
+    )
+    related_generation = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/related_work/generate",
+        json={"expected_version": related["version"], "max_results": 5},
+    )
+    related_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in related_generation.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    related_confirmed = await _confirm(
+        client, session_id, "related_work", related_events[-1]["version"]
+    )
+    gap = await _prepare(
+        client, session_id, "related_work", related_confirmed["version"]
+    )
+    gap_generation = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/gap/generate",
+        json={"expected_version": gap["version"]},
+    )
+    gap_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in gap_generation.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    candidate = next(
+        event["narrative"]["candidate"]
+        for event in gap_events
+        if event["type"] == "draft_patch"
+    )
+    card = await client.post(
+        f"/api/loop/sessions/{session_id}/cards",
+        json={
+            "kind": "gap",
+            "body": candidate,
+            "expected_version": gap_events[-1]["version"],
+        },
+    )
+    assert card.status_code == 201, card.text
+    gap_confirmed = await _confirm(
+        client, session_id, "gap", card.json()["version"]
+    )
+    expected_version = gap_confirmed["version"]
     for stage, node in (
-        ("related_work", "research_inputs"),
-        ("related_work", "related_work"),
-        ("related_work", "gap"),
-            ("related_work", "contribution"),
+        ("related_work", "contribution"),
         ("claims_evidence", "claims"),
         ("claims_evidence", "evidence"),
         ("experiment_planning", "experiment_plan"),
@@ -901,3 +1085,12 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     assert payload["valid_spec_version_id"] == payload["produced_spec_version"]["id"]
     assert "idea_interpretation" in payload["produced_spec_version"]["document"]["nodes"]
     assert "feasibility" in payload["produced_spec_version"]["document"]["nodes"]
+    gap_document = payload["produced_spec_version"]["document"]["nodes"]["gap"]
+    assert "candidate" not in gap_document["narrative"]
+    assert gap_document["card_snapshot"] == [
+        {
+            "id": card.json()["id"],
+            "kind": "gap",
+            "body": candidate,
+        }
+    ]

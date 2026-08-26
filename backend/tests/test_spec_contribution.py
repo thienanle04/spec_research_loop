@@ -1,5 +1,7 @@
 """Contribution-direction generation contract tests."""
 
+import json
+
 import pytest
 from httpx import AsyncClient
 
@@ -7,18 +9,18 @@ from tests.test_loop_api import (
     _auth_client,
     _confirm,
     _create_session,
+    _interpret,
     _prepare,
 )
 
+_VIETNAMESE_TEST_CHARACTERS = frozenset("ăâđêôơưàáạảãèéẹẻẽìíịỉĩòóọỏõùúụủũỳýỵỷỹ")
 
-async def _prepare_contribution(client: AsyncClient) -> dict:
+
+async def _prepare_contribution(
+    client: AsyncClient, *, gap_statement: str | None = None
+) -> dict:
     created = await _create_session(client)
-    interpreted = await _confirm(
-        client,
-        created["id"],
-        "idea_interpretation",
-        created["version"],
-    )
+    interpreted = await _interpret(client, created["id"], created["version"])
     decomposed = await _confirm(
         client,
         created["id"],
@@ -43,11 +45,20 @@ async def _prepare_contribution(client: AsyncClient) -> dict:
         "related_work",
         inputs_confirmed["version"],
     )
+    related_generation = await client.post(
+        f"/api/research/sessions/{created['id']}/nodes/related_work/generate",
+        json={"expected_version": related["version"], "max_results": 5},
+    )
+    related_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in related_generation.text.splitlines()
+        if line.startswith("data: ")
+    ]
     related_confirmed = await _confirm(
         client,
         created["id"],
         "related_work",
-        related["version"],
+        related_events[-1]["version"],
     )
     gap = await _prepare(
         client,
@@ -55,11 +66,36 @@ async def _prepare_contribution(client: AsyncClient) -> dict:
         "related_work",
         related_confirmed["version"],
     )
+    gap_generation = await client.post(
+        f"/api/research/sessions/{created['id']}/nodes/gap/generate",
+        json={"expected_version": gap["version"]},
+    )
+    gap_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in gap_generation.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    candidate = next(
+        event["narrative"]["candidate"]
+        for event in gap_events
+        if event["type"] == "draft_patch"
+    )
+    if gap_statement is not None:
+        candidate = {**candidate, "statement": gap_statement}
+    card = await client.post(
+        f"/api/loop/sessions/{created['id']}/cards",
+        json={
+            "kind": "gap",
+            "body": candidate,
+            "expected_version": gap_events[-1]["version"],
+        },
+    )
+    assert card.status_code == 201, card.text
     gap_confirmed = await _confirm(
         client,
         created["id"],
         "gap",
-        gap["version"],
+        card.json()["version"],
     )
     prepared = await _prepare(
         client,
@@ -90,12 +126,49 @@ async def test_generates_contextual_directions_with_fixed_combine_and_other(
         "combine",
         "other",
     ]
+    assert [item["title"] for item in payload["directions"][-2:]] == [
+        "Combine directions",
+        "Other",
+    ]
     assert payload["version"] == contribution["version"] + 1
 
     saved = await client.get(f"/api/loop/sessions/{contribution['id']}")
     assert saved.status_code == 200
     assert (
         saved.json()["working_draft_narrative"]["directions"] == payload["directions"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_generates_vietnamese_directions_for_a_vietnamese_gap(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    contribution = await _prepare_contribution(
+        client,
+        gap_statement=(
+            "Các phương pháp hiện tại chưa kiểm chứng từng luận điểm bằng nguồn học thuật."
+        ),
+    )
+
+    response = await client.post(
+        f"/api/spec/sessions/{contribution['id']}/contribution-directions/generate",
+        json={"expected_version": contribution["version"]},
+    )
+
+    assert response.status_code == 200, response.text
+    directions = response.json()["directions"]
+    assert directions[0]["title"] == "Tập trung vào phương pháp cốt lõi"
+    assert [item["title"] for item in directions[-2:]] == [
+        "Kết hợp các hướng",
+        "Khác",
+    ]
+    assert all(
+        any(
+            character in _VIETNAMESE_TEST_CHARACTERS
+            for character in item["description"].casefold()
+        )
+        for item in directions
     )
 
 

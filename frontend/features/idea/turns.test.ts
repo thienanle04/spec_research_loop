@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   clustersAnswered,
+  frameComplete,
+  interpretationConfirmable,
   isExhaustedHint,
   parseTurns,
   unansweredCluster,
@@ -44,7 +46,7 @@ describe("clustersAnswered", () => {
     expect(unansweredCluster([idea, cluster])).toEqual(cluster.questions);
   });
 
-  it("is true when every visible cluster has a reply", () => {
+  it("is true when every cluster is answered or skipped", () => {
     expect(
       clustersAnswered([
         idea,
@@ -53,6 +55,37 @@ describe("clustersAnswered", () => {
         { role: "model", preamble: "Done.", questions: [] },
       ]),
     ).toBe(true);
+    expect(
+      clustersAnswered([
+        idea,
+        cluster,
+        { role: "account", kind: "note", text: "Skip. Focus on inference." },
+        { role: "model", preamble: "Done.", questions: [] },
+      ]),
+    ).toBe(true);
+  });
+});
+
+describe("interpretationConfirmable", () => {
+  const frame = {
+    intent: "You want to study GPU kernel latency.",
+    problem: "GPU kernel latency is memory bound",
+    research_question: "Can tiling cut DRAM traffic?",
+  };
+
+  it("is true when the Idea Frame is complete even with an open cluster", () => {
+    expect(
+      interpretationConfirmable({
+        frame,
+        turns: [idea, cluster],
+      }),
+    ).toBe(true);
+  });
+
+  it("is false until intent, problem, and research_question are all non-blank", () => {
+    expect(frameComplete({ frame: { ...frame, intent: "" } })).toBe(false);
+    expect(interpretationConfirmable({ frame, turns: [idea, cluster] })).toBe(true);
+    expect(interpretationConfirmable({ turns: [idea] })).toBe(false);
   });
 });
 

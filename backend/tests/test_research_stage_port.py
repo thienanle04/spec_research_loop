@@ -17,6 +17,7 @@ from tests.test_loop_api import (
     _create_card,
     _create_session,
     _head,
+    _interpret,
     _patch_working_draft,
     _prepare,
 )
@@ -31,12 +32,7 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
     created = await _create_session(client)
     session_id = created["id"]
 
-    interpreted = await _confirm(
-        client,
-        session_id,
-        "idea_interpretation",
-        created["version"],
-    )
+    interpreted = await _interpret(client, session_id, created["version"])
     decomposed = await _confirm(
         client,
         session_id,
@@ -74,6 +70,16 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
         session_id,
         "related_work",
         inputs_confirmed["version"],
+    )
+    related_search = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=related_draft["version"],
+        narrative={
+            "search_queries": ["claim verification"],
+            "candidate_count": 1,
+            "citation_count": 1,
+        },
     )
 
     citation_id: UUID
@@ -113,7 +119,7 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
         client,
         session_id,
         "related_work",
-        related_draft["version"],
+        related_search.json()["version"],
     )
     first_revision_id = _head(related_confirmed, "related_work")["stage_revision_id"]
     gap_draft = await _prepare(
@@ -122,23 +128,23 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
         "related_work",
         related_confirmed["version"],
     )
-    gap_card = await _create_card(
+    incomplete_gap = await _create_card(
         client,
         session_id,
         kind="gap",
         body={
             "statement": "Claim-level feedback remains underexplored.",
             "supporting_citation_keys": ["opro-2023"],
-            "status": "proposed",
+            "status": "insufficient_evidence",
         },
         expected_version=gap_draft["version"],
     )
-    assert gap_card.status_code == 201, gap_card.text
+    assert incomplete_gap.status_code == 201, incomplete_gap.text
     gap_confirmed = await _confirm(
         client,
         session_id,
         "gap",
-        gap_card.json()["version"],
+        incomplete_gap.json()["version"],
     )
 
     async with factory() as db:

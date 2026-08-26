@@ -11,4 +11,5 @@ export interface GenerateRequest {
   expected_version: number;
   message?: string | null;
   answers?: GenerateAnswer[] | null;
+  note?: string | null;
 }

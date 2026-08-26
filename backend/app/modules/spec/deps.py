@@ -1,6 +1,9 @@
 """Spec module dependency bindings."""
 
 import json
+from collections.abc import AsyncIterator
+
+from pydantic import TypeAdapter
 
 from app.adapters.llm import FitWebUiLlmPort
 from app.core.config import get_settings
@@ -8,6 +11,15 @@ from app.ports.llm import LlmPort
 
 
 class FakeSpecLlmPort:
+    async def stream(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        model: str | None = None,
+    ) -> AsyncIterator[str]:
+        yield await self.complete(system=system, prompt=prompt, model=model)
+
     async def complete(
         self,
         *,
@@ -32,6 +44,48 @@ class FakeSpecLlmPort:
                 },
             ]
         )
+
+    async def complete_structured[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        model: str | None = None,
+    ) -> T:
+        del system, prompt, model
+        payloads: dict[str, object] = {
+            "GenerateClaimsResponse": {
+                "version": 1,
+                "cards": [
+                    {
+                        "id": "claim-1",
+                        "claim": "Claim-level verification reduces unsupported claims.",
+                        "baseline": "Aggregate-score feedback",
+                        "metric": "Unsupported claim rate",
+                        "evidence": "Evaluation on held-out scholarly sources",
+                        "rejection_condition": "No statistically significant reduction",
+                    }
+                ],
+            },
+            "GenerateExperimentResponse": {
+                "version": 1,
+                "plan": {
+                    "baselines": ["Aggregate-score feedback"],
+                    "metrics": ["Unsupported claim rate"],
+                    "evaluation_protocol": "Compare methods on held-out sources.",
+                    "ablation_study": ["Remove claim-level verification"],
+                    "generalization": ["Evaluate across research domains"],
+                },
+            },
+            "FeasibilityReport": {
+                "estimated_vram": "24 GB",
+                "estimated_time": "8 hours",
+                "is_feasible": True,
+                "suggestions": ["Start with a smaller held-out evaluation set"],
+            },
+        }
+        return TypeAdapter(schema).validate_python(payloads.get(schema.__name__, {}))
 
 
 from app.modules.loop.catalog import WorkflowNode

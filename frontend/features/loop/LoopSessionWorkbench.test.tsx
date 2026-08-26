@@ -153,9 +153,18 @@ function session(overrides: Partial<LoopSessionResponse> = {}): LoopSessionRespo
   };
 }
 
+function completeFrame(text = "GPU kernel latency"): Record<string, string> {
+  return {
+    intent: `You want to study ${text}.`,
+    problem: `Restated ${text}`,
+    research_question: `How should we study ${text}?`,
+  };
+}
+
 function answeredTurns(text = "GPU kernel latency"): Record<string, unknown> {
   return {
     exhausted: true,
+    frame: completeFrame(text),
     turns: [
       { role: "account", kind: "idea", text },
       { role: "model", preamble: "No further questions.", questions: [] },
@@ -163,9 +172,10 @@ function answeredTurns(text = "GPU kernel latency"): Record<string, unknown> {
   };
 }
 
-function unansweredTurns(): Record<string, unknown> {
+function unansweredTurns(frame?: Record<string, string>): Record<string, unknown> {
   return {
     exhausted: false,
+    ...(frame ? { frame } : {}),
     turns: [
       { role: "account", kind: "idea", text: "GPU kernel latency" },
       {
@@ -727,10 +737,32 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.queryByText(/Working Draft Card canvas/)).not.toBeInTheDocument();
   });
 
-  it("prevents Confirm when the Working Draft has neither nonblank narrative text nor a nonblank owned Card", () => {
+  it("does not offer Confirm before the Idea Frame exists", () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
+  it("enables Confirm under the Idea Frame when the frame is complete even with open questions", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_narrative: unansweredTurns(completeFrame()),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByText("Intent")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    expect(
+      screen.getByText("Unanswered Grilling Questions are not saved as answers."),
+    ).toBeInTheDocument();
   });
 
   it("confirms the Working Draft after flushing saves and applies the interpretation handoff", async () => {
@@ -817,6 +849,90 @@ describe("LoopSessionWorkbench", () => {
         }),
       },
     );
+  });
+
+  it("sends an Account note to skip an unanswered cluster", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 2,
+          working_draft_narrative: unansweredTurns(),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.type(screen.getByLabelText("Account note"), "Skip. Focus on tiling.");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(readSseStream).toHaveBeenCalled());
+    expect(readSseStream).toHaveBeenCalledWith(
+      "/api/idea/sessions/session-1/generate",
+      expect.any(Function),
+      undefined,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_version: 2,
+          note: "Skip. Focus on tiling.",
+        }),
+      },
+    );
+  });
+
+  it("saves an edited research idea as a JSON working-draft patch", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 2,
+          working_draft_narrative: unansweredTurns(),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const mutateAsync = vi.fn().mockResolvedValue({
+      status: 200,
+      data: session({
+        version: 3,
+        working_draft_narrative: {
+          ...unansweredTurns(),
+          turns: [{ role: "account", kind: "idea", text: "Tiling GPU kernels" }],
+        },
+      }),
+    });
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const ideaField = screen.getByLabelText("Edit idea");
+    await userEvent.clear(ideaField);
+    await userEvent.type(ideaField, "Tiling GPU kernels");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const payload = mutateAsync.mock.calls[0]?.[0] as {
+      sessionId: string;
+      data: { expected_version: number; narrative: Record<string, unknown> };
+    };
+    expect(() => JSON.stringify(payload.data)).not.toThrow();
+    expect(payload).toEqual({
+      sessionId: "session-1",
+      data: {
+        expected_version: 2,
+        narrative: {
+          turns: [{ role: "account", kind: "idea", text: "Tiling GPU kernels" }],
+          exhausted: false,
+        },
+      },
+    });
   });
 
   it("shows the exhausted hint on interpretation without gating Confirm", () => {
@@ -974,7 +1090,59 @@ describe("LoopSessionWorkbench", () => {
     });
   });
 
-  it("does not offer Continue after confirming Contribution Direction", async () => {
+  it("continues from reconfirmed Research Inputs to current Related Work", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    const currentHeads = heads({
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.empty,
+    });
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 8,
+          working_draft_node: WorkflowNode.research_inputs,
+          node_heads: currentHeads,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 9,
+      working_draft_node: WorkflowNode.research_inputs,
+      node_heads: currentHeads,
+    });
+    const reopenedRelatedWork = session({
+      version: 10,
+      working_draft_node: WorkflowNode.related_work,
+      node_heads: currentHeads,
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    const prepareMutate = vi.fn();
+    const patchMutate = vi
+      .fn()
+      .mockResolvedValue({ status: 200, data: reopenedRelatedWork });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
+    patchHook.mockReturnValue({ mutateAsync: patchMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(patchMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { node: WorkflowNode.related_work, expected_version: 9 },
+    });
+    expect(prepareMutate).not.toHaveBeenCalled();
+  });
+
+  it("continues from confirmed Contribution Direction to Claims/evidence", async () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     getHook.mockReturnValue({
       data: {
@@ -1008,17 +1176,139 @@ describe("LoopSessionWorkbench", () => {
         [WorkflowNode.contribution]: NodeHeadStatus.current,
       }),
     });
+    const prepared = session({
+      version: 14,
+      working_draft_node: WorkflowNode.claims,
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+        [WorkflowNode.related_work]: NodeHeadStatus.current,
+        [WorkflowNode.gap]: NodeHeadStatus.current,
+        [WorkflowNode.contribution]: NodeHeadStatus.current,
+      }),
+    });
     const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
-    const prepareMutate = vi.fn();
+    const prepareMutate = vi.fn().mockResolvedValue({ status: 200, data: prepared });
     confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
     prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
     await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Saved. Select Continue to proceed to the next step.",
+    );
 
-    expect(screen.getByRole("status")).toHaveTextContent("Saved.");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(prepareMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { stage: LoopStage.claims_evidence, expected_version: 13 },
+    });
+    expect(replace).toHaveBeenCalledWith(
+      `/sessions/session-1?stage=${LoopStage.claims_evidence}`,
+    );
+  });
+
+  it("restores Continue after reloading a just-confirmed Contribution Direction", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    const confirmedAt = "2026-08-24T11:48:05.482568Z";
+    const confirmed = session({
+      version: 52,
+      working_draft_node: WorkflowNode.contribution,
+      updated_at: confirmedAt,
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+        [WorkflowNode.related_work]: NodeHeadStatus.current,
+        [WorkflowNode.gap]: NodeHeadStatus.current,
+        [WorkflowNode.contribution]: NodeHeadStatus.current,
+      }),
+    });
+    const prepared = session({
+      ...confirmed,
+      version: 53,
+      working_draft_node: WorkflowNode.claims,
+    });
+    const prepareMutate = vi.fn().mockResolvedValue({ status: 200, data: prepared });
+    getHook.mockReturnValue({
+      data: { status: 200, data: confirmed },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    decisionsHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: [{
+          id: "decision-contribution",
+          kind: "confirm",
+          node: WorkflowNode.contribution,
+          stage_revision_id: "revision-contribution",
+          created_at: confirmedAt,
+        }],
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(prepareMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { stage: LoopStage.claims_evidence, expected_version: 52 },
+    });
+    expect(replace).toHaveBeenCalledWith(
+      `/sessions/session-1?stage=${LoopStage.claims_evidence}`,
+    );
+  });
+
+  it("does not restore Continue when the Working Draft changed after Confirm", () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 53,
+          working_draft_node: WorkflowNode.contribution,
+          updated_at: "2026-08-24T11:49:00Z",
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    decisionsHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: [{
+          id: "decision-contribution",
+          kind: "confirm",
+          node: WorkflowNode.contribution,
+          stage_revision_id: "revision-contribution",
+          created_at: "2026-08-24T11:48:05Z",
+        }],
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
     expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-    expect(prepareMutate).not.toHaveBeenCalled();
   });
 
   it("explains a Confirm version conflict without changing local Working Draft content", async () => {
@@ -1154,6 +1444,49 @@ describe("LoopSessionWorkbench", () => {
     expect(spec).not.toHaveTextContent("Draft Research Spec");
     expect(spec).not.toHaveTextContent("Final Spec");
     expect(within(spec).queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("renders a legacy Produced Spec Version Gap only once", () => {
+    const gap = {
+      statement: "Research loops need multi-benchmark verification.",
+      status: "candidate",
+    };
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          produced_spec_version: {
+            id: "spec-valid",
+            created_at: "2026-08-16T12:00:00Z",
+            document: {
+              nodes: {
+                gap: {
+                  narrative: { candidate: gap },
+                  card_snapshot: [
+                    {
+                      id: "gap-card",
+                      kind: CardKind.gap,
+                      body: gap,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          valid_spec_version_id: "spec-valid",
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+    const occurrences = spec.textContent?.match(/Research loops need multi-benchmark verification\./g);
+
+    expect(occurrences).toHaveLength(1);
+    expect(spec.textContent).not.toMatch(/"candidate"\s*:/);
   });
 
   it("keeps unknown Produced Spec Version fields visible as JSON", () => {

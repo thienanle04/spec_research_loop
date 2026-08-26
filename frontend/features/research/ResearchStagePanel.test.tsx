@@ -39,7 +39,48 @@ const finding: RelatedWorkFindingResponse = {
 const gap: GapCandidate = {
   statement: "Research loops need multi-benchmark verification.",
   supporting_citation_keys: [citation.citation_key],
-  status: "proposed",
+  status: "candidate",
+  search_audit: {
+    related_work_queries: ["research loop verification"],
+    counter_evidence_queries: ["research loop competing methods"],
+    providers: ["fixture"],
+    related_work_candidate_count: 8,
+    related_work_analyzed_count: 5,
+    counter_evidence_candidate_count: 7,
+    counter_evidence_analyzed_count: 5,
+    counter_evidence_outcome: "no_direct_counter_evidence",
+    counter_evidence_assessment: "The checked sources do not directly resolve the limitation.",
+    counter_evidence_results: [
+      {
+        result_key: "counter-1",
+        title: "A competing research loop benchmark",
+        authors: ["Lee"],
+        year: 2024,
+        venue: "FixtureConf",
+        doi: "10.1000/counter",
+        url: null,
+        provider: "fixture",
+        provider_source_id: "counter-1",
+        abstract: "Compares research loops on one benchmark.",
+        retrieval_score: 0.8,
+        reranker_score: 0.9,
+        discovery_queries: ["research loop competing methods"],
+        verification_status: "verified",
+        verification_messages: ["Identifier and title match the scholarly provider"],
+        impact: "no_direct_counter_evidence",
+        rationale: "The study does not evaluate multi-benchmark verification.",
+      },
+    ],
+    completed_at: "2026-08-24T00:00:00Z",
+    complete: true,
+  },
+  evidence_check: {
+    verified_citation_keys: [citation.citation_key],
+    grounded_citation_keys: [citation.citation_key],
+    eligible_citation_keys: [citation.citation_key],
+    ready: true,
+    messages: [],
+  },
 };
 
 function props(node: WorkflowNode) {
@@ -143,11 +184,44 @@ describe("ResearchStagePanel", () => {
     render(<ResearchStagePanel {...panel} />);
 
     expect(screen.getByLabelText("Gap Candidate summary")).toHaveValue(gap.statement);
+    expect(screen.getByText("Counter-evidence assessment")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "A competing research loop benchmark" })).toHaveAttribute(
+      "href",
+      "https://doi.org/10.1000/counter",
+    );
+    expect(screen.getByText("The study does not evaluate multi-benchmark verification.")).toBeInTheDocument();
     expect(screen.queryByText("What has prior research accomplished?")).not.toBeInTheDocument();
     expect(screen.queryByText("Supporting Citations")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Regenerate Gap Candidate" }));
     expect(panel.onGenerate).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: "Save Gap Candidate" }));
     expect(panel.onSelectGap).toHaveBeenCalledWith(gap);
+  });
+
+  it("warns but allows saving when the Gap search audit is inconclusive", async () => {
+    const user = userEvent.setup();
+    const panel = props(WorkflowNode.gap);
+    const insufficient: GapCandidate = {
+      ...gap,
+      status: "insufficient_evidence",
+      search_audit: {
+        ...gap.search_audit,
+        counter_evidence_outcome: "inconclusive",
+      },
+    };
+
+    render(
+      <ResearchStagePanel
+        {...panel}
+        gapCandidate={insufficient}
+      />,
+    );
+
+    expect(screen.getByText("Evidence warning")).toBeInTheDocument();
+    expect(screen.getByText("The counter-evidence search was inconclusive.")).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "Save Gap Candidate" });
+    expect(save).toBeEnabled();
+    await user.click(save);
+    expect(panel.onSelectGap).toHaveBeenCalledWith(insufficient);
   });
 });

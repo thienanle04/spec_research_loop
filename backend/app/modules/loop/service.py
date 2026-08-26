@@ -29,7 +29,10 @@ from app.modules.loop.catalog import (
     upstream_of_stage,
 )
 from app.modules.loop.deps import get_stage_ports
-from app.modules.loop.interpretation_turns import apply_account_reply_patch
+from app.modules.loop.interpretation_turns import (
+    apply_account_reply_patch,
+    interpretation_confirmable,
+)
 from app.modules.loop.models import (
     Card,
     Decision,
@@ -85,6 +88,7 @@ class LoopService:
             title=title,
             working_draft_node=WorkflowNode.IDEA_INTERPRETATION.value,
             working_draft_narrative={},
+            working_draft_narratives={WorkflowNode.IDEA_INTERPRETATION.value: {}},
         )
         self._db.add(session)
         await self._db.flush()
@@ -178,6 +182,8 @@ class LoopService:
         heads = {head.node_enum(): head for head in session.node_heads}
         next_node = session.working_draft_node
         next_narrative = dict(session.working_draft_narrative)
+        saved_narratives = dict(session.working_draft_narratives)
+        saved_narratives[session.working_draft_node] = next_narrative
         if node is not None:
             for ancestor in ancestors(node):
                 if heads[ancestor].status_enum() != NodeHeadStatus.CURRENT:
@@ -193,8 +199,11 @@ class LoopService:
                     detail="Working Draft can only move to a current Workflow Node",
                 )
             next_node = node.value
+            saved_narrative = saved_narratives.get(next_node)
             revision_id = heads[node].stage_revision_id
-            if revision_id is not None:
+            if isinstance(saved_narrative, dict):
+                next_narrative = dict(saved_narrative)
+            elif revision_id is not None:
                 revision = next(
                     (item for item in session.stage_revisions if item.id == revision_id),
                     None,
@@ -212,6 +221,7 @@ class LoopService:
                 )
             else:
                 next_narrative = narrative
+        saved_narratives[next_node] = next_narrative
         updated = await self._db.execute(
             update(LoopSession)
             .where(
@@ -222,6 +232,7 @@ class LoopService:
             .values(
                 working_draft_node=next_node,
                 working_draft_narrative=next_narrative,
+                working_draft_narratives=saved_narratives,
                 version=LoopSession.version + 1,
                 updated_at=func.now(),
             )
@@ -240,6 +251,9 @@ class LoopService:
         attributes.set_committed_value(session, "working_draft_node", next_node)
         attributes.set_committed_value(
             session, "working_draft_narrative", next_narrative
+        )
+        attributes.set_committed_value(
+            session, "working_draft_narratives", saved_narratives
         )
         attributes.set_committed_value(session, "version", updated_row.version)
         attributes.set_committed_value(session, "updated_at", updated_row.updated_at)
@@ -320,19 +334,40 @@ class LoopService:
             account_id=account_id,
             expected_version=expected_version,
         )
-        existing = sorted(
+        remaining = sorted(
             (card for card in session.cards if card.kind_enum() == kind),
             key=lambda card: (card.created_at, str(card.id)),
         )
         saved_cards: list[Card] = []
-        for card, body in zip(existing, bodies, strict=False):
+        for body in bodies:
+            role = body.get("role")
+            direction_id = body.get("direction_id")
+            card = next(
+                (
+                    item
+                    for item in remaining
+                    if role is not None
+                    and item.body.get("role") == role
+                    and direction_id is not None
+                    and item.body.get("direction_id") == direction_id
+                ),
+                None,
+            )
+            if card is None and role is not None:
+                card = next(
+                    (item for item in remaining if item.body.get("role") == role),
+                    None,
+                )
+            if card is None and remaining:
+                card = remaining[0]
+            if card is None:
+                card = Card(session_id=session.id, kind=kind.value, body=body)
+                self._db.add(card)
+            else:
+                remaining.remove(card)
             card.body = body
             saved_cards.append(card)
-        for body in bodies[len(existing) :]:
-            card = Card(session_id=session.id, kind=kind.value, body=body)
-            self._db.add(card)
-            saved_cards.append(card)
-        for card in existing[len(bodies) :]:
+        for card in remaining:
             await self._db.delete(card)
         await self._db.commit()
         for card in saved_cards:
@@ -372,6 +407,22 @@ class LoopService:
                     code="upstream_not_current",
                     detail="Upstream Node Heads must be current",
                 )
+
+        if session.version != expected_version:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="version_conflict",
+                detail="Loop Session was changed by another request",
+                current_version=session.version,
+            )
+        if node is WorkflowNode.IDEA_INTERPRETATION and not interpretation_confirmable(
+            dict(session.working_draft_narrative)
+        ):
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="interpretation_not_confirmable",
+                detail="Confirm requires a non-blank Idea Frame (intent, problem, and research_question)",
+            )
 
         await self._increment_session_version(
             session,
@@ -450,6 +501,10 @@ class LoopService:
         )
 
         if node is WorkflowNode.IDEA_INTERPRETATION:
+            saved_narratives = dict(session.working_draft_narratives)
+            saved_narratives[node.value] = dict(session.working_draft_narrative)
+            saved_narratives[WorkflowNode.IDEA_DECOMPOSITION.value] = {}
+            session.working_draft_narratives = saved_narratives
             session.working_draft_node = WorkflowNode.IDEA_DECOMPOSITION.value
             session.working_draft_narrative = {}
 
@@ -507,6 +562,10 @@ class LoopService:
         )
 
         revisions = {rev.id: rev for rev in session.stage_revisions}
+        saved_narratives = dict(session.working_draft_narratives)
+        saved_narratives[session.working_draft_node] = dict(
+            session.working_draft_narrative
+        )
         for node in LOOP_STAGE_NODES[stage]:
             head = heads[node]
             if head.status_enum() not in (NodeHeadStatus.STALE, NodeHeadStatus.EMPTY):
@@ -517,22 +576,37 @@ class LoopService:
                 and head.status_enum() is NodeHeadStatus.STALE
             ):
                 revision = revisions[from_revision_id]
+                restored_narrative = dict(revision.narrative)
+                saved_narratives[node.value] = restored_narrative
                 if landing is node:
-                    session.working_draft_narrative = dict(revision.narrative)
+                    session.working_draft_narrative = restored_narrative
                 snapshot_ids = {item["id"]: item for item in revision.card_snapshot}
                 for card in session.cards:
                     item = snapshot_ids.get(str(card.id))
                     if item is not None:
                         card.body = item["body"]
-            elif landing is node:
-                session.working_draft_narrative = {}
-            await self._ports[node.value].reset_working(
-                session_id=session.id,
-                node=node.value,
-                from_revision_id=from_revision_id,
-            )
+                await self._ports[node.value].reset_working(
+                    session_id=session.id,
+                    node=node.value,
+                    from_revision_id=from_revision_id,
+                )
+            elif node.value in saved_narratives:
+                if landing is node:
+                    session.working_draft_narrative = dict(
+                        saved_narratives[node.value]
+                    )
+            else:
+                saved_narratives[node.value] = {}
+                if landing is node:
+                    session.working_draft_narrative = {}
+                await self._ports[node.value].reset_working(
+                    session_id=session.id,
+                    node=node.value,
+                    from_revision_id=None,
+                )
 
         session.working_draft_node = landing.value
+        session.working_draft_narratives = saved_narratives
         await self._db.commit()
         return await self.get_session(session_id=session_id, account_id=account_id)
 
@@ -553,6 +627,9 @@ class LoopService:
             expected_version=expected_version,
         )
         session.working_draft_narrative = narrative
+        saved_narratives = dict(session.working_draft_narratives)
+        saved_narratives[session.working_draft_node] = narrative
+        session.working_draft_narratives = saved_narratives
         if (
             card_texts is not None
             and session.working_draft_node == WorkflowNode.IDEA_DECOMPOSITION.value
@@ -621,11 +698,17 @@ class LoopService:
             node=node.value,
             revision_id=None,
         )
+        working_cards = [
+            card
+            for card in session.cards
+            if card.kind_enum() in set(owned_kinds(node))
+        ]
         return {
             "node": node.value,
             "projected": projected,
             "upstream": upstream,
             "working_draft": {
+                "card_snapshot": _card_snapshot(working_cards),
                 "narrative": session.working_draft_narrative,
                 "node": session.working_draft_node,
             },
@@ -753,8 +836,17 @@ class LoopService:
                 and head.stage_revision_id is not None
             ):
                 rev = revisions[head.stage_revision_id]
+                narrative = dict(rev.narrative)
+                if node is WorkflowNode.GAP and any(
+                    card.get("kind") == CardKind.GAP.value
+                    for card in rev.card_snapshot
+                ):
+                    # The generated candidate is copied into the confirmed Gap Card.
+                    # Keep it in the Stage Revision for history, but avoid storing the
+                    # same logical Gap twice in the assembled Spec Version document.
+                    narrative.pop("candidate", None)
                 nodes[node.value] = {
                     "card_snapshot": rev.card_snapshot,
-                    "narrative": rev.narrative,
+                    "narrative": narrative,
                 }
         return {"nodes": nodes}

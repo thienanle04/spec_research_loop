@@ -1,18 +1,24 @@
-import React, { useState, useEffect } from "react";
+"use client";
+
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, Activity, Beaker, CheckCircle2, ChevronRight, FlaskConical, Lightbulb, Target, FileText } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getApiErrorMessage } from "@/lib/api/config";
-import { getGetSessionApiLoopSessionsSessionIdGetQueryKey } from "@/lib/api/generated/endpoints";
-import { Target, Activity, FlaskConical, Beaker, Lightbulb, AlertTriangle, CheckCircle2, ChevronRight, FileText } from "lucide-react";
 import {
-  useGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost,
-  useCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost,
+  getGetSessionApiLoopSessionsSessionIdGetQueryKey,
+  useCheckFeasibilityApiSpecSessionsSessionIdFeasibilityCheckPost,
+  useGenerateExperimentApiSpecSessionsSessionIdExperimentPlanGeneratePost,
 } from "@/lib/api/generated/endpoints";
-import { WorkflowNode, type LoopSessionResponse } from "@/lib/api/generated/model";
+import {
+  type LoopSessionResponse,
+  WorkflowNode,
+} from "@/lib/api/generated/model";
 import { useLoopSessionSave } from "../loop/loop-session-save";
 
-const FormattedText = ({ text }: { text: string }) => {
+function FormattedText({ text }: { text: string }) {
   if (!text) return null;
   return (
     <div className="space-y-2">
@@ -88,11 +94,11 @@ export function ExperimentPlanningStageContainer({
   onConfirmabilityChange?: (confirmable: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const generateExperiment = useGenerateExperimentApiSpecSpecSessionsSessionIdExperimentPlanGeneratePost();
-  const checkFeasibility = useCheckFeasibilityApiSpecSpecSessionsSessionIdFeasibilityCheckPost();
+  const generateExperiment = useGenerateExperimentApiSpecSessionsSessionIdExperimentPlanGeneratePost();
+  const checkFeasibility = useCheckFeasibilityApiSpecSessionsSessionIdFeasibilityCheckPost();
   const { queue, status } = useLoopSessionSave();
-  const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
   const saving = status === "saving";
+  const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const [error, setError] = useState<string | null>(null);
   

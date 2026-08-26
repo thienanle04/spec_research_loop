@@ -20,3 +20,4 @@ class GenerateRequest(BaseModel):
     expected_version: int = Field(ge=1)
     message: str | None = None
     answers: list[GenerateAnswer] | None = None
+    note: str | None = None

@@ -42,6 +42,7 @@ async def generate(
         answers=(
             [item.model_dump() for item in body.answers] if body.answers is not None else None
         ),
+        note=body.note,
     )
     return StreamingResponse(
         service.stream_generate(

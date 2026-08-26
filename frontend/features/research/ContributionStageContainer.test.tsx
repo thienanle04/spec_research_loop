@@ -13,8 +13,8 @@ import {
 import { ContributionStageContainer } from "./ContributionStageContainer";
 
 const mocks = vi.hoisted(() => ({
-  createCard: vi.fn(),
   generate: vi.fn(),
+  replaceCards: vi.fn(),
 }));
 
 vi.mock("../loop/loop-session-save", () => ({
@@ -33,7 +33,7 @@ vi.mock("@/lib/api/generated/endpoints", () => ({
     mutateAsync: mocks.generate,
     isPending: false,
   }),
-  useCreateCardApiLoopSessionsSessionIdCardsPost: () => ({ mutateAsync: mocks.createCard }),
+  useReplaceCardsApiLoopSessionsSessionIdCardsPut: () => ({ mutateAsync: mocks.replaceCards }),
 }));
 
 const directions = [
@@ -84,16 +84,18 @@ function contributionSession(
 describe("ContributionStageContainer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.createCard.mockImplementation(
-      async ({ data }: { data: { expected_version: number; body: Record<string, unknown> } }) => ({
-        status: 201,
+    mocks.replaceCards.mockImplementation(
+      async ({ data }: { data: { expected_version: number; bodies: Record<string, unknown>[] } }) => ({
+        status: 200,
         data: {
-          id: `card-${data.expected_version}`,
-          kind: "contribution",
-          body: data.body,
           version: data.expected_version + 1,
-          created_at: "2026-08-21T00:00:00Z",
-          updated_at: "2026-08-21T00:00:00Z",
+          cards: data.bodies.map((body, index) => ({
+            id: `card-${index}`,
+            kind: "contribution",
+            body,
+            created_at: "2026-08-21T00:00:00Z",
+            updated_at: "2026-08-21T00:00:00Z",
+          })),
         },
       }),
     );
@@ -181,24 +183,89 @@ describe("ContributionStageContainer", () => {
     );
     await user.click(screen.getByRole("button", { name: "Save contribution direction" }));
 
-    await waitFor(() => expect(mocks.createCard).toHaveBeenCalledTimes(2));
-    expect(mocks.createCard).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        data: expect.objectContaining({
-          expected_version: 10,
-          body: expect.objectContaining({ role: "primary" }),
-        }),
-      }),
+    await waitFor(() => expect(mocks.replaceCards).toHaveBeenCalledTimes(1));
+    expect(mocks.replaceCards).toHaveBeenCalledWith({
+      sessionId: session.id,
+      data: {
+        kind: CardKind.contribution,
+        expected_version: 10,
+        bodies: [
+          expect.objectContaining({ role: "primary", direction_id: "direction-a" }),
+          expect.objectContaining({ role: "supporting", direction_id: "direction-b" }),
+        ],
+      },
+    });
+  });
+
+  it("clears the saved choice after regeneration and replaces it with the new choice", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient();
+    const session = contributionSession({
+      cards: [
+        {
+          id: "card-saved",
+          kind: CardKind.contribution,
+          body: {
+            text: "Focus on the optimization method. Improve search and selection.",
+            direction_id: "direction-a",
+            role: "primary",
+          },
+          created_at: "2026-08-21T00:00:00Z",
+          updated_at: "2026-08-21T00:00:00Z",
+        },
+      ],
+    });
+    queryClient.setQueryData(["/api/loop/sessions", session.id], {
+      status: 200,
+      data: session,
+    });
+
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <ContributionStageContainer sessionId={session.id} session={session} />
+      </QueryClientProvider>,
     );
-    expect(mocks.createCard).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        data: expect.objectContaining({
-          expected_version: 11,
-          body: expect.objectContaining({ role: "supporting" }),
-        }),
-      }),
+
+    expect(screen.getByLabelText(/Focus on the optimization method/)).toBeChecked();
+    await user.click(
+      screen.getByRole("button", { name: "Regenerate contribution directions" }),
     );
+    await waitFor(() =>
+      expect(screen.getByLabelText(/Focus on the optimization method/)).not.toBeChecked(),
+    );
+
+    await user.click(screen.getByLabelText(/Focus on verification/));
+    await user.click(screen.getByRole("button", { name: "Save contribution direction" }));
+
+    await waitFor(() => expect(mocks.replaceCards).toHaveBeenCalledTimes(1));
+    expect(mocks.replaceCards).toHaveBeenCalledWith({
+      sessionId: session.id,
+      data: {
+        kind: CardKind.contribution,
+        expected_version: 11,
+        bodies: [
+          expect.objectContaining({ role: "primary", direction_id: "direction-b" }),
+        ],
+      },
+    });
+
+    const cached = queryClient.getQueryData(["/api/loop/sessions", session.id]) as {
+      status: number;
+      data: LoopSessionResponse;
+    };
+    const savedContributions = cached.data.cards.filter(
+      (card) => card.kind === CardKind.contribution,
+    );
+    expect(savedContributions).toHaveLength(1);
+    expect(savedContributions[0].body.direction_id).toBe("direction-b");
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <ContributionStageContainer sessionId={session.id} session={cached.data} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByLabelText(/Focus on verification/)).toBeChecked());
+    expect(screen.getByLabelText(/Focus on the optimization method/)).not.toBeChecked();
+    expect(screen.getByText("Saved 1 Contribution Card. Confirm when ready.")).toBeInTheDocument();
   });
 });
