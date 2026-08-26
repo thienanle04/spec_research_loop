@@ -78,7 +78,7 @@ describe("WorkingDraftNarrativeEditor", () => {
       </LoopSessionSaveProvider>,
     );
     const editor = screen.getByRole("textbox", { name: "Working Draft narrative" });
-    expect(screen.getByText(/interpretation Working Draft/i)).toBeInTheDocument();
+    expect(screen.getByText(/Correct the grilling transcript/i)).toBeInTheDocument();
     await userEvent.clear(editor);
     await userEvent.type(editor, "GPU kernels");
 

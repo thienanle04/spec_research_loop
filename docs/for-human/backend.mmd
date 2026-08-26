@@ -131,12 +131,11 @@ flowchart TB
 
     subgraph Stages["Loop Stage → DAG nodes user recompute"]
       S1["Grilling: interpretation, decomposition"]
-      S2["Related work: inputs, related_work, gap"]
-      S3["Loop Stage Contribution → DAG contribution_node"]
-      S4["Claims/evidence: claims, evidence"]
-      S5["Experiments: experiment_plan, feasibility → mint Spec Version"]
-      S6["Judges: 5 judges + aggregator — chỉ chạy Judge Stale"]
-      S7["Readiness: read model, không generate"]
+      S2["Related work: inputs, related_work, gap, contribution direction"]
+      S3["Claims/evidence: claims, evidence"]
+      S4["Experiments: experiment_plan, feasibility → mint Spec Version"]
+      S5["Judges: 5 judges + aggregator — chỉ chạy Judge Stale"]
+      S6["Readiness: read model, không generate"]
     end
 
     subgraph WritePath["Confirm / recompute"]
@@ -160,7 +159,7 @@ flowchart TB
   classDef portNode fill:#eceff1,stroke:#546e7a,stroke-width:2px;
 
   class SPA,IdAPI,LoopAPI,IdeaAPI,ResearchAPI,SpecAPI,JudgementAPI userNode;
-  class Idea,Research,SpecMod,Judgement,II,IDec,RI,RW,GP,DagContribution,CL,EV,EX,FS,S1,S2,S3,S4,S5,S6,S7,W1,W2,W3,W4,W5 workflowNode;
+  class Idea,Research,SpecMod,Judgement,II,IDec,RI,RW,GP,DagContribution,CL,EV,EX,FS,S1,S2,S3,S4,S5,S6,W1,W2,W3,W4,W5 workflowNode;
   class Session,Cards,Decisions,Revisions,SpecVer,Artifact,Citations,Links,Experiments,JudgeRuns,Account artifactNode;
   class ContextBuilder,Recipes,RGap,RCon,REvi,RExp,RConf,Heads,NodeState contextNode;
   class JGap,JCon,JEvi,JExp,JConf,AGG,SV judgeNode;

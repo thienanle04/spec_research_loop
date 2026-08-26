@@ -20,11 +20,11 @@ flowchart TD
     end
 
     subgraph Research [Research Workflow]
-        R1[1. User cung cấp keywords/sources/research direction]
+        R1[1. User xác nhận keywords<br/>+ preferred sources]
         
         subgraph Citation [2. Nghiên cứu các công trình liên quan]
-            C1[a. Tìm kiếm]
-            C2[b. Đọc và phân tích]
+            C1[a. Tạo query từ keywords<br/>và ưu tiên loại nguồn đã chọn]
+            C2[b. Phân tích theo Problem/RQ<br/>và kiểm tra grounding]
             C3[c. Tạo bảng Related Works]
             C4[d. Verify các công trình]
             
@@ -33,19 +33,22 @@ flowchart TD
 
         R2[3. Đề xuất research gap]
         R3{4. User xác nhận research gap}
+        R4[5. Chọn Contribution Direction]
 
         R1 --> Citation --> R2 --> R3 -- Chỉnh sửa --> R1
+        R3 -- Xác nhận --> R4
     end
 
     subgraph SpecConstruction [Spec Construction Workflow]
-        S1[Contribution]
-        S2[Claims]
-        S3[Evidence]
-        S4[Experiment Plan]
-        S5[Check Feasibility]
+        S1[Claims]
+        S2[Evidence]
+        S3[Experiment Plan]
+        S4[Check Feasibility]
 
-        S1 --> S2 --> S3 --> S4 --> S5
+        S1 --> S2 --> S3 --> S4
     end
+
+    R4 --> S1
 
     SpecDraft["Spec Draft v(n)"]
 

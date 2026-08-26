@@ -10,14 +10,13 @@ export const LOOP_STAGE_CATALOG = [
   {
     id: LoopStage.related_work,
     name: "Related work",
-    description: "Locate and assess prior work against the idea.",
-    nodes: [WorkflowNode.research_inputs, WorkflowNode.related_work, WorkflowNode.gap],
-  },
-  {
-    id: LoopStage.contribution,
-    name: "Contribution",
-    description: "State the contribution that addresses the gap.",
-    nodes: [WorkflowNode.contribution],
+    description: "Locate and assess prior work, synthesize the gap, and choose a contribution direction.",
+    nodes: [
+      WorkflowNode.research_inputs,
+      WorkflowNode.related_work,
+      WorkflowNode.gap,
+      WorkflowNode.contribution,
+    ],
   },
   {
     id: LoopStage.claims_evidence,
@@ -53,7 +52,8 @@ export const LOOP_STAGE_CATALOG = [
 ] as const;
 
 type CatalogStageId = (typeof LOOP_STAGE_CATALOG)[number]["id"];
-type MissingStage = Exclude<LoopStage, CatalogStageId>;
+type LegacyHiddenStage = typeof LoopStage.contribution;
+type MissingStage = Exclude<LoopStage, CatalogStageId | LegacyHiddenStage>;
 type ExtraStage = Exclude<CatalogStageId, LoopStage>;
 const _allStagesPresent: MissingStage extends never ? true : MissingStage = true;
 const _noExtraStages: ExtraStage extends never ? true : ExtraStage = true;
@@ -114,7 +114,7 @@ export const WORKFLOW_NODE_LABELS: Record<WorkflowNode, string> = {
   [WorkflowNode.research_inputs]: "Research inputs",
   [WorkflowNode.related_work]: "Related work",
   [WorkflowNode.gap]: "Gap",
-  [WorkflowNode.contribution]: "Contribution",
+  [WorkflowNode.contribution]: "Contribution direction",
   [WorkflowNode.claims]: "Claims",
   [WorkflowNode.evidence]: "Evidence",
   [WorkflowNode.experiment_plan]: "Experiment plan",
@@ -179,7 +179,7 @@ export function resolveSelectedStage(
   stageQuery: string | null,
   workingDraftNode: WorkflowNode,
 ): LoopStage {
-  if (isLoopStage(stageQuery)) {
+  if (isLoopStage(stageQuery) && stageQuery !== LoopStage.contribution) {
     return stageQuery;
   }
   return stageForWorkflowNode(workingDraftNode);

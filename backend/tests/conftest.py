@@ -1,7 +1,5 @@
 """Async HTTP client against a dedicated Postgres database."""
 
-import os
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
@@ -19,7 +17,7 @@ TEST_URL = f"postgresql+asyncpg://postgres:postgres@localhost:55432/{TEST_DB}"
 
 
 @pytest.fixture
-async def client() -> AsyncClient:
+async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncClient:
     admin = create_async_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")
     async with admin.connect() as conn:
         exists = await conn.scalar(
@@ -30,7 +28,11 @@ async def client() -> AsyncClient:
             await conn.execute(text(f"CREATE DATABASE {TEST_DB}"))
     await admin.dispose()
 
-    os.environ["DATABASE_URL"] = TEST_URL
+    monkeypatch.setenv("DATABASE_URL", TEST_URL)
+    monkeypatch.setenv("RESEARCH_SOURCE_PROVIDER", "fake")
+    monkeypatch.setenv("RESEARCH_TEXT_STORAGE", "memory")
+    monkeypatch.setenv("RESEARCH_REQUIRE_DOWNLOADABLE_FULL_TEXT", "false")
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "fake")
     get_settings.cache_clear()
     await dispose_engine()
     engine = get_engine()

@@ -7,6 +7,8 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { GrillingWorkspace, generateIdea, isGrillingNode } from "@/features/idea";
+import type { GrillingAnswer } from "@/features/idea";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
@@ -21,12 +23,18 @@ import {
 import {
   LoopStage,
   NodeHeadStatus,
+  WorkflowNode,
   type LoopSessionResponse,
   type NodeHeadResponse,
   type OperationalError,
-  type WorkflowNode,
 } from "@/lib/api/generated/model";
 import { cn } from "@/lib/utils";
+import {
+  ContributionStageContainer,
+  ResearchStageContainer,
+} from "@/features/research";
+import { ClaimsEvidenceStageContainer } from "@/features/spec/ClaimsEvidenceStageContainer";
+import { ExperimentPlanningStageContainer } from "@/features/spec/ExperimentPlanningStageContainer";
 
 import {
   LOOP_STAGE_CATALOG,
@@ -87,6 +95,48 @@ function newerSession(
   return candidate.version >= current.version ? candidate : current;
 }
 
+type ContinueTarget = {
+  stage: LoopStage;
+  prepare: boolean;
+  node?: WorkflowNode;
+};
+
+function continueTargetAfterConfirm(
+  next: LoopSessionResponse,
+  confirmedNode: WorkflowNode,
+): ContinueTarget | null {
+  const currentStage = stageForWorkflowNode(confirmedNode);
+  const currentStageNodes = catalogStage(currentStage).nodes as readonly WorkflowNode[];
+  const confirmedIndex = currentStageNodes.indexOf(confirmedNode);
+  const nextNode = currentStageNodes[confirmedIndex + 1];
+  const nextNodeHead = next.node_heads.find((head) => head.node === nextNode);
+  if (nextNode && nextNodeHead?.status === NodeHeadStatus.current) {
+    return { stage: currentStage, prepare: false, node: nextNode };
+  }
+
+  const currentActions = deriveStageActions({
+    stage: currentStage,
+    nodeHeads: next.node_heads,
+  });
+  if (currentActions.canStart || currentActions.canRecompute) {
+    return { stage: currentStage, prepare: true };
+  }
+
+  const currentIndex = LOOP_STAGE_CATALOG.findIndex((stage) => stage.id === currentStage);
+  const following = LOOP_STAGE_CATALOG[currentIndex + 1];
+  if (!following) return null;
+  if (following.id === LoopStage.readiness) {
+    return { stage: following.id, prepare: false };
+  }
+  const followingActions = deriveStageActions({
+    stage: following.id,
+    nodeHeads: next.node_heads,
+  });
+  return followingActions.canStart || followingActions.canRecompute
+    ? { stage: following.id, prepare: true }
+    : null;
+}
+
 function transitionMessage(error: OperationalError): string {
   switch (error.code) {
     case "version_conflict":
@@ -132,7 +182,16 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const confirmMutation = useConfirmApiLoopSessionsSessionIdConfirmPost();
   const [appliedSession, setAppliedSession] = useState<LoopSessionResponse | null>(null);
   const [transitionError, setTransitionError] = useState<OperationalError | null>(null);
-  const [offerContinue, setOfferContinue] = useState(false);
+  const [continueTarget, setContinueTarget] = useState<ContinueTarget | null>(null);
+  const [confirmationMessage, setConfirmationMessage] = useState<string | null>(null);
+  const [continueWarning, setContinueWarning] = useState<string | null>(null);
+  const [researchRunning, setResearchRunning] = useState(false);
+  const [researchConfirmable, setResearchConfirmable] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generatePreview, setGeneratePreview] = useState("");
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [grillEditing, setGrillEditing] = useState(false);
+  const [grillDirty, setGrillDirty] = useState(false);
 
   const queriedSession = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
   const session = newerSession(queriedSession, appliedSession);
@@ -147,7 +206,9 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   }, [router, searchParams, selectedStage, session, sessionId]);
 
   useEffect(() => {
-    setOfferContinue(false);
+    setContinueTarget(null);
+    setConfirmationMessage(null);
+    setContinueWarning(null);
   }, [selectedStage]);
 
   if (sessionQuery.isLoading) {
@@ -179,6 +240,8 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     nodeHeads: session.node_heads,
   });
   const workingDraftNode = session.working_draft_node;
+  const interpretation = workingDraftNode === WorkflowNode.idea_interpretation;
+  const workingDraftHead = session.node_heads.find((head) => head.node === workingDraftNode);
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
   const editingWorkingDraft = stageForWorkflowNode(workingDraftNode) === selectedStage;
   const warningStages = editingWorkingDraft
@@ -187,11 +250,41 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         nodeHeads: session.node_heads,
       })
     : [];
+  const editingResearchDraft =
+    editingWorkingDraft &&
+    (workingDraftNode === WorkflowNode.research_inputs ||
+      workingDraftNode === WorkflowNode.related_work ||
+      workingDraftNode === WorkflowNode.gap);
+  const editingContributionDraft =
+    editingWorkingDraft && workingDraftNode === WorkflowNode.contribution;
+  const editingClaimsDraft =
+    editingWorkingDraft && (workingDraftNode === WorkflowNode.claims || workingDraftNode === WorkflowNode.evidence);
+  const editingExperimentDraft =
+    editingWorkingDraft && (workingDraftNode === WorkflowNode.experiment_plan || workingDraftNode === WorkflowNode.feasibility);
+  const editingStructuredDraft = editingResearchDraft || editingContributionDraft || editingClaimsDraft || editingExperimentDraft;
+  const decisions =
+    decisionsQuery.data?.status === 200 ? decisionsQuery.data.data : [];
+  const latestDecision = decisions[decisions.length - 1];
+  const workingDraftWasLastConfirmed =
+    editingWorkingDraft &&
+    workingDraftHead?.status === NodeHeadStatus.current &&
+    latestDecision?.kind === "confirm" &&
+    latestDecision.node === workingDraftNode &&
+    new Date(latestDecision.created_at).getTime() === new Date(session.updated_at).getTime();
+  const persistedContinueTarget = workingDraftWasLastConfirmed
+    ? continueTargetAfterConfirm(session, workingDraftNode)
+    : null;
+  const availableContinueTarget = continueTarget ?? persistedContinueTarget;
+  const continuing = prepareMutation.isPending || patchWorkingDraft.isPending;
   const confirmDisabled =
+    generating ||
+    grillEditing ||
+    grillDirty ||
     status === "saving" ||
     status === "failed" ||
     status === "conflict" ||
-    !hasConfirmableWorkingDraft(session);
+    researchRunning ||
+    (editingStructuredDraft ? !researchConfirmable : !hasConfirmableWorkingDraft(session));
 
   function expectedVersion(): number {
     const cached = queryClient.getQueryData(sessionKey) as
@@ -235,7 +328,15 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
 
   function startOrRecompute() {
     if (!selectedStage) return;
+    if (actions.canStart && workingDraftHead?.status !== NodeHeadStatus.current) {
+      setContinueWarning(
+        "This work has not been confirmed. Select Confirm to save it before continuing.",
+      );
+      return;
+    }
+    setContinueWarning(null);
     const stage = selectedStage;
+    setConfirmationMessage(null);
     void applyTransition((version) =>
       prepareMutation.mutateAsync({
         sessionId,
@@ -245,6 +346,9 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   }
 
   function editConfirmedWork(node: WorkflowNode) {
+    setContinueTarget(null);
+    setConfirmationMessage(null);
+    setContinueWarning(null);
     void applyTransition((version) =>
       patchWorkingDraft.mutateAsync({
         sessionId,
@@ -253,7 +357,39 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     );
   }
 
+  async function runGenerate(
+    target: LoopSessionResponse,
+    payload?: { message?: string; answers?: GrillingAnswer[]; note?: string },
+  ) {
+    setGenerating(true);
+    setGeneratePreview("");
+    setGenerateError(null);
+    try {
+      await queue.flush();
+      await generateIdea({
+        sessionId,
+        expectedVersion: target.version,
+        message: payload?.message,
+        answers: payload?.answers,
+        note: payload?.note,
+        onToken: (text) => setGeneratePreview((current) => current + text),
+      });
+      const refreshed = await sessionQuery.refetch();
+      if (refreshed.data?.status === 200) {
+        queryClient.setQueryData(sessionKey, refreshed.data);
+        setAppliedSession(refreshed.data.data);
+      }
+    } catch (error) {
+      const typed = operationalError(error);
+      setGenerateError(typed?.detail ?? getApiErrorMessage(error));
+    } finally {
+      setGenerating(false);
+      setGeneratePreview("");
+    }
+  }
+
   function confirmWorkingDraft() {
+    setContinueWarning(null);
     void applyTransition((version) =>
       confirmMutation.mutateAsync({
         sessionId,
@@ -261,19 +397,81 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       }),
     ).then((next) => {
       if (!next) return;
-      const stage = stageForWorkflowNode(next.working_draft_node);
-      const nextActions = deriveStageActions({
-        stage,
-        nodeHeads: next.node_heads,
-      });
-      setOfferContinue(nextActions.canStart || nextActions.canRecompute);
+      const autoDecompose =
+        workingDraftNode === WorkflowNode.idea_interpretation &&
+        next.working_draft_node === WorkflowNode.idea_decomposition &&
+        next.node_heads.find((head) => head.node === WorkflowNode.idea_decomposition)
+          ?.status === NodeHeadStatus.empty;
+      if (autoDecompose) {
+        setContinueTarget(null);
+        setConfirmationMessage(null);
+        void runGenerate(next);
+        return;
+      }
+      setContinueTarget(continueTargetAfterConfirm(next, workingDraftNode));
+      setConfirmationMessage("Saved. Select Continue to proceed to the next step.");
     });
   }
 
   function continueWork() {
-    setOfferContinue(false);
-    startOrRecompute();
+    if (!availableContinueTarget) return;
+    const target = availableContinueTarget;
+    setContinueTarget(null);
+    setConfirmationMessage(null);
+    setContinueWarning(null);
+    if (target.node) {
+      void applyTransition((version) =>
+        patchWorkingDraft.mutateAsync({
+          sessionId,
+          data: { node: target.node, expected_version: version },
+        }),
+      ).then((patched) => {
+        if (patched) router.replace(`/sessions/${sessionId}?stage=${target.stage}`);
+      });
+      return;
+    }
+    if (!target.prepare) {
+      router.replace(`/sessions/${sessionId}?stage=${target.stage}`);
+      return;
+    }
+    void applyTransition((version) =>
+      prepareMutation.mutateAsync({
+        sessionId,
+        data: { stage: target.stage, expected_version: version },
+      }),
+    ).then((prepared) => {
+      if (prepared) router.replace(`/sessions/${sessionId}?stage=${target.stage}`);
+    });
   }
+
+  const confirmActions = (
+    <div className="grid gap-3">
+      {warningStages.length > 0 ? (
+        <p role="note" className="text-sm text-pending">
+          {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
+          become Stale. Invalidation depends on whether this confirmation changes content.
+        </p>
+      ) : null}
+      <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
+        Confirm
+      </Button>
+      {interpretation ? (
+        <p className="text-sm text-muted-foreground">
+          Unanswered Grilling Questions are not saved as answers.
+        </p>
+      ) : null}
+      {confirmationMessage ? (
+        <p role="status" className="text-sm text-navy">
+          {confirmationMessage}
+        </p>
+      ) : null}
+      {availableContinueTarget ? (
+        <Button disabled={continuing} onClick={continueWork}>
+          Continue
+        </Button>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 lg:grid-cols-12">
@@ -323,7 +521,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         </nav>
       </aside>
 
-      <div className="grid gap-4 lg:col-span-9">
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:col-span-9">
         <p>
           <Link className="text-sm text-in-progress underline-offset-4 hover:underline" href="/sessions">
             ← All Loop Sessions
@@ -332,19 +530,63 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         <LoopSessionTitleEditor sessionId={sessionId} />
         {editingWorkingDraft ? (
           <>
-            <WorkingDraftNarrativeEditor sessionId={sessionId} />
-            <WorkingDraftCardCanvas sessionId={sessionId} />
-            <div className="grid gap-3">
-              {warningStages.length > 0 ? (
-                <p role="note" className="text-sm text-pending">
-                  {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
-                  become Stale. Invalidation depends on whether this confirmation changes content.
-                </p>
-              ) : null}
-              <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
-                Confirm
-              </Button>
-            </div>
+            {isGrillingNode(workingDraftNode) ? (
+              <GrillingWorkspace
+                error={generateError}
+                generating={generating}
+                locked={generating}
+                preview={generatePreview}
+                saveBlocked={
+                  generating || status === "saving" || status === "failed" || status === "conflict"
+                }
+                session={session}
+                sessionId={sessionId}
+                showGenerateCards={
+                  workingDraftNode === WorkflowNode.idea_decomposition && session.cards.length === 0
+                }
+                onEditState={({ editing, dirty }) => {
+                  setGrillEditing(editing);
+                  setGrillDirty(dirty);
+                }}
+                onGenerate={(payload) => void runGenerate(session, payload)}
+                frameActions={interpretation ? confirmActions : undefined}
+              />
+            ) : editingResearchDraft ? (
+              <ResearchStageContainer
+                key={workingDraftNode}
+                sessionId={sessionId}
+                session={session}
+                onRunningChange={setResearchRunning}
+                onConfirmabilityChange={setResearchConfirmable}
+              />
+            ) : editingContributionDraft ? (
+              <ContributionStageContainer
+                sessionId={sessionId}
+                session={session}
+                onRunningChange={setResearchRunning}
+                onConfirmabilityChange={setResearchConfirmable}
+              />
+            ) : editingClaimsDraft ? (
+              <ClaimsEvidenceStageContainer
+                sessionId={sessionId}
+                session={session}
+                onRunningChange={setResearchRunning}
+                onConfirmabilityChange={setResearchConfirmable}
+              />
+            ) : editingExperimentDraft ? (
+              <ExperimentPlanningStageContainer
+                sessionId={sessionId}
+                session={session}
+                onRunningChange={setResearchRunning}
+                onConfirmabilityChange={setResearchConfirmable}
+              />
+            ) : (
+              <>
+                <WorkingDraftNarrativeEditor locked={generating} sessionId={sessionId} />
+                <WorkingDraftCardCanvas locked={generating} sessionId={sessionId} />
+              </>
+            )}
+            {interpretation ? null : confirmActions}
           </>
         ) : null}
         <section aria-label={`${selected.name} overview`}>
@@ -377,16 +619,18 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   </ul>
                 </div>
               ) : null}
-              {actions.canStart || actions.canRecompute || actions.editableNodes.length > 0 || offerContinue ? (
+              {actions.canStart || actions.canRecompute || actions.editableNodes.length > 0 ? (
                 <div className="grid gap-3">
-                  {actions.canStart ? (
-                    <Button onClick={startOrRecompute}>Start</Button>
+                  {actions.canStart &&
+                  !availableContinueTarget &&
+                  !(
+                    editingWorkingDraft &&
+                    workingDraftNode === WorkflowNode.idea_decomposition
+                  ) ? (
+                    <Button onClick={startOrRecompute}>Continue</Button>
                   ) : null}
                   {actions.canRecompute ? (
                     <Button onClick={startOrRecompute}>Recompute</Button>
-                  ) : null}
-                  {offerContinue ? (
-                    <Button onClick={continueWork}>Continue</Button>
                   ) : null}
                   {actions.editableNodes.length > 0 ? (
                     <div className="grid gap-2">
@@ -426,6 +670,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                       Load current Loop Session
                     </Button>
                   ) : null}
+                </div>
+              ) : null}
+              {continueWarning ? (
+                <div role="alert" className="rounded-md border border-pending bg-card p-3">
+                  <p className="text-sm">{continueWarning}</p>
                 </div>
               ) : null}
             </CardContent>

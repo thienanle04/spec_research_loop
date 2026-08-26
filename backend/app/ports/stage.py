@@ -1,11 +1,15 @@
-"""Stage freeze / reset / project port (ADR 0013)."""
+"""Stage fingerprint / freeze / reset / project port (ADR 0013)."""
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 
 @runtime_checkable
 class StagePort(Protocol):
+    async def fingerprint(self, *, session_id: UUID, node: str) -> Any:
+        """Return canonicalizable working typed data for the freeze hash."""
+        ...
+
     async def freeze(self, *, session_id: UUID, node: str, revision_id: UUID) -> None:
         """Clone working typed rows onto the new Stage Revision."""
         ...
@@ -20,12 +24,21 @@ class StagePort(Protocol):
         """Reset working typed rows from a Stage Revision (None = empty)."""
         ...
 
-    async def project(self, *, session_id: UUID, node: str) -> dict:
-        """Projector payload for Context Projection."""
+    async def project(
+        self,
+        *,
+        session_id: UUID,
+        node: str,
+        revision_id: UUID | None,
+    ) -> dict:
+        """Project a confirmed revision, or working rows when revision_id is None."""
         ...
 
 
 class NoOpStagePort:
+    async def fingerprint(self, *, session_id: UUID, node: str) -> dict:
+        return {}
+
     async def freeze(self, *, session_id: UUID, node: str, revision_id: UUID) -> None:
         return None
 
@@ -38,5 +51,11 @@ class NoOpStagePort:
     ) -> None:
         return None
 
-    async def project(self, *, session_id: UUID, node: str) -> dict:
+    async def project(
+        self,
+        *,
+        session_id: UUID,
+        node: str,
+        revision_id: UUID | None,
+    ) -> dict:
         return {}

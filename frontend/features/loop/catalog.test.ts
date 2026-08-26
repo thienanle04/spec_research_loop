@@ -13,12 +13,13 @@ import {
 } from "./catalog";
 
 describe("Loop Stage catalog", () => {
-  it("covers every generated Loop Stage in domain order, including Contribution", () => {
-    expect(LOOP_STAGE_CATALOG.map((stage) => stage.id)).toEqual(Object.values(LoopStage));
+  it("keeps Contribution Direction inside Related work navigation", () => {
+    expect(LOOP_STAGE_CATALOG.map((stage) => stage.id)).toEqual(
+      Object.values(LoopStage).filter((stage) => stage !== LoopStage.contribution),
+    );
     expect(LOOP_STAGE_CATALOG.map((stage) => stage.name)).toEqual([
       "Grilling",
       "Related work",
-      "Contribution",
       "Claims/evidence",
       "Experiment planning",
       "Independent judges",
@@ -35,14 +36,17 @@ describe("Loop Stage catalog", () => {
   it("maps a Working Draft Workflow Node to its Loop Stage", () => {
     expect(stageForWorkflowNode(WorkflowNode.idea_interpretation)).toBe(LoopStage.grilling);
     expect(stageForWorkflowNode(WorkflowNode.idea_decomposition)).toBe(LoopStage.grilling);
-    expect(stageForWorkflowNode(WorkflowNode.contribution)).toBe(LoopStage.contribution);
+    expect(stageForWorkflowNode(WorkflowNode.contribution)).toBe(LoopStage.related_work);
     expect(stageForWorkflowNode(WorkflowNode.aggregator)).toBe(LoopStage.independent_judges);
   });
 
   it("falls back to the Working Draft Loop Stage when the query is absent or invalid", () => {
     expect(resolveSelectedStage(null, WorkflowNode.idea_decomposition)).toBe(LoopStage.grilling);
     expect(resolveSelectedStage("not-a-stage", WorkflowNode.contribution)).toBe(
-      LoopStage.contribution,
+      LoopStage.related_work,
+    );
+    expect(resolveSelectedStage(LoopStage.contribution, WorkflowNode.contribution)).toBe(
+      LoopStage.related_work,
     );
     expect(resolveSelectedStage(LoopStage.related_work, WorkflowNode.idea_interpretation)).toBe(
       LoopStage.related_work,
