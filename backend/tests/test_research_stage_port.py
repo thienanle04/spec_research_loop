@@ -17,6 +17,7 @@ from tests.test_loop_api import (
     _create_card,
     _create_session,
     _head,
+    _interpret,
     _patch_working_draft,
     _prepare,
 )
@@ -31,12 +32,7 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
     created = await _create_session(client)
     session_id = created["id"]
 
-    interpreted = await _confirm(
-        client,
-        session_id,
-        "idea_interpretation",
-        created["version"],
-    )
+    interpreted = await _interpret(client, session_id, created["version"])
     decomposed = await _confirm(
         client,
         session_id,

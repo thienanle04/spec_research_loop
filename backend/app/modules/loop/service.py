@@ -29,7 +29,10 @@ from app.modules.loop.catalog import (
     upstream_of_stage,
 )
 from app.modules.loop.deps import get_stage_ports
-from app.modules.loop.interpretation_turns import apply_account_reply_patch
+from app.modules.loop.interpretation_turns import (
+    apply_account_reply_patch,
+    interpretation_confirmable,
+)
 from app.modules.loop.models import (
     Card,
     Decision,
@@ -404,6 +407,22 @@ class LoopService:
                     code="upstream_not_current",
                     detail="Upstream Node Heads must be current",
                 )
+
+        if session.version != expected_version:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="version_conflict",
+                detail="Loop Session was changed by another request",
+                current_version=session.version,
+            )
+        if node is WorkflowNode.IDEA_INTERPRETATION and not interpretation_confirmable(
+            dict(session.working_draft_narrative)
+        ):
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="interpretation_not_confirmable",
+                detail="Confirm requires a non-blank Idea Frame (intent, problem, and research_question)",
+            )
 
         await self._increment_session_version(
             session,

@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from app.modules.loop.catalog import CardKind
-from app.modules.loop.interpretation_turns import TurnListError, parse_questions
+from app.modules.loop.interpretation_turns import TurnListError, parse_frame, parse_questions
 
 DELIMITER = "---json---"
 
@@ -269,7 +269,7 @@ def _load_json_object(raw: str, *, interpretation: bool = False) -> dict[str, An
         if not isinstance(payload, dict):
             raise TrailerParseError("trailer must be a JSON object")
         rest = candidate[consumed:].lstrip()
-        if interpretation and rest[:1] in ",{":
+        if interpretation and rest.startswith((",", "{")):
             continue
         return payload
     if interpretation:
@@ -321,11 +321,13 @@ def parse_trailer_payload(raw: str, *, interpretation: bool = False) -> dict[str
         raise TrailerParseError("preamble must be a string")
 
     questions: list[dict[str, Any]] = []
+    frame = parse_frame(None)
     if interpretation:
         if cards:
             raise TrailerParseError("interpretation trailer cards must be empty")
         try:
             questions = parse_questions(payload.get("questions"), exhausted=exhausted)
+            frame = parse_frame(payload.get("frame"))
         except TurnListError as exc:
             raise TrailerParseError(str(exc)) from exc
 
@@ -334,4 +336,5 @@ def parse_trailer_payload(raw: str, *, interpretation: bool = False) -> dict[str
         "cards": cards,
         "questions": questions,
         "preamble": preamble.strip() if isinstance(preamble, str) else None,
+        "frame": frame,
     }

@@ -251,6 +251,24 @@ describe("Confirm signals", () => {
         working_draft_narrative: { text: "Latency in GPU kernels" },
         cards: [],
       }),
+    ).toBe(false);
+    expect(
+      hasConfirmableWorkingDraft({
+        working_draft_node: WorkflowNode.idea_interpretation,
+        working_draft_narrative: {
+          exhausted: true,
+          frame: {
+            intent: "You want to reduce GPU kernel latency.",
+            problem: "Latency in GPU kernels",
+            research_question: "Can tiling help?",
+          },
+          turns: [
+            { role: "account", kind: "idea", text: "Latency in GPU kernels" },
+            { role: "model", preamble: "Done.", questions: [] },
+          ],
+        },
+        cards: [],
+      }),
     ).toBe(true);
     expect(
       hasConfirmableWorkingDraft({

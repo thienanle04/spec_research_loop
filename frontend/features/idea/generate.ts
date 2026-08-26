@@ -12,6 +12,7 @@ export async function generateIdea(options: {
   expectedVersion: number;
   message?: string;
   answers?: Array<{ option?: string; other?: string }>;
+  note?: string;
   signal?: AbortSignal;
   onToken?: (text: string) => void;
   onProgress?: (message: string) => void;
@@ -20,6 +21,7 @@ export async function generateIdea(options: {
     expected_version: number;
     message?: string;
     answers?: Array<{ option?: string; other?: string }>;
+    note?: string;
   } = {
     expected_version: options.expectedVersion,
   };
@@ -28,6 +30,9 @@ export async function generateIdea(options: {
   }
   if (options.answers !== undefined) {
     body.answers = options.answers;
+  }
+  if (options.note !== undefined && options.note !== "") {
+    body.note = options.note;
   }
 
   let version: number | undefined;

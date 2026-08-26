@@ -285,7 +285,7 @@ export function GrillingClusterForm({
       />
       <div className="flex flex-wrap gap-2">
         {onCancel ? (
-          <Button type="button" variant="outline" onClick={onCancel}>
+          <Button type="button" variant="outline" onClick={() => onCancel()}>
             {cancelLabel ?? "Cancel"}
           </Button>
         ) : null}

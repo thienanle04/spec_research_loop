@@ -153,9 +153,18 @@ function session(overrides: Partial<LoopSessionResponse> = {}): LoopSessionRespo
   };
 }
 
+function completeFrame(text = "GPU kernel latency"): Record<string, string> {
+  return {
+    intent: `You want to study ${text}.`,
+    problem: `Restated ${text}`,
+    research_question: `How should we study ${text}?`,
+  };
+}
+
 function answeredTurns(text = "GPU kernel latency"): Record<string, unknown> {
   return {
     exhausted: true,
+    frame: completeFrame(text),
     turns: [
       { role: "account", kind: "idea", text },
       { role: "model", preamble: "No further questions.", questions: [] },
@@ -163,9 +172,10 @@ function answeredTurns(text = "GPU kernel latency"): Record<string, unknown> {
   };
 }
 
-function unansweredTurns(): Record<string, unknown> {
+function unansweredTurns(frame?: Record<string, string>): Record<string, unknown> {
   return {
     exhausted: false,
+    ...(frame ? { frame } : {}),
     turns: [
       { role: "account", kind: "idea", text: "GPU kernel latency" },
       {
@@ -727,10 +737,32 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.queryByText(/Working Draft Card canvas/)).not.toBeInTheDocument();
   });
 
-  it("prevents Confirm when the Working Draft has neither nonblank narrative text nor a nonblank owned Card", () => {
+  it("does not offer Confirm before the Idea Frame exists", () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
+  it("enables Confirm under the Idea Frame when the frame is complete even with open questions", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_narrative: unansweredTurns(completeFrame()),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByText("Intent")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    expect(
+      screen.getByText("Unanswered Grilling Questions are not saved as answers."),
+    ).toBeInTheDocument();
   });
 
   it("confirms the Working Draft after flushing saves and applies the interpretation handoff", async () => {
@@ -817,6 +849,90 @@ describe("LoopSessionWorkbench", () => {
         }),
       },
     );
+  });
+
+  it("sends an Account note to skip an unanswered cluster", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 2,
+          working_draft_narrative: unansweredTurns(),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.type(screen.getByLabelText("Account note"), "Skip. Focus on tiling.");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(readSseStream).toHaveBeenCalled());
+    expect(readSseStream).toHaveBeenCalledWith(
+      "/api/idea/sessions/session-1/generate",
+      expect.any(Function),
+      undefined,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_version: 2,
+          note: "Skip. Focus on tiling.",
+        }),
+      },
+    );
+  });
+
+  it("saves an edited research idea as a JSON working-draft patch", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 2,
+          working_draft_narrative: unansweredTurns(),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const mutateAsync = vi.fn().mockResolvedValue({
+      status: 200,
+      data: session({
+        version: 3,
+        working_draft_narrative: {
+          ...unansweredTurns(),
+          turns: [{ role: "account", kind: "idea", text: "Tiling GPU kernels" }],
+        },
+      }),
+    });
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const ideaField = screen.getByLabelText("Edit idea");
+    await userEvent.clear(ideaField);
+    await userEvent.type(ideaField, "Tiling GPU kernels");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const payload = mutateAsync.mock.calls[0]?.[0] as {
+      sessionId: string;
+      data: { expected_version: number; narrative: Record<string, unknown> };
+    };
+    expect(() => JSON.stringify(payload.data)).not.toThrow();
+    expect(payload).toEqual({
+      sessionId: "session-1",
+      data: {
+        expected_version: 2,
+        narrative: {
+          turns: [{ role: "account", kind: "idea", text: "Tiling GPU kernels" }],
+          exhausted: false,
+        },
+      },
+    });
   });
 
   it("shows the exhausted hint on interpretation without gating Confirm", () => {

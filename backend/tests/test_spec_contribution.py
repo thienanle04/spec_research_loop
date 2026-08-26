@@ -9,6 +9,7 @@ from tests.test_loop_api import (
     _auth_client,
     _confirm,
     _create_session,
+    _interpret,
     _prepare,
 )
 
@@ -19,12 +20,7 @@ async def _prepare_contribution(
     client: AsyncClient, *, gap_statement: str | None = None
 ) -> dict:
     created = await _create_session(client)
-    interpreted = await _confirm(
-        client,
-        created["id"],
-        "idea_interpretation",
-        created["version"],
-    )
+    interpreted = await _interpret(client, created["id"], created["version"])
     decomposed = await _confirm(
         client,
         created["id"],

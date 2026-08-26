@@ -36,6 +36,26 @@ describe("generateIdea", () => {
     );
   });
 
+  it("posts a note on skip Send", async () => {
+    vi.mocked(readSseStream).mockImplementation(async (_path, onEvent) => {
+      onEvent({ type: "done", version: 6 });
+    });
+    await generateIdea({
+      sessionId: "session-1",
+      expectedVersion: 5,
+      note: "Skip this cluster",
+    });
+    expect(readSseStream).toHaveBeenCalledWith(
+      "/api/idea/sessions/session-1/generate",
+      expect.any(Function),
+      undefined,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_version: 5, note: "Skip this cluster" }),
+      },
+    );
+  });
+
   it("posts answers on cluster Send", async () => {
     vi.mocked(readSseStream).mockImplementation(async (_path, onEvent) => {
       onEvent({ type: "done", version: 5 });

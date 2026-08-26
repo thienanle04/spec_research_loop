@@ -5,3 +5,5 @@ Interpretation generate stores a turn list on the Working Draft (idea, Grilling 
 **Considered options:** keep `Account:` prose as source of truth plus a latest `questions` array; ephemeral options in SSE only; format answers into `message`.
 
 **Why:** The Account-facing step is questions with Grilling Options. Two sources of truth (prose blob and structured questions) would drift. Confirm and Context Projection need the full grilling, not only the latest cluster.
+
+Superseded in part by ADR 0027: cluster Send is no longer answers-only; interpretation also stores an Idea Frame and Account notes.

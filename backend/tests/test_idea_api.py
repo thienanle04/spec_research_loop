@@ -10,20 +10,27 @@ from httpx import AsyncClient
 
 from app.adapters.llm import FakeLlm, bind_llm_ports
 from app.modules.loop.catalog import WORKFLOW_NODES
-from tests.test_loop_api import _auth_client, _confirm, _create_session, _register
+from tests.test_loop_api import (
+    IDEA_FRAME,
+    _auth_client,
+    _create_session,
+    _interpret,
+    _register,
+)
 
+_FRAME = json.dumps(IDEA_FRAME)
 INTERPRETATION = (
     "What is the compute budget?\n"
     "---json---\n"
     '{"exhausted": false, "cards": [], "questions": ['
     '{"text": "What is the compute budget?", "options": ["<8GB", "8-24GB", ">24GB"]}'
-    "]}"
+    f'], "frame": {_FRAME}}}'
 )
 
 EXHAUSTED = (
     "No further questions.\n"
     "---json---\n"
-    '{"exhausted": true, "cards": [], "questions": []}'
+    f'{{"exhausted": true, "cards": [], "questions": [], "frame": {_FRAME}}}'
 )
 
 DECOMPOSITION = (
@@ -167,7 +174,7 @@ async def test_decomposition_generate_upserts_cards(client: AsyncClient) -> None
     await _auth_client(client)
     created = await _create_session(client)
     session_id = created["id"]
-    confirmed = await _confirm(client, session_id, "idea_interpretation", created["version"])
+    confirmed = await _interpret(client, session_id, created["version"])
     _bind_fake(response=DECOMPOSITION)
     response = await client.post(
         f"/api/idea/sessions/{session_id}/generate",
@@ -180,8 +187,8 @@ async def test_decomposition_generate_upserts_cards(client: AsyncClient) -> None
     body = fetched.json()
     assert body["working_draft_node"] == "idea_decomposition"
     kinds = {card["kind"]: card["body"]["text"] for card in body["cards"]}
-    assert kinds["problem"] == "Memory bandwidth limits kernel latency"
-    assert kinds["research_question"] == "Can tiling cut DRAM traffic?"
+    assert kinds["problem"] == IDEA_FRAME["problem"]
+    assert kinds["research_question"] == IDEA_FRAME["research_question"]
     assert kinds["constraint"] == "8GB VRAM"
     assert kinds["open_question"] == "Which GPU generation?"
     first_ids = {card["kind"]: card["id"] for card in body["cards"]}
@@ -208,7 +215,7 @@ async def test_decomposition_generate_upserts_cards(client: AsyncClient) -> None
     for card in refreshed["cards"]:
         by_kind.setdefault(card["kind"], []).append(card)
     assert by_kind["problem"][0]["id"] == first_ids["problem"]
-    assert by_kind["problem"][0]["body"]["text"] == "Updated problem"
+    assert by_kind["problem"][0]["body"]["text"] == IDEA_FRAME["problem"]
     assert [card["body"]["text"] for card in by_kind["constraint"]] == ["16GB VRAM", "No cloud"]
 
 
@@ -331,3 +338,33 @@ async def test_patch_earlier_idea_truncates_later_turns(client: AsyncClient) -> 
     narrative = patched.json()["working_draft_narrative"]
     assert narrative["exhausted"] is False
     assert narrative["turns"] == [{"role": "account", "kind": "idea", "text": "corrected idea"}]
+    assert narrative["frame"] == IDEA_FRAME
+
+
+@pytest.mark.asyncio
+async def test_cluster_note_skips_unanswered_questions(client: AsyncClient) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    session_id = created["id"]
+    _bind_fake()
+    first = await client.post(
+        f"/api/idea/sessions/{session_id}/generate",
+        json={"expected_version": 1, "message": "GPU kernel latency"},
+    )
+    version = _events(first.text)[-1]["version"]
+    _bind_fake(response=EXHAUSTED)
+    skipped = await client.post(
+        f"/api/idea/sessions/{session_id}/generate",
+        json={"expected_version": version, "note": "Skip budget. Focus on tiling."},
+    )
+    assert skipped.status_code == 200, skipped.text
+    turns = (await client.get(f"/api/loop/sessions/{session_id}")).json()["working_draft_narrative"][
+        "turns"
+    ]
+    assert turns[1]["questions"]
+    assert turns[2] == {
+        "role": "account",
+        "kind": "note",
+        "text": "Skip budget. Focus on tiling.",
+    }
+    assert turns[3]["questions"] == []

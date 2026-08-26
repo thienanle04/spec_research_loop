@@ -24,6 +24,7 @@ from tests.test_loop_api import (
     _confirm,
     _create_card,
     _create_session,
+    _interpret,
     _patch_working_draft,
     _prepare,
 )
@@ -56,12 +57,7 @@ async def test_research_inputs_stream_updates_working_narrative(
 ) -> None:
     await _auth_client(client)
     created = await _create_session(client)
-    interpreted = await _confirm(
-        client,
-        created["id"],
-        "idea_interpretation",
-        created["version"],
-    )
+    interpreted = await _interpret(client, created["id"], created["version"])
     decomposed = await _confirm(
         client,
         created["id"],

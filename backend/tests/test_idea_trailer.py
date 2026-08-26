@@ -57,6 +57,24 @@ def test_parse_interpretation_rejects_single_option() -> None:
         )
 
 
+def test_parse_interpretation_reads_frame() -> None:
+    payload = parse_trailer_payload(
+        '{"exhausted": true, "cards": [], "questions": [],'
+        ' "frame": {"intent": "I", "problem": "P", "research_question": "RQ"}}',
+        interpretation=True,
+    )
+    assert payload["frame"] == {"intent": "I", "problem": "P", "research_question": "RQ"}
+
+
+def test_parse_interpretation_defaults_missing_intent() -> None:
+    payload = parse_trailer_payload(
+        '{"exhausted": true, "cards": [], "questions": [],'
+        ' "frame": {"problem": "P", "research_question": "RQ"}}',
+        interpretation=True,
+    )
+    assert payload["frame"] == {"intent": "", "problem": "P", "research_question": "RQ"}
+
+
 def test_parse_interpretation_rejects_questions_when_exhausted() -> None:
     with pytest.raises(TrailerParseError, match="exhausted"):
         parse_trailer_payload(

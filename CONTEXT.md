@@ -25,7 +25,7 @@ An exported or stored binary/document produced from a Loop Session (for example 
 _Avoid_: file, blob, attachment (when you mean the domain export)
 
 **Decision**:
-A recorded Account choice that changes Loop Session history without being a generate: Confirm, reopen a current Workflow Node, revert, or a later-stage recorded pick. Choosing a Grilling Option and Send are generate input, not Decisions.
+A recorded Account choice that changes Loop Session history without being a generate: Confirm, reopen a current Workflow Node, revert, or a later-stage recorded pick. Choosing a Grilling Option, sending an Account note, and Send are generate input, not Decisions.
 _Avoid_: event, log entry, chat message, Grilling Option click
 
 **Stage Revision**:
@@ -45,7 +45,7 @@ The Produced Spec Version when it is not stale; otherwise the Loop Session has n
 _Avoid_: current spec, head
 
 **Working Draft**:
-The session's current editing Workflow Node plus narrative JSONB. In-progress typed attachments are working rows with no Stage Revision. Node-scoped narratives are retained while another Workflow Node is being edited, so navigating away and returning does not discard unconfirmed generated work. Navigating away or reopening a current Workflow Node keeps the last Stage Revision current; only a confirm whose content changed marks descendants Stale. Interpretation stores a structured turn list (the research idea, Grilling Question clusters, Account replies). Grilling Questions are not Cards. Confirm is allowed once every visible cluster has a reply; exhausted is a hint, not a gate. Saving an earlier Account reply drops later turns.
+The session's current editing Workflow Node plus narrative JSONB. In-progress typed attachments are working rows with no Stage Revision. Node-scoped narratives are retained while another Workflow Node is being edited, so navigating away and returning does not discard unconfirmed generated work. Navigating away or reopening a current Workflow Node keeps the last Stage Revision current; only a confirm whose content changed marks descendants Stale. Interpretation stores a structured turn list (the research idea, Grilling Question clusters, Account replies, Account notes) plus the latest Idea Frame. Grilling Questions are not Cards. Confirm is allowed once the Idea Frame's intent, problem, and research_question are all non-blank; unanswered Grilling Question clusters do not block Confirm. exhausted is a hint, not a gate. Confirm does not persist in-flight Grilling Option picks. Saving an earlier Account reply or note drops later turns.
 _Avoid_: temp, cache, unsaved changes
 
 **Loop Stage**:
@@ -71,6 +71,18 @@ _Avoid_: Card, survey item, chat message
 **Grilling Option**:
 A proposed reply to a Grilling Question, shown after generate completes. Interpretation only. Choosing one is generate input, not a Decision.
 _Avoid_: Card, Decision, chip, radio
+
+**Idea Frame**:
+The model-authored restatement of the research idea on interpretation Working Draft, rewritten each generate. Its fields are intent, problem, and research_question; all three must be non-blank to Confirm. It is not a Card. The Account cannot edit it. Confirm freezes the latest Idea Frame with the turn list. The confirmed problem and research_question fields are the source of those Card bodies; Intent is not a Card.
+_Avoid_: Card, summary, restatement (alone), preamble
+
+**Intent**:
+A model-authored paragraph on the Idea Frame that paraphrases what the Account wants, rewritten each generate. Not a Card. Required to Confirm.
+_Avoid_: restatement (the whole Idea Frame), summary, preamble, understanding
+
+**Account note**:
+A free-form Account turn on interpretation Working Draft. Generate input, not a Decision. With an open Grilling Question cluster, a note may skip that cluster. It is not an Idea Frame edit and not a Card.
+_Avoid_: prompt, chat message, comment, message (when you mean this turn)
 
 **Citation**:
 A stored source record in a Loop Session, optionally linked to Cards. It is not a Card.

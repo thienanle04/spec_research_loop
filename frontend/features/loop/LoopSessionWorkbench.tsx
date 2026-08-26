@@ -7,7 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { GrillingExhaustedHint, GrillingWorkspace, generateIdea, isGrillingNode } from "@/features/idea";
+import { GrillingWorkspace, generateIdea, isGrillingNode } from "@/features/idea";
 import type { GrillingAnswer } from "@/features/idea";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
@@ -240,6 +240,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     nodeHeads: session.node_heads,
   });
   const workingDraftNode = session.working_draft_node;
+  const interpretation = workingDraftNode === WorkflowNode.idea_interpretation;
   const workingDraftHead = session.node_heads.find((head) => head.node === workingDraftNode);
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
   const editingWorkingDraft = stageForWorkflowNode(workingDraftNode) === selectedStage;
@@ -358,7 +359,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
 
   async function runGenerate(
     target: LoopSessionResponse,
-    payload?: { message?: string; answers?: GrillingAnswer[] },
+    payload?: { message?: string; answers?: GrillingAnswer[]; note?: string },
   ) {
     setGenerating(true);
     setGeneratePreview("");
@@ -370,6 +371,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         expectedVersion: target.version,
         message: payload?.message,
         answers: payload?.answers,
+        note: payload?.note,
         onToken: (text) => setGeneratePreview((current) => current + text),
       });
       const refreshed = await sessionQuery.refetch();
@@ -441,6 +443,35 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       if (prepared) router.replace(`/sessions/${sessionId}?stage=${target.stage}`);
     });
   }
+
+  const confirmActions = (
+    <div className="grid gap-3">
+      {warningStages.length > 0 ? (
+        <p role="note" className="text-sm text-pending">
+          {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
+          become Stale. Invalidation depends on whether this confirmation changes content.
+        </p>
+      ) : null}
+      <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
+        Confirm
+      </Button>
+      {interpretation ? (
+        <p className="text-sm text-muted-foreground">
+          Unanswered Grilling Questions are not saved as answers.
+        </p>
+      ) : null}
+      {confirmationMessage ? (
+        <p role="status" className="text-sm text-navy">
+          {confirmationMessage}
+        </p>
+      ) : null}
+      {availableContinueTarget ? (
+        <Button disabled={continuing} onClick={continueWork}>
+          Continue
+        </Button>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 lg:grid-cols-12">
@@ -518,6 +549,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   setGrillDirty(dirty);
                 }}
                 onGenerate={(payload) => void runGenerate(session, payload)}
+                frameActions={interpretation ? confirmActions : undefined}
               />
             ) : editingResearchDraft ? (
               <ResearchStageContainer
@@ -554,31 +586,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 <WorkingDraftCardCanvas locked={generating} sessionId={sessionId} />
               </>
             )}
-            <div className="grid gap-3">
-              {warningStages.length > 0 ? (
-                <p role="note" className="text-sm text-pending">
-                  {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
-                  become Stale. Invalidation depends on whether this confirmation changes content.
-                </p>
-              ) : null}
-              {isGrillingNode(workingDraftNode) ? (
-                <GrillingExhaustedHint
-                  interpretation={workingDraftNode === WorkflowNode.idea_interpretation}
-                  narrative={session.working_draft_narrative as Record<string, unknown>}
-                />
-              ) : null}
-              <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
-                Confirm
-              </Button>
-              {confirmationMessage ? (
-                <p role="status" className="text-sm text-navy">
-                  {confirmationMessage}
-                </p>
-              ) : null}
-              {availableContinueTarget ? (
-                <Button disabled={continuing} onClick={continueWork}>Continue</Button>
-              ) : null}
-            </div>
+            {interpretation ? null : confirmActions}
           </>
         ) : null}
         <section aria-label={`${selected.name} overview`}>

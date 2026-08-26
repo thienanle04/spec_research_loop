@@ -17,14 +17,18 @@ from app.core.errors import OperationalErrorException
 from app.modules.idea.inflight import generate_lock
 from app.modules.idea.prompts import system_prompt, user_prompt
 from app.modules.idea.trailer import TrailerParseError, TrailerSplitter
-from app.modules.loop.catalog import WorkflowNode
+from app.modules.loop.catalog import CardKind, WorkflowNode
 from app.modules.loop.interpretation_turns import (
     append_answers_cluster,
     append_cluster_only,
     append_idea_cluster,
+    append_note_cluster,
+    empty_frame,
+    frame_complete,
     has_idea,
     last_is_account,
     normalize_answers,
+    parse_frame,
     turns_of,
     unanswered_cluster,
 )
@@ -39,12 +43,49 @@ def _sse(payload: dict[str, Any]) -> str:
     return f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _confirmed_idea_frame(context: dict[str, Any]) -> dict[str, str]:
+    upstream = context.get("upstream")
+    if not isinstance(upstream, dict):
+        return parse_frame(None)
+    interpretation = upstream.get(WorkflowNode.IDEA_INTERPRETATION.value)
+    if not isinstance(interpretation, dict):
+        return parse_frame(None)
+    narrative = interpretation.get("narrative")
+    if not isinstance(narrative, dict):
+        return parse_frame(None)
+    return parse_frame(narrative.get("frame"))
+
+
+def _cards_from_confirmed_frame(
+    context: dict[str, Any],
+    cards: list[tuple[CardKind, str]],
+) -> list[tuple[CardKind, str]]:
+    frame = _confirmed_idea_frame(context)
+    if not frame_complete(frame):
+        raise OperationalErrorException(
+            status_code=status.HTTP_409_CONFLICT,
+            code="missing_idea_frame",
+            detail="Decomposition requires a confirmed non-blank Idea Frame",
+        )
+    rest = [
+        item
+        for item in cards
+        if item[0] not in {CardKind.PROBLEM, CardKind.RESEARCH_QUESTION}
+    ]
+    return [
+        (CardKind.PROBLEM, frame["problem"]),
+        (CardKind.RESEARCH_QUESTION, frame["research_question"]),
+        *rest,
+    ]
+
+
 @dataclass
 class GenerateRun:
     session: LoopSessionResponse
     context: dict[str, Any]
     message: str | None
     answers: list[dict[str, str]] | None
+    note: str | None
     mode: str
 
 
@@ -60,6 +101,7 @@ class IdeaService:
         expected_version: int,
         message: str | None,
         answers: list[dict[str, str]] | None = None,
+        note: str | None = None,
     ) -> GenerateRun:
         acquired = await generate_lock.acquire(session_id)
         if not acquired:
@@ -86,31 +128,42 @@ class IdeaService:
                 )
             mode = "decomposition"
             normalized_answers: list[dict[str, str]] | None = None
+            note_text = note.strip() if (note or "").strip() else None
             if node is WorkflowNode.IDEA_INTERPRETATION:
                 turns = turns_of(dict(session.working_draft_narrative))
                 cluster = unanswered_cluster(turns)
                 has_message = bool((message or "").strip())
                 has_answers = answers is not None
+                has_note = note_text is not None
                 if cluster is not None:
                     if has_message:
                         raise OperationalErrorException(
                             status_code=status.HTTP_409_CONFLICT,
                             code="unexpected_generate_message",
-                            detail="Cluster Send uses answers, not message",
+                            detail="Cluster Send uses answers and/or an Account note, not message",
                         )
-                    if not has_answers:
+                    if has_answers:
+                        normalized_answers = normalize_answers(cluster, answers or [])
+                        mode = "answers"
+                    elif has_note:
+                        mode = "note"
+                    else:
                         raise OperationalErrorException(
                             status_code=status.HTTP_409_CONFLICT,
                             code="empty_generate_answers",
-                            detail="Cluster Send requires answers for every Grilling Question",
+                            detail="Cluster Send requires answers or an Account note",
                         )
-                    normalized_answers = normalize_answers(cluster, answers or [])
-                    mode = "answers"
                 elif not has_idea(turns):
                     if has_answers:
                         raise OperationalErrorException(
                             status_code=status.HTTP_409_CONFLICT,
                             code="unexpected_generate_answers",
+                            detail="The first interpretation Send is the research idea",
+                        )
+                    if has_note:
+                        raise OperationalErrorException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            code="unexpected_generate_note",
                             detail="The first interpretation Send is the research idea",
                         )
                     if not has_message:
@@ -121,13 +174,21 @@ class IdeaService:
                         )
                     mode = "idea"
                 elif last_is_account(turns):
-                    if has_message or has_answers:
+                    if has_answers:
+                        raise OperationalErrorException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            code="unexpected_generate_answers",
+                            detail="Re-generate the next cluster from the corrected turn list",
+                        )
+                    if has_message:
                         raise OperationalErrorException(
                             status_code=status.HTTP_409_CONFLICT,
                             code="unexpected_generate_payload",
                             detail="Re-generate the next cluster from the corrected turn list",
                         )
-                    mode = "recluster"
+                    mode = "note" if has_note else "recluster"
+                elif has_note and not has_answers and not has_message:
+                    mode = "note"
                 else:
                     raise OperationalErrorException(
                         status_code=status.HTTP_409_CONFLICT,
@@ -140,6 +201,12 @@ class IdeaService:
                     code="unexpected_generate_answers",
                     detail="Decomposition generate does not take Grilling Option answers",
                 )
+            elif note_text:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="unexpected_generate_note",
+                    detail="Decomposition generate does not take an Account note",
+                )
             context = await self._loop.project_context(
                 session_id=session_id,
                 account_id=account_id,
@@ -150,6 +217,7 @@ class IdeaService:
                 context=context,
                 message=(message.strip() if (message or "").strip() else None),
                 answers=normalized_answers,
+                note=note_text,
                 mode=mode,
             )
         except Exception:
@@ -198,6 +266,7 @@ class IdeaService:
                         context=run.context,
                         message=run.message,
                         answers=run.answers,
+                        note=run.note,
                     ),
                 )
             ) as tokens:
@@ -225,6 +294,7 @@ class IdeaService:
         questions = parsed["questions"] if node is WorkflowNode.IDEA_INTERPRETATION else []
         narrative = dict(run.session.working_draft_narrative)
         if node is WorkflowNode.IDEA_INTERPRETATION:
+            frame = parsed.get("frame") or empty_frame()
             if run.mode == "idea":
                 narrative = append_idea_cluster(
                     narrative,
@@ -232,6 +302,7 @@ class IdeaService:
                     preamble=preamble,
                     questions=questions,
                     exhausted=exhausted,
+                    frame=frame,
                 )
             elif run.mode == "answers":
                 narrative = append_answers_cluster(
@@ -240,6 +311,17 @@ class IdeaService:
                     preamble=preamble,
                     questions=questions,
                     exhausted=exhausted,
+                    frame=frame,
+                    note=run.note,
+                )
+            elif run.mode == "note":
+                narrative = append_note_cluster(
+                    narrative,
+                    note=run.note or "",
+                    preamble=preamble,
+                    questions=questions,
+                    exhausted=exhausted,
+                    frame=frame,
                 )
             else:
                 narrative = append_cluster_only(
@@ -247,9 +329,12 @@ class IdeaService:
                     preamble=preamble,
                     questions=questions,
                     exhausted=exhausted,
+                    frame=frame,
                 )
         card_texts = parsed["cards"] if node is WorkflowNode.IDEA_DECOMPOSITION else None
         try:
+            if card_texts is not None:
+                card_texts = _cards_from_confirmed_frame(run.context, card_texts)
             applied: LoopSessionResponse = await self._loop.apply_idea_generate(
                 session_id=session_id,
                 account_id=account_id,

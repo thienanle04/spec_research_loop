@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import { GrillingClusterForm } from "./GrillingClusterForm";
-import type { GrillingTurn, IdeaTurn } from "./turns";
+import type { GrillingTurn, IdeaTurn, NoteTurn } from "./turns";
 import { modelTurnBefore } from "./turns";
 
 function answerLabel(answer: { option: string } | { other: string }): string {
@@ -43,7 +43,10 @@ function TurnFrame({
   );
 }
 
-function AccountIdeaView({
+function AccountTextView({
+  label,
+  ariaLabel,
+  fieldLabel,
   turn,
   editing,
   locked,
@@ -53,7 +56,10 @@ function AccountIdeaView({
   onSave,
   onChange,
 }: {
-  turn: IdeaTurn;
+  label: string;
+  ariaLabel: string;
+  fieldLabel: string;
+  turn: IdeaTurn | NoteTurn;
   editing: boolean;
   locked: boolean;
   dirty: boolean;
@@ -63,13 +69,13 @@ function AccountIdeaView({
   onChange: (text: string) => void;
 }) {
   return (
-    <TurnFrame icon={User} label="Account">
+    <TurnFrame icon={User} label={label}>
       {editing ? (
         <div className="grid gap-3">
           <label className="grid gap-2 text-sm font-medium">
-            Research idea
+            {fieldLabel}
             <Textarea
-              aria-label="Edit idea"
+              aria-label={ariaLabel}
               value={turn.text}
               onChange={(event) => onChange(event.target.value)}
             />
@@ -78,7 +84,7 @@ function AccountIdeaView({
             <Button type="button" variant="outline" onClick={onCancel}>
               Cancel
             </Button>
-            <Button disabled={!dirty} type="button" onClick={onSave}>
+            <Button disabled={!dirty} type="button" onClick={() => onSave()}>
               Save
             </Button>
           </div>
@@ -139,16 +145,37 @@ export function GrillingTurns({
         const editLocked = locked || (editingIndex !== null && editingIndex !== index);
         if (current.role === "account" && current.kind === "idea") {
           return (
-            <AccountIdeaView
+            <AccountTextView
               key={`idea-${index}`}
+              ariaLabel="Edit idea"
               dirty={editingIndex === index && dirty}
               editing={editingIndex === index}
+              fieldLabel="Research idea"
+              label="Account"
               locked={editLocked}
               turn={current}
               onCancel={onCancel}
               onChange={(text) => onDraftChange({ ...current, text })}
               onEdit={() => onEdit(index)}
-              onSave={onSave}
+              onSave={() => onSave()}
+            />
+          );
+        }
+        if (current.role === "account" && current.kind === "note") {
+          return (
+            <AccountTextView
+              key={`note-${index}`}
+              ariaLabel="Edit Account note"
+              dirty={editingIndex === index && dirty}
+              editing={editingIndex === index}
+              fieldLabel="Account note"
+              label="Account note"
+              locked={editLocked}
+              turn={current}
+              onCancel={onCancel}
+              onChange={(text) => onDraftChange({ ...current, text })}
+              onEdit={() => onEdit(index)}
+              onSave={() => onSave()}
             />
           );
         }
