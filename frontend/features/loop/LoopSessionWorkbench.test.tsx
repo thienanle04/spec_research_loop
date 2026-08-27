@@ -261,6 +261,7 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.getByText("Title editor for session-1")).toBeInTheDocument();
     expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
   });
 
   it("puts back navigation and the title editor on a session strip", () => {
@@ -301,11 +302,117 @@ describe("LoopSessionWorkbench", () => {
   it("opens Spec Draft as a workspace placeholder without Produced Spec Version", () => {
     search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
 
     expect(screen.getByRole("region", { name: "Spec Draft overview" })).toHaveTextContent(
       "The Produced Spec Version will appear here after you confirm feasibility.",
     );
     expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+  });
+
+  it("shows a Stale Produced Spec Version on Spec Draft and keeps Continue disabled", () => {
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          produced_spec_version: {
+            id: "spec-old",
+            created_at: "2026-08-16T12:00:00Z",
+            document: {
+              nodes: {
+                idea_interpretation: {
+                  narrative: { text: "Earlier understanding" },
+                  card_snapshot: [],
+                },
+              },
+            },
+          },
+          valid_spec_version_id: null,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(spec).toHaveTextContent("Stale");
+    expect(spec).toHaveTextContent("Earlier understanding");
+    expect(within(actions).getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
+  it("enables Continue to Independent judges when Spec Draft has a Valid Spec Version", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 20,
+          produced_spec_version: {
+            id: "spec-valid",
+            created_at: "2026-08-16T12:00:00Z",
+            document: {
+              nodes: {
+                idea_interpretation: {
+                  narrative: { text: "Latency in GPU kernels" },
+                  card_snapshot: [],
+                },
+              },
+            },
+          },
+          valid_spec_version_id: "spec-valid",
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.current,
+            [WorkflowNode.claims]: NodeHeadStatus.current,
+            [WorkflowNode.evidence]: NodeHeadStatus.current,
+            [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+            [WorkflowNode.feasibility]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const prepared = session({
+      version: 21,
+      working_draft_node: WorkflowNode.gap_judge,
+    });
+    const prepareMutate = vi.fn().mockResolvedValue({ status: 200, data: prepared });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(spec).toHaveTextContent("Valid Spec Version");
+    expect(spec).toHaveTextContent("Latency in GPU kernels");
+    expect(spec).not.toHaveTextContent("Stale");
+    expect(within(actions).getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+
+    await userEvent.click(within(actions).getByRole("button", { name: "Continue" }));
+    expect(prepareMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { stage: LoopStage.independent_judges, expected_version: 20 },
+    });
+    expect(replace).toHaveBeenCalledWith(
+      `/sessions/session-1?stage=${LoopStage.independent_judges}`,
+    );
   });
 
   it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {

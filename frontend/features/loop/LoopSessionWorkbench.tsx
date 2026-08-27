@@ -45,6 +45,7 @@ import {
   stageForWorkflowNode,
 } from "./catalog";
 import { LoopSessionTitleEditor } from "./LoopSessionTitleEditor";
+import { ProducedSpecVersionView } from "./ProducedSpecVersionView";
 import { WorkingDraftCardCanvas } from "./WorkingDraftCardCanvas";
 import { WorkingDraftNarrativeEditor } from "./WorkingDraftNarrativeEditor";
 import { LoopSessionSaveProvider, useLoopSessionSave } from "./loop-session-save";
@@ -108,6 +109,24 @@ type ContinueTarget = {
   prepare: boolean;
   node?: WorkflowNode;
 };
+
+function isValidSpecVersion(session: LoopSessionResponse): boolean {
+  return (
+    session.produced_spec_version != null &&
+    session.valid_spec_version_id === session.produced_spec_version.id
+  );
+}
+
+function specDraftContinueTarget(nodeHeads: NodeHeadResponse[]): ContinueTarget {
+  const judgeActions = deriveStageActions({
+    stage: LoopStage.independent_judges,
+    nodeHeads,
+  });
+  return {
+    stage: LoopStage.independent_judges,
+    prepare: judgeActions.canStart || judgeActions.canRecompute,
+  };
+}
 
 function continueTargetAfterConfirm(
   next: LoopSessionResponse,
@@ -305,8 +324,12 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const persistedContinueTarget = workingDraftWasLastConfirmed
     ? continueTargetAfterConfirm(session, workingDraftNode)
     : null;
-  const availableContinueTarget = continueTarget ?? persistedContinueTarget;
+  const specDraftTarget =
+    selectedStage === LoopStage.spec_draft ? specDraftContinueTarget(session.node_heads) : null;
+  const availableContinueTarget = specDraftTarget ?? continueTarget ?? persistedContinueTarget;
   const continuing = prepareMutation.isPending || patchWorkingDraft.isPending;
+  const continueDisabled =
+    continuing || (selectedStage === LoopStage.spec_draft && !isValidSpecVersion(session));
   const draftConfirmable = editingStructuredDraft
     ? researchConfirmable
     : hasConfirmableWorkingDraft(session);
@@ -648,7 +671,9 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               {selectedStage === LoopStage.readiness ? (
                 <p>Not evaluated. Readiness is a criteria check, not a workflow-completion proxy.</p>
               ) : selectedStage === LoopStage.spec_draft ? (
-                <p>The Produced Spec Version will appear here after you confirm feasibility.</p>
+                session.produced_spec_version ? null : (
+                  <p>The Produced Spec Version will appear here after you confirm feasibility.</p>
+                )
               ) : (
                 <WorkflowNodeList
                   nodes={selected.nodes}
@@ -672,6 +697,12 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
             </CardContent>
           </Card>
           </section>
+          {selectedStage === LoopStage.spec_draft && session.produced_spec_version ? (
+            <ProducedSpecVersionView
+              produced={session.produced_spec_version}
+              validSpecVersionId={session.valid_spec_version_id}
+            />
+          ) : null}
         </div>
 
         <aside
@@ -707,7 +738,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               </p>
             ) : null}
             {availableContinueTarget ? (
-              <Button disabled={continuing} onClick={continueWork}>
+              <Button disabled={continueDisabled} onClick={continueWork}>
                 Continue
               </Button>
             ) : null}
