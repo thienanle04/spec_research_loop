@@ -39,6 +39,7 @@ import { ExperimentPlanningStageContainer } from "@/features/spec/ExperimentPlan
 import {
   LOOP_STAGE_CATALOG,
   WORKFLOW_NODE_LABELS,
+  ancestors,
   catalogStage,
   resolveSelectedStage,
   stageForWorkflowNode,
@@ -148,6 +149,29 @@ function transitionMessage(error: OperationalError): string {
     default:
       return error.detail;
   }
+}
+
+function workingDraftMoveError(
+  node: WorkflowNode,
+  nodeHeads: NodeHeadResponse[],
+): OperationalError | null {
+  const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
+  for (const ancestor of ancestors(node)) {
+    if (statusByNode.get(ancestor) !== NodeHeadStatus.current) {
+      return {
+        code: "upstream_not_current",
+        detail: "Upstream Node Heads must be current",
+      };
+    }
+  }
+  if (statusByNode.get(node) !== NodeHeadStatus.current) {
+    return {
+      code: "",
+      detail:
+        "Working Draft can only move to a current Workflow Node. Your current Working Draft was kept.",
+    };
+  }
+  return null;
 }
 
 function formatStageList(names: string[]): string {
@@ -355,6 +379,23 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     );
   }
 
+  function selectWorkingDraftNode(node: WorkflowNode) {
+    if (!session) return;
+    if (node === workingDraftNode) {
+      setTransitionError(null);
+      return;
+    }
+    const blocked = workingDraftMoveError(node, session.node_heads);
+    if (blocked) {
+      setContinueTarget(null);
+      setConfirmationMessage(null);
+      setContinueWarning(null);
+      setTransitionError(blocked);
+      return;
+    }
+    editConfirmedWork(node);
+  }
+
   async function runGenerate(
     target: LoopSessionResponse,
     payload?: { message?: string; answers?: GrillingAnswer[]; note?: string },
@@ -528,6 +569,14 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         </aside>
 
       <div className="grid min-w-0 grid-cols-1 gap-4">
+        {selected.nodes.length > 1 ? (
+          <WorkflowNodeTabs
+            nodes={selected.nodes}
+            nodeHeads={session.node_heads}
+            workingDraftNode={workingDraftNode}
+            onSelect={selectWorkingDraftNode}
+          />
+        ) : null}
         {editingWorkingDraft ? (
           <>
             {isGrillingNode(workingDraftNode) ? (
@@ -568,6 +617,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               />
             ) : editingClaimsDraft ? (
               <ClaimsEvidenceStageContainer
+                key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
                 onRunningChange={setResearchRunning}
@@ -575,6 +625,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               />
             ) : editingExperimentDraft ? (
               <ExperimentPlanningStageContainer
+                key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
                 onRunningChange={setResearchRunning}
@@ -706,6 +757,54 @@ function StageSignalSummary({
       {signals.editing ? " · Editing" : ""}
       {!signals.available ? " · Unavailable" : ""}
     </p>
+  );
+}
+
+function WorkflowNodeTabs({
+  nodes,
+  nodeHeads,
+  workingDraftNode,
+  onSelect,
+}: {
+  nodes: readonly WorkflowNode[];
+  nodeHeads: NodeHeadResponse[];
+  workingDraftNode: WorkflowNode;
+  onSelect: (node: WorkflowNode) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Workflow Nodes"
+      className="flex gap-2 overflow-x-auto rounded-md border bg-card p-2 shadow-sm"
+    >
+      {nodes.map((node) => {
+        const selected = workingDraftNode === node;
+        const head = nodeHeads.find((item) => item.node === node);
+        const status = head?.status ?? NodeHeadStatus.empty;
+        return (
+          <Button
+            key={node}
+            type="button"
+            role="tab"
+            variant="ghost"
+            aria-selected={selected}
+            className={cn(
+              "h-auto min-w-36 shrink-0 flex-col items-start px-3 py-2 text-left",
+              selected && "border-l-2 border-navy bg-muted",
+            )}
+            onClick={() => onSelect(node)}
+          >
+            <span className="block text-sm font-medium text-foreground">
+              {WORKFLOW_NODE_LABELS[node]}
+            </span>
+            <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+              {NODE_HEAD_LABEL[status]}
+              {selected ? " · Working Draft" : ""}
+            </span>
+          </Button>
+        );
+      })}
+    </div>
   );
 }
 

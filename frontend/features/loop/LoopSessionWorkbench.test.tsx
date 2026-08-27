@@ -363,6 +363,181 @@ describe("LoopSessionWorkbench", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  it("exposes one sub-tab per Workflow Node on multi-node Loop Stages", () => {
+    const stages: { stage: LoopStage; labels: string[] }[] = [
+      {
+        stage: LoopStage.grilling,
+        labels: ["Idea interpretation", "Idea decomposition"],
+      },
+      {
+        stage: LoopStage.related_work,
+        labels: ["Research inputs", "Related work"],
+      },
+      {
+        stage: LoopStage.claims_evidence,
+        labels: ["Claims", "Evidence"],
+      },
+      {
+        stage: LoopStage.experiment_planning,
+        labels: ["Experiment plan", "Feasibility"],
+      },
+      {
+        stage: LoopStage.independent_judges,
+        labels: [
+          "Gap Judge",
+          "Contribution Judge",
+          "Evidence Judge",
+          "Experiment Judge",
+          "Conference Judge",
+          "Aggregator",
+        ],
+      },
+    ];
+
+    for (const { stage, labels } of stages) {
+      search = new URLSearchParams(`stage=${stage}`);
+      const view = render(<LoopSessionWorkbench sessionId="session-1" />);
+      const tabs = screen.getByRole("tablist", { name: "Workflow Nodes" });
+      expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(
+        labels.map((label) => expect.stringContaining(label)),
+      );
+      view.unmount();
+    }
+  });
+
+  it("does not show sub-tabs on Gap, Contribution, Spec Draft, or Readiness", () => {
+    for (const stage of [LoopStage.gap, LoopStage.contribution, LoopStage.spec_draft, LoopStage.readiness]) {
+      search = new URLSearchParams(`stage=${stage}`);
+      const { unmount } = render(<LoopSessionWorkbench sessionId="session-1" />);
+      expect(screen.queryByRole("tablist", { name: "Workflow Nodes" })).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("selecting a current sibling tab patches the Working Draft to that node", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 6,
+          working_draft_node: WorkflowNode.idea_interpretation,
+          working_draft_narrative: answeredTurns("kept interpretation"),
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const switched = session({
+      version: 7,
+      working_draft_node: WorkflowNode.idea_decomposition,
+      working_draft_narrative: { text: "kept decomposition" },
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      }),
+    });
+    const mutateAsync = vi.fn().mockResolvedValue({ status: 200, data: switched });
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("tab", { name: /Idea decomposition/ }));
+
+    expect(mutateAsync).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: {
+        expected_version: 6,
+        node: WorkflowNode.idea_decomposition,
+      },
+    });
+    expect(mutateAsync.mock.calls[0][0].data).not.toHaveProperty("narrative");
+    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
+    expect(screen.getByText("Working Draft Card canvas for session-1")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Idea decomposition/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("does not patch when the selected tab is already the Working Draft", async () => {
+    const mutateAsync = vi.fn();
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("tab", { name: /Idea interpretation/ }));
+
+    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByRole("tab", { name: /Idea interpretation/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
+  });
+
+  it("explains a blocked empty tab without changing the Working Draft", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 3,
+          working_draft_node: WorkflowNode.idea_interpretation,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const mutateAsync = vi.fn();
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("tab", { name: /Idea decomposition/ }));
+
+    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("current Workflow Node");
+    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
+  });
+
+  it("explains a blocked tab when upstream Workflow Nodes are not current", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 4,
+          working_draft_node: WorkflowNode.research_inputs,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const mutateAsync = vi.fn();
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("tab", { name: /^Related work/ }));
+
+    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("not current");
+    expect(screen.getByText("Working Draft: Research inputs")).toBeInTheDocument();
+  });
+
   it("warns instead of continuing when the current work has not been confirmed", async () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     const prepare = vi.fn();
