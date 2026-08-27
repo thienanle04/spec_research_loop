@@ -187,6 +187,10 @@ function unansweredTurns(frame?: Record<string, string>): Record<string, unknown
   };
 }
 
+function stageActions() {
+  return screen.getByRole("complementary", { name: "Stage actions" });
+}
+
 describe("LoopSessionWorkbench", () => {
   beforeEach(() => {
     replace.mockReset();
@@ -538,21 +542,210 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.getByText("Working Draft: Research inputs")).toBeInTheDocument();
   });
 
+  it("shows Edit in the action panel when viewing confirmed work", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.research_inputs,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+    const overview = screen.getByRole("region", { name: "Grilling overview" });
+
+    expect(within(actions).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Edit Idea decomposition" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(within(overview).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+  });
+
+  it("shows Confirm in the action panel while editing a confirmable Working Draft", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_narrative: unansweredTurns(completeFrame()),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(within(actions).getByRole("button", { name: "Confirm" })).toBeEnabled();
+    expect(within(actions).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  });
+
+  it("shows Continue in the action panel after Confirm", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.contribution}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 12,
+          working_draft_node: WorkflowNode.contribution,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 13,
+      working_draft_node: WorkflowNode.contribution,
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+        [WorkflowNode.related_work]: NodeHeadStatus.current,
+        [WorkflowNode.gap]: NodeHeadStatus.current,
+        [WorkflowNode.contribution]: NodeHeadStatus.current,
+      }),
+    });
+    confirmHook.mockReturnValue({
+      mutateAsync: vi.fn().mockResolvedValue({ status: 200, data: confirmed }),
+      error: null,
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(within(actions).getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(within(actions).getByRole("status")).toHaveTextContent(
+      "Saved. Select Continue to proceed to the next step.",
+    );
+  });
+
+  it("shows Start in the action panel when the selected Loop Stage can be prepared", () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 4,
+          working_draft_node: WorkflowNode.idea_decomposition,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+    const overview = screen.getByRole("region", { name: "Related work overview" });
+
+    expect(within(actions).getByRole("button", { name: "Start" })).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(overview).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+  });
+
+  it("shows autosave status in the action panel while editing and has no Working Draft Save", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    saveStatus.current = "saving";
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_narrative: answeredTurns(),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    const { rerender } = render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(within(actions).getByText("Saving…")).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Confirm" })).toBeDisabled();
+
+    saveStatus.current = "conflict";
+    rerender(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(within(stageActions()).getByText("Resolve conflict")).toBeInTheDocument();
+  });
+
+  it("does not offer Edit or Confirm on Spec Draft or Readiness", () => {
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.idea_interpretation,
+          working_draft_narrative: answeredTurns(),
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    const { rerender } = render(<LoopSessionWorkbench sessionId="session-1" />);
+    const specActions = screen.getByRole("complementary", { name: "Stage actions" });
+    expect(within(specActions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(specActions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+
+    search = new URLSearchParams(`stage=${LoopStage.readiness}`);
+    rerender(<LoopSessionWorkbench sessionId="session-1" />);
+    const readinessActions = screen.getByRole("complementary", { name: "Stage actions" });
+    expect(within(readinessActions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(readinessActions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+  });
+
   it("warns instead of continuing when the current work has not been confirmed", async () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     const prepare = vi.fn();
     prepareHook.mockReturnValue({ mutateAsync: prepare, error: null });
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
+    const actions = stageActions();
 
-    await userEvent.click(within(overview).getByRole("button", { name: "Continue" }));
+    await userEvent.click(within(actions).getByRole("button", { name: "Start" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent(
       "This work has not been confirmed. Select Confirm to save it before continuing.",
     );
     expect(prepare).not.toHaveBeenCalled();
-    expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
 
   it("offers Recompute and Edit confirmed work from Node Heads", () => {
@@ -574,48 +767,23 @@ describe("LoopSessionWorkbench", () => {
     });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
+    const actions = stageActions();
 
-    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-    expect(within(overview).getByRole("button", { name: "Recompute" })).toBeInTheDocument();
-    expect(within(overview).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Recompute" })).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
 
-  it("offers Edit confirmed work when every Workflow Node is current", () => {
-    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          working_draft_node: WorkflowNode.research_inputs,
-          node_heads: heads({
-            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
-            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
-          }),
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
-
-    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
-    expect(within(overview).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
-    expect(within(overview).getByRole("button", { name: "Edit Idea decomposition" })).toBeInTheDocument();
-  });
-
-  it("does not offer Continue, Recompute, or Edit on an unavailable Loop Stage", () => {
+  it("does not offer Start, Recompute, or Edit on an unavailable Loop Stage", () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Related work overview" });
+    const actions = stageActions();
 
-    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
 
   it("starts empty work through recompute-prepare and applies the server Loop Session", async () => {
@@ -650,9 +818,8 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Related work overview" });
     expect(screen.queryByText(/Working Draft narrative editor/)).not.toBeInTheDocument();
-    await userEvent.click(within(overview).getByRole("button", { name: "Continue" }));
+    await userEvent.click(within(stageActions()).getByRole("button", { name: "Start" }));
 
     expect(mutateAsync).toHaveBeenCalledWith({
       sessionId: "session-1",
@@ -756,7 +923,7 @@ describe("LoopSessionWorkbench", () => {
   });
 
   it("preserves local Loop Session state and recovers from a version conflict", async () => {
-    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     const refetch = vi.fn().mockResolvedValue({
       data: {
         status: 200,
@@ -765,6 +932,10 @@ describe("LoopSessionWorkbench", () => {
           title: "Server title",
           working_draft_node: WorkflowNode.idea_interpretation,
           working_draft_narrative: answeredTurns("Server idea"),
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
         }),
       },
     });
@@ -776,6 +947,7 @@ describe("LoopSessionWorkbench", () => {
           working_draft_narrative: answeredTurns("Local idea"),
           node_heads: heads({
             [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
           }),
         }),
       },
@@ -793,7 +965,7 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("version conflict");
     expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
@@ -809,6 +981,10 @@ describe("LoopSessionWorkbench", () => {
         title: "Server title",
         working_draft_node: WorkflowNode.idea_interpretation,
         working_draft_narrative: answeredTurns("Server idea"),
+        node_heads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        }),
       }),
     });
   });
@@ -840,7 +1016,7 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("not current");
     expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
@@ -874,7 +1050,7 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("already current");
     expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();

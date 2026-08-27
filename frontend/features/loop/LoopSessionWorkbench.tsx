@@ -48,6 +48,7 @@ import { LoopSessionTitleEditor } from "./LoopSessionTitleEditor";
 import { WorkingDraftCardCanvas } from "./WorkingDraftCardCanvas";
 import { WorkingDraftNarrativeEditor } from "./WorkingDraftNarrativeEditor";
 import { LoopSessionSaveProvider, useLoopSessionSave } from "./loop-session-save";
+import { type SaveStatus } from "./mutation-queue";
 import { operationalError } from "./operational-error";
 import { LOOP_STAGE_ICONS } from "./stage-icons";
 import {
@@ -70,6 +71,14 @@ const NODE_HEAD_LABEL: Record<NodeHeadStatus, string> = {
   [NodeHeadStatus.empty]: "Empty",
   [NodeHeadStatus.current]: "Current",
   [NodeHeadStatus.stale]: "Stale",
+};
+
+const SAVE_STATUS_LABEL: Record<SaveStatus, string | null> = {
+  idle: null,
+  saving: "Saving…",
+  saved: "Saved",
+  failed: "Save failed",
+  conflict: "Resolve conflict",
 };
 
 function completionClass(completion: CompletionSignal): string {
@@ -298,6 +307,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     : null;
   const availableContinueTarget = continueTarget ?? persistedContinueTarget;
   const continuing = prepareMutation.isPending || patchWorkingDraft.isPending;
+  const draftConfirmable = editingStructuredDraft
+    ? researchConfirmable
+    : hasConfirmableWorkingDraft(session);
+  const showConfirm =
+    editingWorkingDraft && selected.nodes.length > 0 && draftConfirmable;
   const confirmDisabled =
     generating ||
     grillEditing ||
@@ -306,7 +320,21 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     status === "failed" ||
     status === "conflict" ||
     researchRunning ||
-    (editingStructuredDraft ? !researchConfirmable : !hasConfirmableWorkingDraft(session));
+    !draftConfirmable;
+  const stageNodes = [...selected.nodes];
+  const selectedNode = stageNodes.includes(workingDraftNode)
+    ? workingDraftNode
+    : stageNodes[0];
+  const canEditSelected =
+    selectedNode != null &&
+    actions.editableNodes.includes(selectedNode) &&
+    selectedNode !== workingDraftNode;
+  const showStart =
+    actions.canStart &&
+    !availableContinueTarget &&
+    !showConfirm &&
+    !(editingWorkingDraft && workingDraftNode === WorkflowNode.idea_decomposition);
+  const saveStatusLabel = editingWorkingDraft ? SAVE_STATUS_LABEL[status] : null;
 
   function expectedVersion(): number {
     const cached = queryClient.getQueryData(sessionKey) as
@@ -483,35 +511,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     });
   }
 
-  const confirmActions = (
-    <div className="grid gap-3">
-      {warningStages.length > 0 ? (
-        <p role="note" className="text-sm text-pending">
-          {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
-          become Stale. Invalidation depends on whether this confirmation changes content.
-        </p>
-      ) : null}
-      <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
-        Confirm
-      </Button>
-      {interpretation ? (
-        <p className="text-sm text-muted-foreground">
-          Unanswered Grilling Questions are not saved as answers.
-        </p>
-      ) : null}
-      {confirmationMessage ? (
-        <p role="status" className="text-sm text-navy">
-          {confirmationMessage}
-        </p>
-      ) : null}
-      {availableContinueTarget ? (
-        <Button disabled={continuing} onClick={continueWork}>
-          Continue
-        </Button>
-      ) : null}
-    </div>
-  );
-
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-4 pb-12">
       <header
@@ -598,7 +597,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   setGrillDirty(dirty);
                 }}
                 onGenerate={(payload) => void runGenerate(session, payload)}
-                frameActions={interpretation ? confirmActions : undefined}
               />
             ) : editingResearchDraft ? (
               <ResearchStageContainer
@@ -637,7 +635,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 <WorkingDraftCardCanvas locked={generating} sessionId={sessionId} />
               </>
             )}
-            {interpretation ? null : confirmActions}
           </>
         ) : null}
         <section aria-label={`${selected.name} overview`}>
@@ -672,64 +669,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   </ul>
                 </div>
               ) : null}
-              {actions.canStart || actions.canRecompute || actions.editableNodes.length > 0 ? (
-                <div className="grid gap-3">
-                  {actions.canStart &&
-                  !availableContinueTarget &&
-                  !(
-                    editingWorkingDraft &&
-                    workingDraftNode === WorkflowNode.idea_decomposition
-                  ) ? (
-                    <Button onClick={startOrRecompute}>Continue</Button>
-                  ) : null}
-                  {actions.canRecompute ? (
-                    <Button onClick={startOrRecompute}>Recompute</Button>
-                  ) : null}
-                  {actions.editableNodes.length > 0 ? (
-                    <div className="grid gap-2">
-                      <p className="text-sm font-medium">Edit confirmed work</p>
-                      <div className="flex flex-wrap gap-2">
-                        {actions.editableNodes.map((node) => (
-                          <Button
-                            key={node}
-                            variant="outline"
-                            onClick={() => editConfirmedWork(node)}
-                          >
-                            Edit {WORKFLOW_NODE_LABELS[node]}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {transitionError ? (
-                <div role="alert" className="rounded-md border border-pending bg-card p-3">
-                  <p className="text-sm">{transitionMessage(transitionError)}</p>
-                  {transitionError.code === "version_conflict" ? (
-                    <Button
-                      className="mt-3"
-                      variant="outline"
-                      onClick={() => {
-                        void sessionQuery.refetch().then((refreshed) => {
-                          if (refreshed.data?.status === 200) {
-                            queryClient.setQueryData(sessionKey, refreshed.data);
-                            setAppliedSession(refreshed.data.data);
-                            setTransitionError(null);
-                          }
-                        });
-                      }}
-                    >
-                      Load current Loop Session
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-              {continueWarning ? (
-                <div role="alert" className="rounded-md border border-pending bg-card p-3">
-                  <p className="text-sm">{continueWarning}</p>
-                </div>
-              ) : null}
             </CardContent>
           </Card>
           </section>
@@ -739,7 +678,78 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           aria-label="Stage actions"
           className="rounded-md border bg-card p-4 shadow-sm lg:sticky lg:top-6"
         >
-          <p className="text-sm text-muted-foreground">Stage actions</p>
+          <div className="grid gap-3">
+            <p className="text-sm font-medium text-foreground">Stage actions</p>
+            {saveStatusLabel ? (
+              <p role="status" aria-label="Working Draft save" className="text-sm text-muted-foreground">
+                {saveStatusLabel}
+              </p>
+            ) : null}
+            {showConfirm && warningStages.length > 0 ? (
+              <p role="note" className="text-sm text-pending">
+                {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
+                become Stale. Invalidation depends on whether this confirmation changes content.
+              </p>
+            ) : null}
+            {showConfirm ? (
+              <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
+                Confirm
+              </Button>
+            ) : null}
+            {showConfirm && interpretation ? (
+              <p className="text-sm text-muted-foreground">
+                Unanswered Grilling Questions are not saved as answers.
+              </p>
+            ) : null}
+            {confirmationMessage ? (
+              <p role="status" className="text-sm text-navy">
+                {confirmationMessage}
+              </p>
+            ) : null}
+            {availableContinueTarget ? (
+              <Button disabled={continuing} onClick={continueWork}>
+                Continue
+              </Button>
+            ) : null}
+            {showStart ? (
+              <Button onClick={startOrRecompute}>Start</Button>
+            ) : null}
+            {actions.canRecompute ? (
+              <Button onClick={startOrRecompute}>Recompute</Button>
+            ) : null}
+            {canEditSelected ? (
+              <Button variant="outline" onClick={() => editConfirmedWork(selectedNode)}>
+                Edit {WORKFLOW_NODE_LABELS[selectedNode]}
+              </Button>
+            ) : null}
+            {continueWarning ? (
+              <div role="alert" className="rounded-md border border-pending bg-card p-3">
+                <p className="text-sm">{continueWarning}</p>
+              </div>
+            ) : null}
+            {transitionError ? (
+              <div role="alert" className="rounded-md border border-pending bg-card p-3">
+                <p className="text-sm">{transitionMessage(transitionError)}</p>
+                {transitionError.code === "version_conflict" ? (
+                  <Button
+                    className="mt-3"
+                    variant="outline"
+                    onClick={() => {
+                      void sessionQuery.refetch().then((refreshed) => {
+                        if (refreshed.data?.status === 200) {
+                          queryClient.setQueryData(sessionKey, refreshed.data);
+                          setAppliedSession(refreshed.data.data);
+                          setTransitionError(null);
+                        }
+                      });
+                    }}
+                  >
+                    Load current Loop Session
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </aside>
       </div>
     </div>
