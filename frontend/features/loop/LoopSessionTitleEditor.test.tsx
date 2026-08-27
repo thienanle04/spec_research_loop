@@ -140,6 +140,30 @@ describe("LoopSessionTitleEditor", () => {
     expect(screen.getByRole("button", { name: "Keep my title" })).toBeEnabled();
   });
 
+  it("edits the title inline without a permanent title editor panel", () => {
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: { id: "one", title: "Original", version: 1 },
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    patchHook.mockReturnValue({ mutateAsync: vi.fn() });
+
+    render(
+      <LoopSessionSaveProvider>
+        <LoopSessionTitleEditor sessionId="one" />
+      </LoopSessionSaveProvider>,
+    );
+
+    expect(screen.getByRole("textbox", { name: "Loop Session title" })).toBeInTheDocument();
+    expect(
+      screen.queryByText("Rename this Loop Session without overwriting newer changes"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows loading and failure states", () => {
     getHook.mockReturnValueOnce({ isLoading: true, isError: false });
     patchHook.mockReturnValue({ mutateAsync: vi.fn() });

@@ -43,9 +43,7 @@ import {
   resolveSelectedStage,
   stageForWorkflowNode,
 } from "./catalog";
-import { DecisionHistory } from "./DecisionHistory";
 import { LoopSessionTitleEditor } from "./LoopSessionTitleEditor";
-import { ProducedSpecVersionView } from "./ProducedSpecVersionView";
 import { WorkingDraftCardCanvas } from "./WorkingDraftCardCanvas";
 import { WorkingDraftNarrativeEditor } from "./WorkingDraftNarrativeEditor";
 import { LoopSessionSaveProvider, useLoopSessionSave } from "./loop-session-save";
@@ -474,61 +472,62 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   );
 
   return (
-    <div className="space-y-8 pb-12">
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 lg:grid-cols-12 lg:items-start">
-        <aside className="grid gap-4 lg:col-span-3 xl:col-span-3 lg:sticky lg:top-6">
-          <div className="rounded-md border bg-card p-3 shadow-sm">
-          <p className="text-xs font-medium text-muted-foreground">
-            Loop Stage {LOOP_STAGE_CATALOG.findIndex((stage) => stage.id === selectedStage) + 1} of{" "}
-            {LOOP_STAGE_CATALOG.length}
-          </p>
-          <p className="font-serif text-lg text-navy">{selected.name}</p>
-          <p className="mt-1 text-sm text-muted-foreground">
+    <div className="mx-auto flex max-w-7xl flex-col gap-4 pb-12">
+      <header
+        aria-label="Loop Session"
+        className="flex flex-wrap items-center gap-3 border-b border-border pb-3"
+      >
+        <Link
+          className="text-sm text-in-progress underline-offset-4 hover:underline"
+          href="/sessions"
+        >
+          All Loop Sessions
+        </Link>
+        <div className="min-w-0 flex-1">
+          <LoopSessionTitleEditor sessionId={sessionId} />
+        </div>
+      </header>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)_minmax(12rem,16rem)] lg:items-start">
+        <aside className="grid gap-4 lg:sticky lg:top-6">
+          <p className="text-sm text-muted-foreground">
             Working Draft: {WORKFLOW_NODE_LABELS[session.working_draft_node]}
           </p>
-        </div>
-        <nav aria-label="Loop Stages" className="rounded-md border bg-card shadow-sm">
-          <ol className="flex gap-2 overflow-x-auto p-2 lg:flex-col lg:overflow-visible">
-            {LOOP_STAGE_CATALOG.map((stage, index) => {
-              const signals = deriveStageSignals({
-                stage: stage.id,
-                nodeHeads: session.node_heads,
-                workingDraftNode: session.working_draft_node,
-              });
-              const Icon = LOOP_STAGE_ICONS[stage.id];
-              const active = stage.id === selectedStage;
-              return (
-                <li key={stage.id} className="min-w-44 lg:min-w-0">
-                  <Link
-                    href={`/sessions/${sessionId}?stage=${stage.id}`}
-                    aria-current={active ? "page" : undefined}
-                    className={cn(
-                      "flex items-start gap-2 rounded-md px-2 py-2",
-                      active && "border-l-2 border-navy bg-muted lg:rounded-l-none",
-                    )}
-                  >
-                    <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-navy" />
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-foreground">
-                        {index + 1}. {stage.name}
-                      </p>
-                      <StageSignalSummary signals={signals} />
-                    </div>
-                  </Link>
-                </li>
-              );
-            })}
-          </ol>
-        </nav>
-      </aside>
+          <nav aria-label="Loop Stages" className="rounded-md border bg-card shadow-sm">
+            <ol className="flex gap-2 overflow-x-auto p-2 lg:flex-col lg:overflow-visible">
+              {LOOP_STAGE_CATALOG.map((stage, index) => {
+                const signals = deriveStageSignals({
+                  stage: stage.id,
+                  nodeHeads: session.node_heads,
+                  workingDraftNode: session.working_draft_node,
+                });
+                const Icon = LOOP_STAGE_ICONS[stage.id];
+                const active = stage.id === selectedStage;
+                return (
+                  <li key={stage.id} className="min-w-44 lg:min-w-0">
+                    <Link
+                      href={`/sessions/${sessionId}?stage=${stage.id}`}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "flex items-start gap-2 rounded-md px-2 py-2",
+                        active && "border-l-2 border-navy bg-muted lg:rounded-l-none",
+                      )}
+                    >
+                      <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-navy" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground">
+                          {index + 1}. {stage.name}
+                        </p>
+                        <StageSignalSummary signals={signals} />
+                      </div>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ol>
+          </nav>
+        </aside>
 
-      <div className="grid min-w-0 grid-cols-1 gap-4 lg:col-span-9">
-        <p>
-          <Link className="text-sm text-in-progress underline-offset-4 hover:underline" href="/sessions">
-            ← All Loop Sessions
-          </Link>
-        </p>
-        <LoopSessionTitleEditor sessionId={sessionId} />
+      <div className="grid min-w-0 grid-cols-1 gap-4">
         {editingWorkingDraft ? (
           <>
             {isGrillingNode(workingDraftNode) ? (
@@ -600,6 +599,8 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               <StageSignalSummary signals={selectedSignals} />
               {selectedStage === LoopStage.readiness ? (
                 <p>Not evaluated. Readiness is a criteria check, not a workflow-completion proxy.</p>
+              ) : selectedStage === LoopStage.spec_draft ? (
+                <p>The Produced Spec Version will appear here after you confirm feasibility.</p>
               ) : (
                 <WorkflowNodeList
                   nodes={selected.nodes}
@@ -682,18 +683,13 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           </Card>
           </section>
         </div>
-      </div>
-      
-      <div className="mx-auto max-w-7xl grid gap-8 px-4 lg:px-0">
-        <DecisionHistory
-          decisions={
-            decisionsQuery.data?.status === 200 ? decisionsQuery.data.data : []
-          }
-        />
-        <ProducedSpecVersionView
-          produced={session.produced_spec_version}
-          validSpecVersionId={session.valid_spec_version_id}
-        />
+
+        <aside
+          aria-label="Stage actions"
+          className="rounded-md border bg-card p-4 shadow-sm lg:sticky lg:top-6"
+        >
+          <p className="text-sm text-muted-foreground">Stage actions</p>
+        </aside>
       </div>
     </div>
   );

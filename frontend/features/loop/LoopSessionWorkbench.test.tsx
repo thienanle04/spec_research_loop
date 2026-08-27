@@ -259,6 +259,51 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
   });
 
+  it("puts back navigation and the title editor on a session strip", () => {
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
+    const strip = screen.getByRole("banner", { name: "Loop Session" });
+    expect(within(strip).getByRole("link", { name: "All Loop Sessions" })).toHaveAttribute(
+      "href",
+      "/sessions",
+    );
+    expect(within(strip).getByText("Title editor for session-1")).toBeInTheDocument();
+  });
+
+  it("shows a stage rail, workspace, and action column", () => {
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
+    expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Grilling overview" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Stage actions" })).toBeInTheDocument();
+  });
+
+  it("highlights the Loop Stage selected by the stage query", () => {
+    search = new URLSearchParams(`stage=${LoopStage.gap}`);
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const nav = screen.getByRole("navigation", { name: "Loop Stages" });
+
+    expect(within(nav).getByRole("link", { name: /Gap/ })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("link", { name: /Grilling/ })).not.toHaveAttribute("aria-current");
+  });
+
+  it("does not show Decision history or an always-on Produced Spec Version", () => {
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
+    expect(screen.queryByRole("region", { name: "Decision history" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
+  });
+
+  it("opens Spec Draft as a workspace placeholder without Produced Spec Version", () => {
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
+    expect(screen.getByRole("region", { name: "Spec Draft overview" })).toHaveTextContent(
+      "The Produced Spec Version will appear here after you confirm feasibility.",
+    );
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
+  });
+
   it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
@@ -302,7 +347,6 @@ describe("LoopSessionWorkbench", () => {
     expect(relatedWork).toHaveTextContent("Needs work");
     expect(relatedWork).not.toHaveTextContent("Unavailable");
     expect(relatedWork).not.toHaveTextContent("Editing");
-    expect(within(nav).queryByRole("link", { name: /^Contribution/ })).not.toBeInTheDocument();
   });
 
   it("selects a Loop Stage only through the query string and issues no mutations", async () => {
@@ -1345,231 +1389,6 @@ describe("LoopSessionWorkbench", () => {
     expect(setQueryData).not.toHaveBeenCalled();
   });
 
-  it("shows empty Decision history and Produced Spec Version states", () => {
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-
-    const history = screen.getByRole("region", { name: "Decision history" });
-    expect(history).toHaveTextContent("Decision history");
-    expect(history).toHaveTextContent("No Decisions");
-    expect(history).toHaveTextContent(
-      "Decision history does not include snapshot content, version diff, or revert",
-    );
-    expect(screen.queryByRole("button", { name: /revert/i })).not.toBeInTheDocument();
-
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-    expect(spec).toHaveTextContent("Produced Spec Version");
-    expect(spec).toHaveTextContent("No Produced Spec Version");
-    expect(spec).not.toHaveTextContent("latest spec");
-    expect(spec).not.toHaveTextContent("Draft Research Spec");
-    expect(spec).not.toHaveTextContent("Final Spec");
-  });
-
-  it("shows Decision kind, Workflow Node, timestamp, and Stage Revision id", () => {
-    decisionsHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: [
-          {
-            id: "decision-1",
-            kind: "confirm",
-            node: WorkflowNode.idea_interpretation,
-            stage_revision_id: "revision-abc",
-            created_at: "2026-08-16T10:00:00Z",
-          },
-        ],
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const history = screen.getByRole("region", { name: "Decision history" });
-
-    expect(history).toHaveTextContent("confirm");
-    expect(history).toHaveTextContent("Idea interpretation");
-    expect(history).toHaveTextContent("Aug 16, 2026, 10:00 AM UTC");
-    expect(history).toHaveTextContent("revision-abc");
-    expect(history).not.toHaveTextContent("No Decisions");
-    expect(screen.queryByRole("button", { name: /diff|revert|snapshot/i })).not.toBeInTheDocument();
-  });
-
-  it("renders a Produced Spec Version read-only in Loop Stage order", () => {
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          produced_spec_version: {
-            id: "spec-valid",
-            created_at: "2026-08-16T12:00:00Z",
-            document: {
-              nodes: {
-                contribution: {
-                  narrative: { text: "A fused kernel scheduler" },
-                  card_snapshot: [
-                    {
-                      id: "card-1",
-                      kind: CardKind.contribution,
-                      body: { text: "Schedule overlapping copies" },
-                    },
-                  ],
-                },
-                idea_interpretation: {
-                  narrative: { text: "Latency in GPU kernels" },
-                  card_snapshot: [],
-                },
-              },
-            },
-          },
-          valid_spec_version_id: "spec-valid",
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-    const text = spec.textContent ?? "";
-
-    expect(spec).toHaveTextContent("Produced Spec Version");
-    expect(spec).toHaveTextContent("Valid Spec Version");
-    expect(spec).not.toHaveTextContent("Stale");
-    expect(spec).toHaveTextContent("Grilling");
-    expect(spec).toHaveTextContent("Latency in GPU kernels");
-    expect(spec).toHaveTextContent("Contribution");
-    expect(spec).toHaveTextContent("A fused kernel scheduler");
-    expect(spec).toHaveTextContent("Schedule overlapping copies");
-    expect(text.indexOf("Grilling")).toBeGreaterThan(-1);
-    expect(text.indexOf("Grilling")).toBeLessThan(text.indexOf("Contribution"));
-    expect(spec).not.toHaveTextContent("latest spec");
-    expect(spec).not.toHaveTextContent("Draft Research Spec");
-    expect(spec).not.toHaveTextContent("Final Spec");
-    expect(within(spec).queryByRole("textbox")).not.toBeInTheDocument();
-  });
-
-  it("renders a legacy Produced Spec Version Gap only once", () => {
-    const gap = {
-      statement: "Research loops need multi-benchmark verification.",
-      status: "candidate",
-    };
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          produced_spec_version: {
-            id: "spec-valid",
-            created_at: "2026-08-16T12:00:00Z",
-            document: {
-              nodes: {
-                gap: {
-                  narrative: { candidate: gap },
-                  card_snapshot: [
-                    {
-                      id: "gap-card",
-                      kind: CardKind.gap,
-                      body: gap,
-                    },
-                  ],
-                },
-              },
-            },
-          },
-          valid_spec_version_id: "spec-valid",
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-    const occurrences = spec.textContent?.match(/Research loops need multi-benchmark verification\./g);
-
-    expect(occurrences).toHaveLength(1);
-    expect(spec.textContent).not.toMatch(/"candidate"\s*:/);
-  });
-
-  it("keeps unknown Produced Spec Version fields visible as JSON", () => {
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          produced_spec_version: {
-            id: "spec-valid",
-            created_at: "2026-08-16T12:00:00Z",
-            document: {
-              assembler: "v2",
-              nodes: {
-                idea_interpretation: {
-                  narrative: { text: "Known idea", schema: "keep-me" },
-                  card_snapshot: [
-                    {
-                      id: "card-1",
-                      kind: CardKind.problem,
-                      body: { text: "Bandwidth", extra: 3 },
-                    },
-                  ],
-                  future_field: { score: 9 },
-                },
-              },
-            },
-          },
-          valid_spec_version_id: "spec-valid",
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-
-    expect(spec).toHaveTextContent("Known idea");
-    expect(spec).toHaveTextContent("Bandwidth");
-    expect(spec).toHaveTextContent('"schema": "keep-me"');
-    expect(spec).toHaveTextContent('"extra": 3');
-    expect(spec).toHaveTextContent('"score": 9');
-    expect(spec).toHaveTextContent('"assembler": "v2"');
-  });
-
-  it("marks a Produced Spec Version Stale when it is not the Valid Spec Version", () => {
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          produced_spec_version: {
-            id: "spec-old",
-            created_at: "2026-08-16T12:00:00Z",
-            document: {
-              nodes: {
-                idea_interpretation: {
-                  narrative: { text: "Earlier understanding" },
-                  card_snapshot: [],
-                },
-              },
-            },
-          },
-          valid_spec_version_id: null,
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-
-    expect(spec).toHaveTextContent("Stale");
-    expect(spec).toHaveTextContent("Produced Spec Version");
-    expect(spec).toHaveTextContent("Valid Spec Version");
-    expect(spec).toHaveTextContent("Earlier understanding");
-  });
-
   it("keeps Readiness as Not evaluated when every Workflow Node is current", () => {
     search = new URLSearchParams(`stage=${LoopStage.readiness}`);
     const current = Object.fromEntries(
@@ -1600,7 +1419,7 @@ describe("LoopSessionWorkbench", () => {
     expect(readiness).not.toHaveTextContent("Complete");
   });
 
-  it("refreshes Decisions, Produced Spec Version, and dashboard queries after Confirm", async () => {
+  it("refreshes Decisions and dashboard queries after Confirm", async () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     getHook.mockReturnValue({
       data: {
@@ -1639,17 +1458,10 @@ describe("LoopSessionWorkbench", () => {
     confirmHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    expect(screen.getByRole("region", { name: "Produced Spec Version" })).toHaveTextContent(
-      "No Produced Spec Version",
-    );
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
-    expect(screen.getByRole("region", { name: "Produced Spec Version" })).toHaveTextContent(
-      "Confirmed interpretation",
-    );
-    expect(screen.getByRole("region", { name: "Produced Spec Version" })).toHaveTextContent(
-      "Valid Spec Version",
-    );
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["/api/loop/sessions/session-1/decisions"],
     });
