@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 class VerificationStatus(StrEnum):
@@ -21,6 +21,20 @@ class GroundingStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class CounterEvidenceRelevance(StrEnum):
+    PENDING = "pending"
+    RELEVANT = "relevant"
+    IRRELEVANT = "irrelevant"
+    UNCERTAIN = "uncertain"
+
+
+class CounterEvidenceSupport(StrEnum):
+    PENDING = "pending"
+    SUPPORTED = "supported"
+    UNSUPPORTED = "unsupported"
+    UNCERTAIN = "uncertain"
+
+
 class GapStatus(StrEnum):
     CANDIDATE = "candidate"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
@@ -35,8 +49,43 @@ class CounterEvidenceOutcome(StrEnum):
     INCONCLUSIVE = "inconclusive"
 
 
+class CounterEvidenceContentBasis(StrEnum):
+    METADATA_ONLY = "metadata_only"
+    ABSTRACT = "abstract"
+    FULL_TEXT = "full_text"
+
+
+class GapClaimKind(StrEnum):
+    EXISTING_CAPABILITY = "existing_capability"
+    UNRESOLVED_LIMITATION = "unresolved_limitation"
+    TECHNICAL_MECHANISM = "technical_mechanism"
+    HUMAN_EVALUATION = "human_evaluation"
+    DOMAIN_SCOPE = "domain_scope"
+
+
+class GapClaimEvidence(BaseModel):
+    """A Related Work passage that directly anchors one atomic Gap claim."""
+
+    citation_key: str = Field(min_length=1)
+    passage: str = Field(min_length=1)
+    location: str = Field(min_length=1)
+
+
+class GapClaimAssessment(BaseModel):
+    """One independently falsifiable clause used to build the final Gap."""
+
+    claim_id: str = Field(min_length=1)
+    kind: GapClaimKind
+    statement: str = Field(min_length=1)
+    supporting_citation_keys: list[str] = Field(default_factory=list)
+    supporting_evidence: list[GapClaimEvidence] = Field(default_factory=list)
+    counter_evidence_result_keys: list[str] = Field(default_factory=list)
+    outcome: CounterEvidenceOutcome = CounterEvidenceOutcome.INCONCLUSIVE
+    assessment: str = ""
+
+
 class CounterEvidenceResult(BaseModel):
-    """A persisted metadata-only assessment of one counter-evidence source."""
+    """A persisted source assessment with identity and content checks kept separate."""
 
     result_key: str = Field(min_length=1)
     title: str = Field(min_length=1)
@@ -53,6 +102,15 @@ class CounterEvidenceResult(BaseModel):
     discovery_queries: list[str] = Field(default_factory=list)
     verification_status: VerificationStatus = VerificationStatus.PENDING
     verification_messages: list[str] = Field(default_factory=list)
+    content_basis: CounterEvidenceContentBasis = (
+        CounterEvidenceContentBasis.METADATA_ONLY
+    )
+    source_object_key: str | None = None
+    evidence_passage: str | None = None
+    evidence_location: str | None = None
+    grounding_status: GroundingStatus = GroundingStatus.PENDING
+    relevance_status: CounterEvidenceRelevance = CounterEvidenceRelevance.PENDING
+    support_status: CounterEvidenceSupport = CounterEvidenceSupport.PENDING
     impact: CounterEvidenceOutcome = CounterEvidenceOutcome.INCONCLUSIVE
     rationale: str = "This result was not included in the validated assessment."
 
@@ -156,6 +214,7 @@ class RelatedWorkFindingResponse(RelatedWorkFindingBase):
 
 
 class GapSearchAudit(BaseModel):
+    assessed_statement: str = ""
     related_work_queries: list[str] = Field(default_factory=list)
     counter_evidence_queries: list[str] = Field(default_factory=list)
     providers: list[str] = Field(default_factory=list)
@@ -168,6 +227,8 @@ class GapSearchAudit(BaseModel):
     )
     counter_evidence_assessment: str = ""
     counter_evidence_results: list[CounterEvidenceResult] = Field(default_factory=list)
+    claim_assessments: list[GapClaimAssessment] = Field(default_factory=list)
+    readiness_messages: list[str] = Field(default_factory=list)
     completed_at: datetime | None = None
     complete: bool = False
 
@@ -186,6 +247,166 @@ class GapCardBody(BaseModel):
     status: GapStatus = GapStatus.INSUFFICIENT_EVIDENCE
     search_audit: GapSearchAudit = Field(default_factory=GapSearchAudit)
     evidence_check: GapEvidenceCheck = Field(default_factory=GapEvidenceCheck)
+
+    def evidence_readiness_messages(self) -> list[str]:
+        messages: list[str] = []
+        normalized_statement = " ".join(self.statement.casefold().split())
+        normalized_assessed = " ".join(
+            self.search_audit.assessed_statement.casefold().split()
+        )
+        supported = set(self.supporting_citation_keys)
+        eligible = set(self.evidence_check.eligible_citation_keys)
+        audit = self.search_audit
+        results = audit.counter_evidence_results
+        claims = audit.claim_assessments
+        result_keys = [item.result_key for item in results]
+        claim_ids = [item.claim_id for item in claims]
+
+        if not normalized_statement:
+            messages.append("The Gap statement is empty.")
+        elif normalized_statement != normalized_assessed:
+            messages.append("The Gap statement changed after the literature audit.")
+        if not supported:
+            messages.append("The Gap has no supporting Citations.")
+        elif not supported <= eligible:
+            messages.append(
+                "Some supporting Citations are not both identity-verified and source-grounded."
+            )
+        if not self.evidence_check.ready:
+            messages.append("The Related Work evidence check is incomplete.")
+        if not audit.complete or audit.completed_at is None:
+            messages.append("The literature search audit is incomplete.")
+        if not audit.related_work_queries or not audit.counter_evidence_queries:
+            messages.append("The audit does not contain both search query sets.")
+        if not audit.providers:
+            messages.append("The audit does not record a scholarly provider.")
+
+        expected_related = min(5, audit.related_work_candidate_count)
+        if (
+            expected_related == 0
+            or audit.related_work_analyzed_count != expected_related
+            or len(supported) != audit.related_work_analyzed_count
+        ):
+            messages.append(
+                "Related Work analysis does not cover the selected source portfolio."
+            )
+        expected_counter = min(5, audit.counter_evidence_candidate_count)
+        if (
+            expected_counter == 0
+            or audit.counter_evidence_analyzed_count == 0
+            or audit.counter_evidence_analyzed_count > expected_counter
+            or len(results) != audit.counter_evidence_analyzed_count
+        ):
+            messages.append(
+                "Counter-evidence analysis does not cover the selected source portfolio."
+            )
+
+        if audit.counter_evidence_outcome not in {
+            CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE,
+            CounterEvidenceOutcome.GAP_NARROWED,
+        }:
+            messages.append("The counter-evidence outcome does not support this Gap.")
+        if len(set(result_keys)) != len(result_keys):
+            messages.append("Counter-evidence result identifiers are not unique.")
+        if any(
+            result.verification_status is not VerificationStatus.VERIFIED
+            for result in results
+        ):
+            messages.append("Every counter-evidence source identity must be verified.")
+        if any(
+            result.content_basis is CounterEvidenceContentBasis.METADATA_ONLY
+            or result.grounding_status is not GroundingStatus.GROUNDED
+            or not (result.evidence_passage or "").strip()
+            or not (result.evidence_location or "").strip()
+            for result in results
+        ):
+            messages.append(
+                "Every counter-evidence assessment must be grounded in source content."
+            )
+        if any(
+            result.relevance_status is not CounterEvidenceRelevance.RELEVANT
+            for result in results
+        ):
+            messages.append(
+                "Every counter-evidence source must be directly relevant to the Gap claims."
+            )
+        if any(
+            result.support_status is not CounterEvidenceSupport.SUPPORTED
+            for result in results
+        ):
+            messages.append(
+                "Every counter-evidence rationale must be semantically supported by "
+                "the retrieved source content."
+            )
+
+        if not claims or len(set(claim_ids)) != len(claim_ids):
+            messages.append(
+                "Atomic Gap claims are missing or have duplicate identifiers."
+            )
+        allowed_claim_outcomes = {
+            CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE,
+            CounterEvidenceOutcome.GAP_NARROWED,
+        }
+        if any(
+            not claim.supporting_citation_keys
+            or not set(claim.supporting_citation_keys) <= eligible
+            or not claim.supporting_evidence
+            or {
+                evidence.citation_key for evidence in claim.supporting_evidence
+            }
+            != set(claim.supporting_citation_keys)
+            or claim.outcome not in allowed_claim_outcomes
+            for claim in claims
+        ):
+            messages.append(
+                "Every atomic Gap claim must have eligible passage-level provenance "
+                "and a supporting audit outcome."
+            )
+        claim_outcomes = {claim.outcome for claim in claims}
+        expected_outcome = (
+            CounterEvidenceOutcome.GAP_NOT_SUPPORTED
+            if CounterEvidenceOutcome.GAP_NOT_SUPPORTED in claim_outcomes
+            else (
+                CounterEvidenceOutcome.GAP_NARROWED
+                if CounterEvidenceOutcome.GAP_NARROWED in claim_outcomes
+                else (
+                    CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+                    if claim_outcomes
+                    == {CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE}
+                    else CounterEvidenceOutcome.INCONCLUSIVE
+                )
+            )
+        )
+        if audit.counter_evidence_outcome is not expected_outcome:
+            messages.append(
+                "The overall counter-evidence outcome is inconsistent with the atomic claims."
+            )
+        mapped_support = {
+            key for claim in claims for key in claim.supporting_citation_keys
+        }
+        if mapped_support != supported:
+            messages.append(
+                "Supporting Citations are not mapped exactly to the atomic Gap claims."
+            )
+        counter_key_set = set(result_keys)
+        if any(
+            set(claim.counter_evidence_result_keys) != counter_key_set
+            for claim in claims
+        ):
+            messages.append(
+                "Every atomic Gap claim must be checked against every selected counter-evidence source."
+            )
+        return messages
+
+    def is_evidence_ready(self) -> bool:
+        return not self.evidence_readiness_messages()
+
+    @model_validator(mode="after")
+    def downgrade_stale_candidate_status(self) -> "GapCardBody":
+        self.search_audit.readiness_messages = self.evidence_readiness_messages()
+        if self.status is GapStatus.CANDIDATE and self.search_audit.readiness_messages:
+            self.status = GapStatus.INSUFFICIENT_EVIDENCE
+        return self
 
     def is_confirmable(self) -> bool:
         # Evidence readiness is advisory. An Account may confirm a Gap Candidate

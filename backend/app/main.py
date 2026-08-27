@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +28,7 @@ from app.modules.loop.deps import (
     default_stage_port_factories,
 )
 from app.modules.research.api import router as research_router
+from app.modules.research.deps import get_research_object_storage
 from app.modules.research.stage_port import ResearchStagePort
 from app.modules.spec.api import router as spec_router
 
@@ -64,12 +66,16 @@ def create_app() -> FastAPI:
     app.include_router(spec_router, prefix="/api/spec", tags=["spec"])
     app.include_router(judgement_router, prefix="/api/judgement", tags=["judgement"])
     stage_port_factories = default_stage_port_factories()
+    research_stage_port = partial(
+        ResearchStagePort,
+        object_storage=get_research_object_storage(),
+    )
     for node in (
         WorkflowNode.RESEARCH_INPUTS,
         WorkflowNode.RELATED_WORK,
         WorkflowNode.GAP,
     ):
-        stage_port_factories[node.value] = ResearchStagePort
+        stage_port_factories[node.value] = research_stage_port
     bind_stage_port_factories(stage_port_factories)
 
     llm = LangChainChatAdapter()

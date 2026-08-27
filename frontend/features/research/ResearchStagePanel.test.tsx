@@ -41,6 +41,7 @@ const gap: GapCandidate = {
   supporting_citation_keys: [citation.citation_key],
   status: "candidate",
   search_audit: {
+    assessed_statement: "Research loops need multi-benchmark verification.",
     related_work_queries: ["research loop verification"],
     counter_evidence_queries: ["research loop competing methods"],
     providers: ["fixture"],
@@ -67,10 +68,35 @@ const gap: GapCandidate = {
         discovery_queries: ["research loop competing methods"],
         verification_status: "verified",
         verification_messages: ["Identifier and title match the scholarly provider"],
+        content_basis: "abstract",
+        evidence_passage: "Compares research loops on one benchmark.",
+        evidence_location: "Abstract",
+        grounding_status: "grounded",
+        relevance_status: "relevant",
+        support_status: "supported",
         impact: "no_direct_counter_evidence",
         rationale: "The study does not evaluate multi-benchmark verification.",
       },
     ],
+    claim_assessments: [
+      {
+        claim_id: "c1",
+        kind: "unresolved_limitation",
+        statement: "Research loops need multi-benchmark verification.",
+        supporting_citation_keys: [citation.citation_key],
+        supporting_evidence: [
+          {
+            citation_key: citation.citation_key,
+            passage: "The evaluation used one benchmark.",
+            location: "Abstract",
+          },
+        ],
+        counter_evidence_result_keys: ["counter-1"],
+        outcome: "no_direct_counter_evidence",
+        assessment: "The checked source does not evaluate multiple benchmarks.",
+      },
+    ],
+    readiness_messages: [],
     completed_at: "2026-08-24T00:00:00Z",
     complete: true,
   },
@@ -190,6 +216,8 @@ describe("ResearchStagePanel", () => {
       "https://doi.org/10.1000/counter",
     );
     expect(screen.getByText("The study does not evaluate multi-benchmark verification.")).toBeInTheDocument();
+    expect(screen.getByText(/Support: supported/)).toBeInTheDocument();
+    expect(screen.getByText(/The evaluation used one benchmark/)).toBeInTheDocument();
     expect(screen.queryByText("What has prior research accomplished?")).not.toBeInTheDocument();
     expect(screen.queryByText("Supporting Citations")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Regenerate Gap Candidate" }));
@@ -207,6 +235,13 @@ describe("ResearchStagePanel", () => {
       search_audit: {
         ...gap.search_audit,
         counter_evidence_outcome: "inconclusive",
+        counter_evidence_analyzed_count: 0,
+        counter_evidence_results: [],
+        claim_assessments: gap.search_audit.claim_assessments.map((claim) => ({
+          ...claim,
+          counter_evidence_result_keys: [],
+          outcome: "inconclusive",
+        })),
       },
     };
 
@@ -214,14 +249,41 @@ describe("ResearchStagePanel", () => {
       <ResearchStagePanel
         {...panel}
         gapCandidate={insufficient}
+        warnings={[
+          "Split 2 composite Related Work limitation(s) into atomic claim candidates.",
+          "Atomic Gap claim support used structured-output recovery: schema validation failed.",
+          "Backfilled 5 counter-evidence source(s).",
+        ]}
       />,
     );
 
-    expect(screen.getByText("Evidence warning")).toBeInTheDocument();
-    expect(screen.getByText("The counter-evidence search was inconclusive.")).toBeInTheDocument();
+    expect(screen.getByText("Potential Gap — further validation needed")).toBeInTheDocument();
+    expect(screen.getByText(/Treat this as a potential Gap/)).toBeInTheDocument();
+    expect(screen.queryByText(/structured-output recovery/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Backfilled 5/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("region", {
+        name: "Source-grounded limitations awaiting counter-evidence audit",
+      }),
+    ).toBeInTheDocument();
     const save = screen.getByRole("button", { name: "Save Gap Candidate" });
     expect(save).toBeEnabled();
     await user.click(save);
     expect(panel.onSelectGap).toHaveBeenCalledWith(insufficient);
+  });
+
+  it("marks the literature audit stale after editing the Gap statement", async () => {
+    const user = userEvent.setup();
+    render(<ResearchStagePanel {...props(WorkflowNode.gap)} />);
+
+    const summary = screen.getByLabelText("Gap Candidate summary");
+    await user.clear(summary);
+    await user.type(summary, "A materially edited Gap statement.");
+
+    expect(screen.getByText("Evidence needs review")).toBeInTheDocument();
+    expect(
+      screen.getByText(/This summary was edited after the literature review/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Gap Candidate" })).toBeEnabled();
   });
 });
