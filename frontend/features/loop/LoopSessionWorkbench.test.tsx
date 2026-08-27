@@ -259,15 +259,18 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
   });
 
-  it("shows Contribution Direction within the six navigable Loop Stages", () => {
+  it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
 
     expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
       expect.stringContaining("Grilling"),
       expect.stringContaining("Related work"),
+      expect.stringContaining("Gap"),
+      expect.stringContaining("Contribution"),
       expect.stringContaining("Claims/evidence"),
       expect.stringContaining("Experiment planning"),
+      expect.stringContaining("Spec Draft"),
       expect.stringContaining("Independent judges"),
       expect.stringContaining("Readiness"),
     ]);
@@ -1143,7 +1146,7 @@ describe("LoopSessionWorkbench", () => {
   });
 
   it("continues from confirmed Contribution Direction to Claims/evidence", async () => {
-    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    search = new URLSearchParams(`stage=${LoopStage.contribution}`);
     getHook.mockReturnValue({
       data: {
         status: 200,
@@ -1211,7 +1214,7 @@ describe("LoopSessionWorkbench", () => {
   });
 
   it("restores Continue after reloading a just-confirmed Contribution Direction", async () => {
-    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    search = new URLSearchParams(`stage=${LoopStage.contribution}`);
     const confirmedAt = "2026-08-24T11:48:05.482568Z";
     const confirmed = session({
       version: 52,
@@ -1268,7 +1271,7 @@ describe("LoopSessionWorkbench", () => {
   });
 
   it("does not restore Continue when the Working Draft changed after Confirm", () => {
-    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    search = new URLSearchParams(`stage=${LoopStage.contribution}`);
     getHook.mockReturnValue({
       data: {
         status: 200,

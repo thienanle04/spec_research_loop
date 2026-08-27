@@ -150,6 +150,23 @@ async def _prepare(
     return response.json()
 
 
+async def _confirm_through_related_work(client: AsyncClient) -> dict:
+    created = await _create_session(client)
+    session_id = created["id"]
+    interpreted = await _interpret(client, session_id, created["version"])
+    decomposed = await _confirm(
+        client, session_id, "idea_decomposition", interpreted["version"]
+    )
+    inputs = await _prepare(client, session_id, "related_work", decomposed["version"])
+    inputs_confirmed = await _confirm(
+        client, session_id, "research_inputs", inputs["version"]
+    )
+    related = await _prepare(
+        client, session_id, "related_work", inputs_confirmed["version"]
+    )
+    return await _confirm(client, session_id, "related_work", related["version"])
+
+
 async def _create_card(
     client: AsyncClient,
     session_id: str,
@@ -1013,6 +1030,139 @@ async def test_prepare_related_work_requires_grilling(client: AsyncClient) -> No
 
 
 @pytest.mark.asyncio
+async def test_prepare_accepts_gap_contribution_and_spec_draft_stages(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    for stage in ("gap", "contribution", "spec_draft"):
+        response = await client.post(
+            f"/api/loop/sessions/{created['id']}/recompute-prepare",
+            json={"stage": stage, "expected_version": created["version"]},
+        )
+        assert response.status_code != 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_prepare_spec_draft_conflicts_like_readiness(client: AsyncClient) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    response = await client.post(
+        f"/api/loop/sessions/{created['id']}/recompute-prepare",
+        json={"stage": "spec_draft", "expected_version": created["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "stage_already_current"
+    fetched = await client.get(f"/api/loop/sessions/{created['id']}")
+    assert fetched.json()["version"] == 1
+    assert fetched.json()["working_draft_node"] == "idea_interpretation"
+
+
+@pytest.mark.asyncio
+async def test_prepare_related_work_does_not_reset_gap_or_contribution(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    related = await _confirm_through_related_work(client)
+    session_id = related["id"]
+    response = await client.post(
+        f"/api/loop/sessions/{session_id}/recompute-prepare",
+        json={"stage": "related_work", "expected_version": related["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "stage_already_current"
+    fetched = await client.get(f"/api/loop/sessions/{session_id}")
+    payload = fetched.json()
+    assert payload["version"] == related["version"]
+    assert payload["working_draft_node"] == "related_work"
+    assert _head(payload, "research_inputs")["status"] == "current"
+    assert _head(payload, "related_work")["status"] == "current"
+    assert _head(payload, "gap")["status"] == "empty"
+    assert _head(payload, "contribution")["status"] == "empty"
+
+
+@pytest.mark.asyncio
+async def test_prepare_gap_only_considers_gap(client: AsyncClient) -> None:
+    await _auth_client(client)
+    related = await _confirm_through_related_work(client)
+    session_id = related["id"]
+    payload = await _prepare(client, session_id, "gap", related["version"])
+    assert payload["working_draft_node"] == "gap"
+    assert payload["version"] == related["version"] + 1
+    assert _head(payload, "research_inputs")["status"] == "current"
+    assert _head(payload, "related_work")["status"] == "current"
+    assert _head(payload, "gap")["status"] == "empty"
+    assert _head(payload, "contribution")["status"] == "empty"
+
+
+@pytest.mark.asyncio
+async def test_prepare_contribution_only_considers_contribution(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    related = await _confirm_through_related_work(client)
+    session_id = related["id"]
+    gap = await _prepare(client, session_id, "gap", related["version"])
+    gap_card = await _create_card(
+        client,
+        session_id,
+        kind="gap",
+        body={
+            "statement": "Claim-level feedback remains underexplored.",
+            "supporting_citation_keys": ["opro-2023"],
+            "status": "insufficient_evidence",
+        },
+        expected_version=gap["version"],
+    )
+    assert gap_card.status_code == 201, gap_card.text
+    gap_confirmed = await _confirm(
+        client, session_id, "gap", gap_card.json()["version"]
+    )
+    payload = await _prepare(
+        client, session_id, "contribution", gap_confirmed["version"]
+    )
+    assert payload["working_draft_node"] == "contribution"
+    assert _head(payload, "gap")["status"] == "current"
+    assert _head(payload, "related_work")["status"] == "current"
+    assert _head(payload, "contribution")["status"] == "empty"
+
+
+@pytest.mark.asyncio
+async def test_prepare_gap_requires_related_work(client: AsyncClient) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    interpreted = await _interpret(client, created["id"], created["version"])
+    decomposed = await _confirm(
+        client, created["id"], "idea_decomposition", interpreted["version"]
+    )
+    response = await client.post(
+        f"/api/loop/sessions/{created['id']}/recompute-prepare",
+        json={"stage": "gap", "expected_version": decomposed["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "upstream_not_current"
+    fetched = await client.get(f"/api/loop/sessions/{created['id']}")
+    assert fetched.json()["working_draft_node"] == "idea_decomposition"
+    assert fetched.json()["version"] == decomposed["version"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_contribution_requires_gap(client: AsyncClient) -> None:
+    await _auth_client(client)
+    related = await _confirm_through_related_work(client)
+    response = await client.post(
+        f"/api/loop/sessions/{related['id']}/recompute-prepare",
+        json={"stage": "contribution", "expected_version": related["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "upstream_not_current"
+    fetched = await client.get(f"/api/loop/sessions/{related['id']}")
+    assert fetched.json()["working_draft_node"] == "related_work"
+    assert fetched.json()["version"] == related["version"]
+    assert _head(fetched.json(), "gap")["status"] == "empty"
+
+
+@pytest.mark.asyncio
 async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> None:
     await _auth_client(client)
     created = await _create_session(client)
@@ -1038,9 +1188,7 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     related_confirmed = await _confirm(
         client, session_id, "related_work", related_events[-1]["version"]
     )
-    gap = await _prepare(
-        client, session_id, "related_work", related_confirmed["version"]
-    )
+    gap = await _prepare(client, session_id, "gap", related_confirmed["version"])
     gap_generation = await client.post(
         f"/api/research/sessions/{session_id}/nodes/gap/generate",
         json={"expected_version": gap["version"]},
@@ -1069,7 +1217,7 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     )
     expected_version = gap_confirmed["version"]
     for stage, node in (
-        ("related_work", "contribution"),
+        ("contribution", "contribution"),
         ("claims_evidence", "claims"),
         ("claims_evidence", "evidence"),
         ("experiment_planning", "experiment_plan"),

@@ -291,7 +291,7 @@ async def test_gap_stream_uses_confirmed_citation_support(client: AsyncClient) -
     gap_draft = await _prepare(
         client,
         session_id,
-        "related_work",
+        "gap",
         confirmed["version"],
     )
     response = await client.post(
@@ -329,7 +329,7 @@ async def test_gap_regeneration_replaces_saved_gap_without_confirming(
     gap_draft = await _prepare(
         client,
         session_id,
-        "related_work",
+        "gap",
         confirmed["version"],
     )
     first = await client.post(

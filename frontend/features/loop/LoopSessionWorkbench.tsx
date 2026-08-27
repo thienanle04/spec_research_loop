@@ -125,7 +125,7 @@ function continueTargetAfterConfirm(
   const currentIndex = LOOP_STAGE_CATALOG.findIndex((stage) => stage.id === currentStage);
   const following = LOOP_STAGE_CATALOG[currentIndex + 1];
   if (!following) return null;
-  if (following.id === LoopStage.readiness) {
+  if (following.nodes.length === 0) {
     return { stage: following.id, prepare: false };
   }
   const followingActions = deriveStageActions({
