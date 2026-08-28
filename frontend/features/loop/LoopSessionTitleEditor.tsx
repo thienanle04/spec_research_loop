@@ -215,18 +215,18 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
           >
             Save title
           </Button>
-          {statusMessage()}
           {conflict ? null : (
             <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={status === "saving"}
-              onClick={cancelEdit}
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={status === "saving"}
+            onClick={cancelEdit}
             >
               Cancel
             </Button>
           )}
+          {statusMessage()}
         </form>
       ) : (
         <div className="flex min-w-0 flex-wrap items-center gap-2">
