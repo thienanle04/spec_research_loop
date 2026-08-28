@@ -4,6 +4,7 @@ import { CardKind, LoopStage, NodeHeadStatus, WorkflowNode } from "@/lib/api/gen
 import type { NodeHeadResponse } from "@/lib/api/generated/model";
 
 import {
+  deriveStageActions,
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
@@ -152,7 +153,7 @@ describe("Loop Stage signals", () => {
     });
   });
 
-  it("marks Related work stale from any stale Node Head among its three Workflow Nodes", () => {
+  it("marks Related work stale from a stale Node Head among its own Workflow Nodes", () => {
     expect(
       deriveStageSignals({
         stage: LoopStage.related_work,
@@ -168,6 +169,55 @@ describe("Loop Stage signals", () => {
     ).toEqual({
       completion: "stale",
       editing: true,
+      available: true,
+    });
+  });
+
+  it("attaches a stale gap Node Head to Gap, not Related work", () => {
+    const nodeHeads = heads({
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.stale,
+    });
+    expect(
+      deriveStageSignals({
+        stage: LoopStage.related_work,
+        nodeHeads,
+        workingDraftNode: WorkflowNode.related_work,
+      }),
+    ).toEqual({
+      completion: "complete",
+      editing: true,
+      available: true,
+    });
+    expect(
+      deriveStageSignals({
+        stage: LoopStage.gap,
+        nodeHeads,
+        workingDraftNode: WorkflowNode.gap,
+      }),
+    ).toEqual({
+      completion: "stale",
+      editing: true,
+      available: true,
+    });
+  });
+
+  it("displays Spec Draft as Not evaluated with no completion proxy", () => {
+    expect(
+      deriveStageSignals({
+        stage: LoopStage.spec_draft,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        }),
+        workingDraftNode: WorkflowNode.idea_decomposition,
+      }),
+    ).toEqual({
+      completion: "not_evaluated",
+      editing: false,
       available: true,
     });
   });
@@ -198,6 +248,64 @@ describe("Loop Stage signals", () => {
         }),
       }),
     ).toEqual([WorkflowNode.idea_decomposition]);
+    expect(
+      new Set(
+        incompleteUpstreamNodes({
+          stage: LoopStage.gap,
+          nodeHeads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      ),
+    ).toEqual(new Set([WorkflowNode.research_inputs, WorkflowNode.related_work]));
+  });
+});
+
+describe("Loop Stage actions", () => {
+  it("does not offer Start or Recompute on Spec Draft", () => {
+    expect(
+      deriveStageActions({
+        stage: LoopStage.spec_draft,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toEqual({ canStart: false, canRecompute: false, editableNodes: [] });
+  });
+
+  it("starts Gap when Related work Node Heads are current", () => {
+    expect(
+      deriveStageActions({
+        stage: LoopStage.gap,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toEqual({ canStart: true, canRecompute: false, editableNodes: [] });
+  });
+
+  it("does not start Related work when only Gap is empty", () => {
+    expect(
+      deriveStageActions({
+        stage: LoopStage.related_work,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.current,
+          [WorkflowNode.gap]: NodeHeadStatus.empty,
+        }),
+      }),
+    ).toEqual({
+      canStart: false,
+      canRecompute: false,
+      editableNodes: [WorkflowNode.research_inputs, WorkflowNode.related_work],
+    });
   });
 });
 
@@ -227,6 +335,18 @@ describe("Confirm signals", () => {
         }),
       }),
     ).toEqual([LoopStage.grilling, LoopStage.related_work]);
+    expect(
+      staleInvalidationStages({
+        node: WorkflowNode.idea_interpretation,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.current,
+          [WorkflowNode.gap]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toEqual([LoopStage.grilling, LoopStage.related_work, LoopStage.gap]);
   });
 
   it("treats nonblank narrative text or a nonblank owned Card as confirmable", () => {

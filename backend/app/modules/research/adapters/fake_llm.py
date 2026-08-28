@@ -98,11 +98,51 @@ class FakeLlmPort:
                     "confidence": 0.8,
                 }
             )
+        if any(
+            marker in system
+            for marker in (
+                "research-gap-claim-support-check",
+                "research-gap-claim-support-repair",
+                "research-gap-claim-support-item-check",
+                "research-gap-claim-support-confirmation",
+            )
+        ):
+            claim_candidates = payload.get("claim_candidates", [])
+            if not claim_candidates and payload.get("claim_candidate"):
+                claim_candidates = [payload["claim_candidate"]]
+            return json.dumps(
+                {
+                    "assessments": [
+                        {
+                            "claim_id": item.get("claim_id"),
+                            "support_status": (
+                                "supported"
+                                if item.get("supporting_evidence")
+                                else "uncertain"
+                            ),
+                            "atomicity_status": (
+                                "compound"
+                                if ";" in str(item.get("statement") or "")
+                                or "\n" in str(item.get("statement") or "")
+                                else "atomic"
+                            ),
+                            "evidence_span": str(
+                                (item.get("supporting_evidence") or [{}])[0].get(
+                                    "passage", ""
+                                )
+                            ),
+                            "unsupported_fragments": [],
+                        }
+                        for item in claim_candidates
+                        if item.get("claim_id")
+                    ]
+                }
+            )
         if "research-gap-analysis" in system:
             citations = payload.get("citations", [])
             related_work = payload.get("related_work", [])
+            claim_candidates = payload.get("claim_candidates", [])
             keys = [item["citation_key"] for item in citations]
-            counter_keys = payload.get("required_counter_evidence_keys", [])
             return json.dumps(
                 {
                     "prior_work": "Prior systems optimize outputs or prompts using aggregate feedback.",
@@ -113,21 +153,91 @@ class FakeLlmPort:
                     "importance": "Localized feedback can make optimization more reliable.",
                     "testability": "Compare unsupported-claim rates on held-out sources.",
                     "covered_citation_keys": keys,
-                    "addressed_counter_evidence_keys": counter_keys,
+                    "claims": claim_candidates,
                 }
             )
         if "research-gap-synthesis" in system:
             return json.dumps(
                 {
                     "statement": (
-                        "Prior systems optimize outputs or prompts using aggregate "
-                        "feedback, but it remains unclear whether claim-level evidence "
-                        "feedback reduces unsupported claims under the same inference budget."
+                        "Prior systems optimize outputs or prompts using aggregate scores "
+                        "or textual feedback. It remains unclear whether decomposing outputs "
+                        "into claims, checking evidence independently, and using claim-level "
+                        "errors as feedback reduces unsupported claims under the same "
+                        "inference budget."
                     )
+                }
+            )
+        if any(
+            marker in system
+            for marker in (
+                "research-counter-support-check",
+                "research-counter-support-repair",
+                "research-counter-support-item-check",
+            )
+        ):
+            findings = payload.get("findings", [])
+            if not findings and payload.get("finding"):
+                findings = [payload["finding"]]
+            return json.dumps(
+                {
+                    "assessments": [
+                        {
+                            "result_key": item.get("result_key"),
+                            "support_status": (
+                                "supported"
+                                if item.get("source_text")
+                                and item.get("supporting_passage")
+                                else "uncertain"
+                            ),
+                        }
+                        for item in findings
+                        if item.get("result_key")
+                    ]
+                }
+            )
+        if "research-counter-source-analysis" in system:
+            result = payload.get("counter_evidence_result", {})
+            claims = payload.get("gap_claims", [])
+            source_text = str(result.get("source_text") or "")
+            impact = (
+                "no_direct_counter_evidence" if source_text else "inconclusive"
+            )
+            return json.dumps(
+                {
+                    "result_key": result.get("result_key"),
+                    "impact": impact,
+                    "relevance_status": (
+                        "relevant" if source_text else "uncertain"
+                    ),
+                    "rationale": (
+                        "The supplied source content does not directly resolve the "
+                        "provisional limitation."
+                    ),
+                    "supporting_passage": source_text[:300],
+                    "source_location": result.get("source_location")
+                    or "Metadata only",
+                    "claim_findings": [
+                        {
+                            "claim_id": claim["claim_id"],
+                            "impact": impact,
+                            "rationale": (
+                                "This source does not directly resolve the atomic claim."
+                            ),
+                            "revised_statement": None,
+                        }
+                        for claim in claims
+                        if claim.get("claim_id")
+                    ],
                 }
             )
         if "research-counter-analysis" in system:
             results = payload.get("counter_evidence_results", [])
+            claims = payload.get("gap_claims", [])
+            claim_ids = [item["claim_id"] for item in claims if item.get("claim_id")]
+            result_keys = [
+                item["result_key"] for item in results if item.get("result_key")
+            ]
             return json.dumps(
                 {
                     "outcome": "no_direct_counter_evidence",
@@ -137,20 +247,46 @@ class FakeLlmPort:
                         "The top counter-evidence results were reviewed, but none directly "
                         "resolved the source-grounded limitation. This does not prove novelty."
                     ),
-                    "covered_result_keys": [
-                        item["result_key"] for item in results if item.get("result_key")
-                    ],
+                    "covered_result_keys": result_keys,
                     "findings": [
                         {
                             "result_key": item["result_key"],
-                            "impact": "no_direct_counter_evidence",
+                            "claim_ids": claim_ids,
+                            "impact": (
+                                "no_direct_counter_evidence"
+                                if item.get("source_text")
+                                else "inconclusive"
+                            ),
+                            "relevance_status": (
+                                "relevant"
+                                if item.get("source_text")
+                                else "uncertain"
+                            ),
                             "rationale": (
-                                "The supplied metadata does not directly resolve the "
+                                "The supplied source content does not directly resolve the "
                                 "provisional limitation."
                             ),
+                            "supporting_passage": str(item.get("source_text") or "")[
+                                :300
+                            ],
+                            "source_location": item.get("source_location")
+                            or "Metadata only",
                         }
                         for item in results
                         if item.get("result_key")
+                    ],
+                    "claim_assessments": [
+                        {
+                            "claim_id": claim_id,
+                            "outcome": "no_direct_counter_evidence",
+                            "assessment": (
+                                "The grounded counter-evidence does not directly resolve "
+                                "this atomic claim."
+                            ),
+                            "revised_statement": None,
+                            "counter_evidence_result_keys": result_keys,
+                        }
+                        for claim_id in claim_ids
                     ],
                 }
             )

@@ -36,8 +36,34 @@ export type CounterEvidenceResult = {
   discovery_queries: string[];
   verification_status: "pending" | "verified" | "warning" | "rejected";
   verification_messages: string[];
+  content_basis: "metadata_only" | "abstract" | "full_text";
+  evidence_passage: string | null;
+  evidence_location: string | null;
+  grounding_status: "pending" | "grounded" | "warning" | "rejected";
+  relevance_status: "pending" | "relevant" | "irrelevant" | "uncertain";
+  support_status: "pending" | "supported" | "unsupported" | "uncertain";
   impact: CounterEvidenceOutcome;
   rationale: string;
+};
+
+export type GapClaimAssessment = {
+  claim_id: string;
+  kind:
+    | "existing_capability"
+    | "unresolved_limitation"
+    | "technical_mechanism"
+    | "human_evaluation"
+    | "domain_scope";
+  statement: string;
+  supporting_citation_keys: string[];
+  supporting_evidence: {
+    citation_key: string;
+    passage: string;
+    location: string;
+  }[];
+  counter_evidence_result_keys: string[];
+  outcome: CounterEvidenceOutcome;
+  assessment: string;
 };
 
 export type GapCandidate = {
@@ -45,6 +71,7 @@ export type GapCandidate = {
   supporting_citation_keys: string[];
   status: "candidate" | "insufficient_evidence" | "proposed";
   search_audit: {
+    assessed_statement: string;
     related_work_queries: string[];
     counter_evidence_queries: string[];
     providers: string[];
@@ -55,6 +82,8 @@ export type GapCandidate = {
     counter_evidence_outcome: CounterEvidenceOutcome;
     counter_evidence_assessment: string;
     counter_evidence_results: CounterEvidenceResult[];
+    claim_assessments: GapClaimAssessment[];
+    readiness_messages: string[];
     completed_at: string | null;
     complete: boolean;
   };
@@ -147,11 +176,94 @@ function counterEvidenceResults(value: unknown): CounterEvidenceResult[] {
         discovery_queries: strings(item.discovery_queries),
         verification_status: verificationStatus,
         verification_messages: strings(item.verification_messages),
+        content_basis:
+          item.content_basis === "abstract" || item.content_basis === "full_text"
+            ? item.content_basis
+            : "metadata_only",
+        evidence_passage: optionalString(item.evidence_passage),
+        evidence_location: optionalString(item.evidence_location),
+        grounding_status:
+          item.grounding_status === "grounded" ||
+          item.grounding_status === "warning" ||
+          item.grounding_status === "rejected"
+            ? item.grounding_status
+            : "pending",
+        relevance_status:
+          item.relevance_status === "relevant" ||
+          item.relevance_status === "irrelevant" ||
+          item.relevance_status === "uncertain"
+            ? item.relevance_status
+            : "pending",
+        support_status:
+          item.support_status === "supported" ||
+          item.support_status === "unsupported" ||
+          item.support_status === "uncertain"
+            ? item.support_status
+            : "pending",
         impact,
         rationale:
           typeof item.rationale === "string" && item.rationale.trim()
             ? item.rationale
             : "This result was not included in the validated assessment.",
+      },
+    ];
+  });
+}
+
+function gapClaimAssessments(value: unknown): GapClaimAssessment[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    const item = record(raw);
+    if (
+      typeof item.claim_id !== "string" ||
+      typeof item.statement !== "string" ||
+      typeof item.kind !== "string"
+    ) {
+      return [];
+    }
+    const allowedKinds: GapClaimAssessment["kind"][] = [
+      "existing_capability",
+      "unresolved_limitation",
+      "technical_mechanism",
+      "human_evaluation",
+      "domain_scope",
+    ];
+    if (!allowedKinds.includes(item.kind as GapClaimAssessment["kind"])) return [];
+    const rawOutcome = item.outcome;
+    const outcome: CounterEvidenceOutcome =
+      rawOutcome === "no_direct_counter_evidence" ||
+      rawOutcome === "gap_narrowed" ||
+      rawOutcome === "gap_not_supported"
+        ? rawOutcome
+        : "inconclusive";
+    return [
+      {
+        claim_id: item.claim_id,
+        kind: item.kind as GapClaimAssessment["kind"],
+        statement: item.statement,
+        supporting_citation_keys: strings(item.supporting_citation_keys),
+        supporting_evidence: Array.isArray(item.supporting_evidence)
+          ? item.supporting_evidence.flatMap((rawEvidence) => {
+              const evidence = record(rawEvidence);
+              if (
+                typeof evidence.citation_key !== "string" ||
+                typeof evidence.passage !== "string" ||
+                typeof evidence.location !== "string"
+              ) {
+                return [];
+              }
+              return [
+                {
+                  citation_key: evidence.citation_key,
+                  passage: evidence.passage,
+                  location: evidence.location,
+                },
+              ];
+            })
+          : [],
+        counter_evidence_result_keys: strings(item.counter_evidence_result_keys),
+        outcome,
+        assessment: typeof item.assessment === "string" ? item.assessment : "",
       },
     ];
   });
@@ -211,6 +323,8 @@ export function gapCandidateFrom(value: unknown): GapCandidate | null {
     supporting_citation_keys: strings(item.supporting_citation_keys),
     status,
     search_audit: {
+      assessed_statement:
+        typeof audit.assessed_statement === "string" ? audit.assessed_statement : "",
       related_work_queries: strings(audit.related_work_queries),
       counter_evidence_queries: strings(audit.counter_evidence_queries),
       providers: strings(audit.providers),
@@ -224,6 +338,8 @@ export function gapCandidateFrom(value: unknown): GapCandidate | null {
           ? audit.counter_evidence_assessment
           : "",
       counter_evidence_results: counterEvidenceResults(audit.counter_evidence_results),
+      claim_assessments: gapClaimAssessments(audit.claim_assessments),
+      readiness_messages: strings(audit.readiness_messages),
       completed_at: typeof audit.completed_at === "string" ? audit.completed_at : null,
       complete: audit.complete === true,
     },
@@ -245,12 +361,70 @@ export function isCompleteGap(candidate: GapCandidate | null): boolean {
   if (!candidate?.statement.trim() || candidate.status !== "candidate") return false;
   const supporting = new Set(candidate.supporting_citation_keys);
   const eligible = new Set(candidate.evidence_check.eligible_citation_keys);
+  const normalize = (value: string) => value.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+  const substantiveResultsGrounded = candidate.search_audit.counter_evidence_results
+    .every(
+      (result) =>
+        result.verification_status === "verified" &&
+        result.content_basis !== "metadata_only" &&
+        result.grounding_status === "grounded" &&
+        result.relevance_status === "relevant" &&
+        result.support_status === "supported" &&
+        Boolean(result.evidence_passage?.trim()) &&
+        Boolean(result.evidence_location?.trim()),
+    );
+  const counterKeys = new Set(
+    candidate.search_audit.counter_evidence_results.map((result) => result.result_key),
+  );
+  const claimsSupported =
+    candidate.search_audit.claim_assessments.length > 0 &&
+    candidate.search_audit.claim_assessments.every(
+      (claim) =>
+        claim.supporting_citation_keys.length > 0 &&
+        claim.supporting_citation_keys.every((key) => eligible.has(key)) &&
+        claim.supporting_evidence.length > 0 &&
+        new Set(claim.supporting_evidence.map((evidence) => evidence.citation_key)).size ===
+          new Set(claim.supporting_citation_keys).size &&
+        claim.supporting_evidence.every(
+          (evidence) =>
+            claim.supporting_citation_keys.includes(evidence.citation_key) &&
+            Boolean(evidence.passage.trim()) &&
+            Boolean(evidence.location.trim()),
+        ) &&
+        (claim.outcome === "no_direct_counter_evidence" || claim.outcome === "gap_narrowed") &&
+        claim.counter_evidence_result_keys.length === counterKeys.size &&
+        claim.counter_evidence_result_keys.every((key) => counterKeys.has(key)),
+    );
+  const mappedSupporting = new Set(
+    candidate.search_audit.claim_assessments.flatMap(
+      (claim) => claim.supporting_citation_keys,
+    ),
+  );
+  const relatedPortfolioSize = Math.min(
+    5,
+    candidate.search_audit.related_work_candidate_count,
+  );
+  const counterPortfolioSize = Math.min(
+    5,
+    candidate.search_audit.counter_evidence_candidate_count,
+  );
   return (
+    normalize(candidate.statement) === normalize(candidate.search_audit.assessed_statement) &&
     supporting.size > 0 &&
     [...supporting].every((key) => eligible.has(key)) &&
     candidate.evidence_check.ready &&
     candidate.search_audit.complete &&
+    candidate.search_audit.readiness_messages.length === 0 &&
+    candidate.search_audit.related_work_analyzed_count === relatedPortfolioSize &&
+    supporting.size === relatedPortfolioSize &&
+    candidate.search_audit.counter_evidence_analyzed_count > 0 &&
+    candidate.search_audit.counter_evidence_analyzed_count <= counterPortfolioSize &&
+    counterKeys.size === counterPortfolioSize &&
+    mappedSupporting.size === supporting.size &&
+    [...mappedSupporting].every((key) => supporting.has(key)) &&
     candidate.search_audit.counter_evidence_outcome !== "gap_not_supported" &&
-    candidate.search_audit.counter_evidence_outcome !== "inconclusive"
+    candidate.search_audit.counter_evidence_outcome !== "inconclusive" &&
+    substantiveResultsGrounded &&
+    claimsSupported
   );
 }

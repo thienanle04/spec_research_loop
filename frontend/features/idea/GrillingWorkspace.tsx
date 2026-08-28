@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { LoaderCircle, MessageSquare, Send } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -53,7 +53,6 @@ export function GrillingWorkspace({
   showGenerateCards,
   onGenerate,
   onEditState,
-  frameActions,
 }: {
   session: LoopSessionResponse;
   sessionId: string;
@@ -65,7 +64,6 @@ export function GrillingWorkspace({
   showGenerateCards: boolean;
   onGenerate: (payload: { message?: string; answers?: GrillingAnswer[]; note?: string }) => void;
   onEditState: (state: { editing: boolean; dirty: boolean }) => void;
-  frameActions?: ReactNode;
 }) {
   const queryClient = useQueryClient();
   const patchWorkingDraft = usePatchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatch();
@@ -155,7 +153,6 @@ export function GrillingWorkspace({
               </div>
             </CardContent>
           </Card>
-          {frameActions}
         </>
       ) : null}
       {showTurns ? (

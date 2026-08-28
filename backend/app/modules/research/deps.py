@@ -25,6 +25,8 @@ from app.modules.research.ports import (
 from app.ports.llm import LlmPort
 from app.ports.storage import ObjectStoragePort
 
+_memory_object_storage = MemoryObjectStorage()
+
 
 def get_scholarly_source() -> ScholarlySourcePort:
     settings = get_settings()
@@ -75,7 +77,7 @@ def get_research_object_storage() -> ObjectStoragePort | None:
     if provider == "disabled":
         return None
     if provider == "memory":
-        return MemoryObjectStorage()
+        return _memory_object_storage
     if provider == "s3":
         return get_object_storage()
     raise RuntimeError(f"Unsupported research text storage: {provider}")

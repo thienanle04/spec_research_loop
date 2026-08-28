@@ -13,6 +13,7 @@ from app.modules.loop.catalog import CardKind, WorkflowNode
 from app.modules.loop.models import Card
 from app.modules.research.models import Citation, RelatedWorkFinding
 from app.modules.research.schemas import GapCardBody
+from app.ports.storage import ObjectStoragePort
 
 
 def _citation_payload(row: Citation) -> dict[str, Any]:
@@ -116,8 +117,14 @@ def _clone_finding(
 class ResearchStagePort:
     """Snapshots research typed rows in the LoopService transaction."""
 
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        *,
+        object_storage: ObjectStoragePort | None = None,
+    ) -> None:
         self._db = db
+        self._object_storage = object_storage
 
     async def fingerprint(self, *, session_id: UUID, node: str) -> dict[str, Any]:
         if node == WorkflowNode.GAP.value:
@@ -165,6 +172,35 @@ class ResearchStagePort:
     ) -> None:
         if node != WorkflowNode.RELATED_WORK.value:
             return
+        object_keys = {
+            key
+            for key in (
+                await self._db.scalars(
+                    select(Citation.text_object_key).where(
+                        Citation.session_id == session_id,
+                        Citation.stage_revision_id.is_(None),
+                        Citation.text_object_key.is_not(None),
+                    )
+                )
+            ).all()
+            if key
+        }
+        if object_keys and self._object_storage is not None:
+            referenced_keys = {
+                key
+                for key in (
+                    await self._db.scalars(
+                        select(Citation.text_object_key).where(
+                            Citation.session_id == session_id,
+                            Citation.stage_revision_id.is_not(None),
+                            Citation.text_object_key.in_(object_keys),
+                        )
+                    )
+                ).all()
+                if key
+            }
+            for key in sorted(object_keys - referenced_keys):
+                await self._object_storage.delete_bytes(key=key)
         await self._db.execute(
             delete(RelatedWorkFinding).where(
                 RelatedWorkFinding.session_id == session_id,

@@ -10,13 +10,20 @@ export const LOOP_STAGE_CATALOG = [
   {
     id: LoopStage.related_work,
     name: "Related work",
-    description: "Locate and assess prior work, synthesize the gap, and choose a contribution direction.",
-    nodes: [
-      WorkflowNode.research_inputs,
-      WorkflowNode.related_work,
-      WorkflowNode.gap,
-      WorkflowNode.contribution,
-    ],
+    description: "Locate and assess prior work.",
+    nodes: [WorkflowNode.research_inputs, WorkflowNode.related_work],
+  },
+  {
+    id: LoopStage.gap,
+    name: "Gap",
+    description: "Synthesize the research gap from related work.",
+    nodes: [WorkflowNode.gap],
+  },
+  {
+    id: LoopStage.contribution,
+    name: "Contribution",
+    description: "Choose a contribution direction after the gap.",
+    nodes: [WorkflowNode.contribution],
   },
   {
     id: LoopStage.claims_evidence,
@@ -29,6 +36,12 @@ export const LOOP_STAGE_CATALOG = [
     name: "Experiment planning",
     description: "Plan tests that could confirm or refute the claims.",
     nodes: [WorkflowNode.experiment_plan, WorkflowNode.feasibility],
+  },
+  {
+    id: LoopStage.spec_draft,
+    name: "Spec Draft",
+    description: "Read the Produced Spec Version before Independent judges.",
+    nodes: [],
   },
   {
     id: LoopStage.independent_judges,
@@ -52,8 +65,7 @@ export const LOOP_STAGE_CATALOG = [
 ] as const;
 
 type CatalogStageId = (typeof LOOP_STAGE_CATALOG)[number]["id"];
-type LegacyHiddenStage = typeof LoopStage.contribution;
-type MissingStage = Exclude<LoopStage, CatalogStageId | LegacyHiddenStage>;
+type MissingStage = Exclude<LoopStage, CatalogStageId>;
 type ExtraStage = Exclude<CatalogStageId, LoopStage>;
 const _allStagesPresent: MissingStage extends never ? true : MissingStage = true;
 const _noExtraStages: ExtraStage extends never ? true : ExtraStage = true;
@@ -179,7 +191,7 @@ export function resolveSelectedStage(
   stageQuery: string | null,
   workingDraftNode: WorkflowNode,
 ): LoopStage {
-  if (isLoopStage(stageQuery) && stageQuery !== LoopStage.contribution) {
+  if (isLoopStage(stageQuery)) {
     return stageQuery;
   }
   return stageForWorkflowNode(workingDraftNode);

@@ -71,6 +71,7 @@ describe("LoopSessionTitleEditor", () => {
         <LoopSessionTitleEditor sessionId="one" />
       </LoopSessionSaveProvider>,
     );
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
     const input = screen.getByRole("textbox", { name: "Loop Session title" });
     await userEvent.clear(input);
     await userEvent.type(input, "My title");
@@ -125,6 +126,7 @@ describe("LoopSessionTitleEditor", () => {
         <LoopSessionTitleEditor sessionId="one" />
       </LoopSessionSaveProvider>,
     );
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
     const input = screen.getByRole("textbox", { name: "Loop Session title" });
     await userEvent.clear(input);
     await userEvent.type(input, "My local title");
@@ -138,6 +140,102 @@ describe("LoopSessionTitleEditor", () => {
 
     expect(await screen.findByText("Server title", { selector: "dd" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Keep my title" })).toBeEnabled();
+  });
+
+  it("shows the saved title until Edit or the title is clicked", async () => {
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: { id: "one", title: "Original", version: 1 },
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    patchHook.mockReturnValue({ mutateAsync: vi.fn() });
+
+    render(
+      <LoopSessionSaveProvider>
+        <LoopSessionTitleEditor sessionId="one" />
+      </LoopSessionSaveProvider>,
+    );
+
+    expect(screen.queryByRole("textbox", { name: "Loop Session title" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Rename this Loop Session without overwriting newer changes"),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Original" }));
+    expect(screen.getByRole("textbox", { name: "Loop Session title" })).toHaveValue("Original");
+  });
+
+  it("cancels title edits and returns to the saved heading", async () => {
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: { id: "one", title: "Original", version: 1 },
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    patchHook.mockReturnValue({ mutateAsync: vi.fn() });
+
+    render(
+      <LoopSessionSaveProvider>
+        <LoopSessionTitleEditor sessionId="one" />
+      </LoopSessionSaveProvider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const input = screen.getByRole("textbox", { name: "Loop Session title" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "Scratch title");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Original" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  });
+
+  it("hides Cancel while resolving a title conflict", async () => {
+    const refetch = vi.fn().mockResolvedValue({
+      data: {
+        status: 200,
+        data: { id: "one", title: "Server title", version: 2 },
+      },
+    });
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: { id: "one", title: "Original", version: 1 },
+      },
+      isLoading: false,
+      isError: false,
+      refetch,
+    });
+    patchHook.mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(
+        new ApiError(409, "changed", {
+          code: "version_conflict",
+          detail: "changed",
+          current_version: 2,
+        }),
+      ),
+    });
+
+    render(
+      <LoopSessionSaveProvider>
+        <LoopSessionTitleEditor sessionId="one" />
+      </LoopSessionSaveProvider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const input = screen.getByRole("textbox", { name: "Loop Session title" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "My title");
+    await userEvent.click(screen.getByRole("button", { name: "Save title" }));
+
+    expect(await screen.findByText("Title conflict")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
 
   it("shows loading and failure states", () => {

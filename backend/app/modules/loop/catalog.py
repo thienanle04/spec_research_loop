@@ -25,9 +25,11 @@ class WorkflowNode(StrEnum):
 class LoopStage(StrEnum):
     GRILLING = "grilling"
     RELATED_WORK = "related_work"
+    GAP = "gap"
     CONTRIBUTION = "contribution"
     CLAIMS_EVIDENCE = "claims_evidence"
     EXPERIMENT_PLANNING = "experiment_planning"
+    SPEC_DRAFT = "spec_draft"
     INDEPENDENT_JUDGES = "independent_judges"
     READINESS = "readiness"
 
@@ -66,17 +68,15 @@ LOOP_STAGE_NODES: dict[LoopStage, tuple[WorkflowNode, ...]] = {
     LoopStage.RELATED_WORK: (
         WorkflowNode.RESEARCH_INPUTS,
         WorkflowNode.RELATED_WORK,
-        WorkflowNode.GAP,
-        WorkflowNode.CONTRIBUTION,
     ),
-    # Retained as an API enum value for compatibility with existing clients.
-    # Contribution Direction now belongs to the Related Work stage.
-    LoopStage.CONTRIBUTION: (),
+    LoopStage.GAP: (WorkflowNode.GAP,),
+    LoopStage.CONTRIBUTION: (WorkflowNode.CONTRIBUTION,),
     LoopStage.CLAIMS_EVIDENCE: (WorkflowNode.CLAIMS, WorkflowNode.EVIDENCE),
     LoopStage.EXPERIMENT_PLANNING: (
         WorkflowNode.EXPERIMENT_PLAN,
         WorkflowNode.FEASIBILITY,
     ),
+    LoopStage.SPEC_DRAFT: (),
     LoopStage.INDEPENDENT_JUDGES: (
         WorkflowNode.GAP_JUDGE,
         WorkflowNode.CONTRIBUTION_JUDGE,

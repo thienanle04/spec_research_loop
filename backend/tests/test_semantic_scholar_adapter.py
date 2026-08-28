@@ -113,6 +113,56 @@ async def test_rate_limit_response_is_retried_with_backoff(
 
 
 @pytest.mark.asyncio
+async def test_transient_server_errors_are_retried_with_short_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingLimiter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def wait(self) -> None:
+            self.calls += 1
+
+    class FakeAsyncClient:
+        calls: ClassVar[int] = 0
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def request(self, method: str, url: str, **_kwargs: Any) -> httpx.Response:
+            type(self).calls += 1
+            request = httpx.Request(method, url)
+            if type(self).calls < 3:
+                return httpx.Response(
+                    500 if type(self).calls == 1 else 503,
+                    request=request,
+                )
+            return httpx.Response(200, json={"data": []}, request=request)
+
+    delays: list[float] = []
+
+    async def record_delay(delay: float) -> None:
+        delays.append(delay)
+
+    limiter = RecordingLimiter()
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    source = SemanticScholarSource(
+        rate_limiter=limiter,  # type: ignore[arg-type]
+        retry_sleeper=record_delay,
+    )
+
+    assert await source.search(query="claim verification", limit=5) == []
+    assert limiter.calls == 3
+    assert delays == [1.0, 3.0]
+
+
+@pytest.mark.asyncio
 async def test_rate_limited_api_key_falls_back_to_public_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -295,7 +345,7 @@ async def test_every_semantic_scholar_endpoint_uses_one_shared_limiter(
 def test_bulk_query_translates_boolean_words_outside_phrases() -> None:
     assert _bulk_query(
         '"research and development" AND (survey OR review) NOT privacy'
-    ) == '"research and development" + (survey | review) -privacy'
+    ) == '"research and development"+survey|review -privacy'
 
 
 def test_provider_query_plan_adds_short_recall_anchors() -> None:
@@ -349,6 +399,11 @@ async def test_search_many_coalesces_queries_into_one_bulk_request(
                             "paperId": "S1",
                             "title": "Claim verification and fact checking",
                             "authors": [],
+                        },
+                        {
+                            "paperId": "S2",
+                            "title": "Highway pavement distress detection",
+                            "authors": [],
                         }
                     ]
                 },
@@ -365,11 +420,12 @@ async def test_search_many_coalesces_queries_into_one_bulk_request(
     )
 
     assert limiter.calls == 1
-    assert FakeAsyncClient.query == "(claim verification) | (fact checking)"
+    assert FakeAsyncClient.query == "claim verification|fact checking"
     assert records[0].metadata["discovery_queries"] == [
         "claim verification",
         "fact checking",
     ]
+    assert records[1].metadata["discovery_queries"] == []
 
 
 def test_bulk_candidates_prioritize_query_terms_in_title() -> None:

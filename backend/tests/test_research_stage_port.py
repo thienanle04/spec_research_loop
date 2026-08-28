@@ -125,7 +125,7 @@ async def test_citation_changes_create_revision_and_project_confirmed_rows(
     gap_draft = await _prepare(
         client,
         session_id,
-        "related_work",
+        "gap",
         related_confirmed["version"],
     )
     incomplete_gap = await _create_card(

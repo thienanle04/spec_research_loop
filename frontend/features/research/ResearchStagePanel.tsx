@@ -107,7 +107,7 @@ export function ResearchStagePanel(props: Props) {
       <CardHeader>
         <CardTitle>Research Gap</CardTitle>
         <CardDescription>
-          Review the single source-supported Gap Candidate, edit it if needed, save it, then Confirm.
+          Review the potential Gap and its source-supported limitations, edit it if needed, save it, then Confirm.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-5">
@@ -123,7 +123,10 @@ export function ResearchStagePanel(props: Props) {
               : "Generate Gap Candidate"}
           </Button>
         )}
-        <Messages warnings={props.warnings} error={props.error ?? props.saveError} />
+        <Messages
+          warnings={gapWarningsForDisplay(props.warnings)}
+          error={props.error ?? props.saveError}
+        />
         <GapCandidatePicker
           candidate={props.gapCandidate}
           selectedGap={props.selectedGap}
@@ -133,6 +136,35 @@ export function ResearchStagePanel(props: Props) {
       </CardContent>
     </Card>
   );
+}
+
+function gapWarningsForDisplay(warnings: string[]): string[] {
+  const messages: string[] = [];
+  const joined = warnings.join(" ").toLocaleLowerCase();
+  if (
+    joined.includes("provider search failed") ||
+    joined.includes("request timed out") ||
+    joined.includes("could not connect")
+  ) {
+    messages.push(
+      "The literature service was temporarily unavailable, so the counter-evidence review may be incomplete. Try regenerating later.",
+    );
+  }
+  if (
+    joined.includes("source text could not") ||
+    joined.includes("download") ||
+    joined.includes("object storage")
+  ) {
+    messages.push(
+      "Some source content could not be checked. Only evidence that passed the source checks is shown.",
+    );
+  }
+  if (joined.includes("no semantically supported atomic gap claim remained")) {
+    messages.push(
+      "No limitation was supported clearly enough to form a potential Gap. Review or add Related Work sources.",
+    );
+  }
+  return messages;
 }
 
 function Messages({ warnings, error }: { warnings: string[]; error: string | null }) {

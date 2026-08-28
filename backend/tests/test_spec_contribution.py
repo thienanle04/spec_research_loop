@@ -63,7 +63,7 @@ async def _prepare_contribution(
     gap = await _prepare(
         client,
         created["id"],
-        "related_work",
+        "gap",
         related_confirmed["version"],
     )
     gap_generation = await client.post(
@@ -100,7 +100,7 @@ async def _prepare_contribution(
     prepared = await _prepare(
         client,
         created["id"],
-        "related_work",
+        "contribution",
         gap_confirmed["version"],
     )
     assert prepared["working_draft_node"] == "contribution"

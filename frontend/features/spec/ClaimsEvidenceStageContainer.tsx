@@ -1,10 +1,8 @@
-"use client";
-
-import { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
@@ -17,7 +15,7 @@ import {
   type LoopSessionResponse,
 } from "@/lib/api/generated/model";
 import { useLoopSessionSave } from "../loop/loop-session-save";
-import { MessageSquareQuote, CheckCircle2 } from "lucide-react";
+import { MessageSquareQuote, CheckCircle2, Target, Activity, FileSearch, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
 
 export function ClaimsEvidenceStageContainer({
   sessionId,
@@ -38,9 +36,12 @@ export function ClaimsEvidenceStageContainer({
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const [error, setError] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editCards, setEditCards] = useState<ClaimEvidenceCard[]>([]);
   
   const narrative = session.working_draft_narrative as any;
   const generatedCards = (narrative?.cards || []) as ClaimEvidenceCard[];
+  const isSaved = narrative?.saved === true;
   const confirmedClaimCards = session.cards.filter(c => c.kind === CardKind.claim);
   
   const running = generateClaims.isPending || saving;
@@ -80,7 +81,7 @@ export function ClaimsEvidenceStageContainer({
       updateSession((current) => ({
         ...current,
         version: response.data.version,
-        working_draft_narrative: { cards: response.data.cards },
+        working_draft_narrative: { cards: response.data.cards, saved: false },
       }));
     } catch (caught) {
       setError(getApiErrorMessage(caught));
@@ -90,7 +91,12 @@ export function ClaimsEvidenceStageContainer({
   async function saveSelection() {
     setError(null);
     try {
+      const existingCardsStr = new Set(confirmedClaimCards.map(c => JSON.stringify(c.body?.metadata)));
+      let latestVersion = currentSession().version;
+      const newCards: any[] = [];
+
       for (const card of generatedCards) {
+        if (existingCardsStr.has(JSON.stringify(card))) continue;
         const bodyText = `Claim: ${card.claim}\nBaseline: ${card.baseline}\nMetric: ${card.metric}\nEvidence: ${card.evidence}\nRejection Condition: ${card.rejection_condition}`;
         const response = await queue.enqueue(() =>
           createCard.mutateAsync({
@@ -98,68 +104,201 @@ export function ClaimsEvidenceStageContainer({
             data: {
               kind: CardKind.claim,
               body: { text: bodyText, metadata: card },
-              expected_version: currentSession().version,
+              expected_version: latestVersion,
             },
           })
         );
         if (response.status !== 201) throw new Error("Could not save the Claim Card");
-        updateSession((current) => ({
-          ...current,
-          version: response.data.version,
-          cards: [
-            ...current.cards,
-            response.data,
-          ],
-        }));
+        latestVersion = response.data.version;
+        newCards.push(response.data);
       }
+      
+      updateSession((current) => ({
+        ...current,
+        version: latestVersion,
+        working_draft_narrative: { ...current.working_draft_narrative as object, saved: true },
+        cards: [
+          ...current.cards,
+          ...newCards,
+        ],
+      }));
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }
   }
 
+  function startEditing() {
+    setEditCards(JSON.parse(JSON.stringify(generatedCards)));
+    setIsEditing(true);
+  }
+
+  function saveEdits() {
+    updateSession((current) => ({
+      ...current,
+      working_draft_narrative: { ...current.working_draft_narrative as object, cards: editCards, saved: false },
+    }));
+    setIsEditing(false);
+  }
+
+  function addNewClaim() {
+    setEditCards([...editCards, { id: "new-" + Math.random().toString(), claim: "", baseline: "", metric: "", evidence: "", rejection_condition: "" } as ClaimEvidenceCard]);
+  }
+
+  function updateEditCard(index: number, field: keyof ClaimEvidenceCard, value: string) {
+    const newCards = [...editCards];
+    newCards[index] = { ...newCards[index], [field]: value };
+    setEditCards(newCards);
+  }
+
+  function removeEditCard(index: number) {
+    setEditCards(editCards.filter((_, i) => i !== index));
+  }
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Claims & Evidence</CardTitle>
-        <CardDescription>
-          Generate claims and expected evidence to support your contribution.
-        </CardDescription>
+        <div className="flex items-center justify-between">
+          <div className="space-y-1">
+            <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
+              <MessageSquareQuote className="w-5 h-5 text-indigo-600" /> Claims & Evidence
+            </CardTitle>
+            <CardDescription>
+              Generate claims and expected evidence to support your contribution.
+            </CardDescription>
+          </div>
+          <Button
+            type="button"
+            variant="default"
+            disabled={saving || running || isEditing}
+            onClick={() => void loadClaims()}
+          >
+            {generatedCards.length > 0 ? "Regenerate Claims" : "Generate Claims"}
+          </Button>
+        </div>
       </CardHeader>
-      <CardContent className="grid gap-5">
-        <Button
-          type="button"
-          variant="outline"
-          className="justify-self-start"
-          disabled={saving || running}
-          onClick={() => void loadClaims()}
-        >
-          {generatedCards.length > 0 ? "Regenerate Claims" : "Generate Claims"}
-        </Button>
 
-        {generatedCards.length > 0 && (
-          <div className="grid gap-4 mt-2">
+      <CardContent className="grid gap-5">
+        {error ? (
+          <div className="p-4 rounded-md bg-destructive/10 border border-destructive/20 text-destructive text-sm flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" /> {error}
+          </div>
+        ) : null}
+
+        {isEditing ? (
+          <div className="space-y-6">
+            {editCards.map((card, idx) => (
+              <div key={idx} className="bg-slate-50 border rounded-lg shadow-sm p-4 relative">
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="absolute top-2 right-2 text-slate-400 hover:text-destructive"
+                  onClick={() => removeEditCard(idx)}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+                <div className="grid gap-4 mt-2 pr-8">
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-semibold text-slate-700">Claim</label>
+                    <Textarea 
+                      value={card.claim} 
+                      onChange={(e) => updateEditCard(idx, "claim", e.target.value)} 
+                      rows={2} 
+                    />
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Baseline</label>
+                      <Textarea 
+                        value={card.baseline} 
+                        onChange={(e) => updateEditCard(idx, "baseline", e.target.value)} 
+                        rows={1} 
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Metric</label>
+                      <Textarea 
+                        value={card.metric} 
+                        onChange={(e) => updateEditCard(idx, "metric", e.target.value)} 
+                        rows={1} 
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-semibold text-slate-700">Expected Evidence</label>
+                    <Textarea 
+                      value={card.evidence} 
+                      onChange={(e) => updateEditCard(idx, "evidence", e.target.value)} 
+                      rows={2} 
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-semibold text-slate-700">Rejection Condition</label>
+                    <Textarea 
+                      value={card.rejection_condition} 
+                      onChange={(e) => updateEditCard(idx, "rejection_condition", e.target.value)} 
+                      rows={2} 
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+            <div className="flex justify-between items-center pt-2">
+              <Button type="button" variant="outline" onClick={addNewClaim}>
+                <Plus className="w-4 h-4 mr-2" /> Add New Claim
+              </Button>
+              <div className="flex gap-2">
+                <Button type="button" variant="ghost" onClick={() => setIsEditing(false)}>
+                  <X className="w-4 h-4 mr-2" /> Cancel
+                </Button>
+                <Button type="button" variant="default" onClick={saveEdits}>
+                  <Save className="w-4 h-4 mr-2" /> Save Edits
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : generatedCards.length > 0 && (
+          <div className="space-y-6">
             {generatedCards.map((card, idx) => (
-              <div key={idx} className="bg-slate-50 border border-slate-200 rounded-md p-4">
-                <h4 className="flex items-start gap-2 font-bold text-navy mb-2">
-                  <MessageSquareQuote className="w-4 h-4 mt-0.5 shrink-0" />
-                  {card.claim}
-                </h4>
-                <div className="grid gap-2 text-sm ml-6">
-                  <div className="flex gap-2">
-                    <span className="font-semibold text-muted-foreground w-20 shrink-0">Baseline:</span>
-                    <span className="text-foreground">{card.baseline}</span>
+              <div key={idx} className="bg-white border rounded-lg shadow-sm overflow-hidden">
+                <div className="bg-indigo-50/50 border-b px-5 py-4">
+                  <h4 className="flex items-start gap-2 font-semibold text-slate-800 text-base leading-snug">
+                    <span className="bg-indigo-100 text-indigo-700 w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0 mt-0.5">{idx + 1}</span>
+                    {card.claim}
+                  </h4>
+                </div>
+                <div className="p-5 space-y-4">
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="bg-slate-50/80 p-3 rounded-md border border-slate-100 flex items-start gap-2">
+                      <Target className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="block text-xs uppercase font-semibold text-slate-500 mb-0.5">Baseline</span>
+                        <span className="text-sm text-slate-700">{card.baseline}</span>
+                      </div>
+                    </div>
+                    <div className="bg-slate-50/80 p-3 rounded-md border border-slate-100 flex items-start gap-2">
+                      <Activity className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="block text-xs uppercase font-semibold text-slate-500 mb-0.5">Metric</span>
+                        <span className="text-sm text-slate-700">{card.metric}</span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    <span className="font-semibold text-muted-foreground w-20 shrink-0">Metric:</span>
-                    <span className="text-foreground">{card.metric}</span>
+                  
+                  <div className="bg-emerald-50/50 p-4 rounded-md border border-emerald-100">
+                    <h5 className="text-xs uppercase tracking-wider font-semibold text-emerald-700 mb-1.5 flex items-center gap-1.5">
+                      <FileSearch className="w-3.5 h-3.5" /> Expected Evidence
+                    </h5>
+                    <p className="text-sm text-emerald-900/80">{card.evidence}</p>
                   </div>
-                  <div className="flex gap-2">
-                    <span className="font-semibold text-muted-foreground w-20 shrink-0">Evidence:</span>
-                    <span className="text-foreground">{card.evidence}</span>
-                  </div>
-                  <div className="flex gap-2 items-start">
-                    <span className="font-semibold text-amber-600/80 w-20 shrink-0">Reject if:</span>
-                    <span className="text-amber-900/80 italic">{card.rejection_condition}</span>
+                  
+                  <div className="bg-amber-50/50 p-4 rounded-md border border-amber-100 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                    <div>
+                      <h5 className="text-xs uppercase tracking-wider font-semibold text-amber-700 mb-0.5">
+                        Rejection Condition (Reject if...)
+                      </h5>
+                      <p className="text-sm text-amber-900/80 italic">{card.rejection_condition}</p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -167,23 +306,32 @@ export function ClaimsEvidenceStageContainer({
           </div>
         )}
 
-        {confirmedClaimCards.length > 0 ? (
-          <p role="status" className="text-sm text-muted-foreground flex items-center gap-1.5">
-            <CheckCircle2 className="w-4 h-4 text-green-600" />
-            Saved {confirmedClaimCards.length} Claim Card(s). Confirm when ready.
+        {confirmedClaimCards.length > 0 && !isEditing ? (
+          <p role="status" className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 p-3 rounded-md flex items-center gap-1.5">
+            <CheckCircle2 className="w-4 h-4" />
+            Saved <strong>{confirmedClaimCards.length}</strong> Claim Card(s) in project context. Confirm at the sidebar when ready.
           </p>
         ) : null}
-        {error ? (
-          <p role="alert" className="text-sm text-destructive">{error}</p>
-        ) : null}
-        <Button
-          type="button"
-          className="justify-self-start"
-          disabled={saving || running || generatedCards.length === 0}
-          onClick={() => void saveSelection()}
-        >
-          Save Claims
-        </Button>
+        
+        {generatedCards.length > 0 && !isEditing && (
+          <div className="flex gap-2 justify-start pt-2 border-t mt-4">
+            <Button
+              type="button"
+              variant="default"
+              disabled={saving || running || isSaved || generatedCards.length === 0}
+              onClick={() => void saveSelection()}
+            >
+              {isSaved ? "Claims Saved" : "Save Claims"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={startEditing}
+            >
+              <Edit className="w-4 h-4 mr-2" /> Edit Claims
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

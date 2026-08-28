@@ -187,6 +187,10 @@ function unansweredTurns(frame?: Record<string, string>): Record<string, unknown
   };
 }
 
+function stageActions() {
+  return screen.getByRole("complementary", { name: "Stage actions" });
+}
+
 describe("LoopSessionWorkbench", () => {
   beforeEach(() => {
     replace.mockReset();
@@ -255,19 +259,175 @@ describe("LoopSessionWorkbench", () => {
 
     expect(getHook).toHaveBeenCalledWith("session-1");
     expect(screen.getByText("Title editor for session-1")).toBeInTheDocument();
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
+    expect(screen.queryByText(/^Working Draft:/)).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
   });
 
-  it("shows Contribution Direction within the six navigable Loop Stages", () => {
+  it("puts back navigation and the title editor on a session strip", () => {
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
+    const strip = screen.getByRole("banner", { name: "Loop Session" });
+    expect(within(strip).getByRole("link", { name: "← Back to Loop Sessions" })).toHaveAttribute(
+      "href",
+      "/sessions",
+    );
+    expect(within(strip).getByText("Title editor for session-1")).toBeInTheDocument();
+  });
+
+  it("shows a stage rail, workspace, and action column", () => {
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
+    expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /overview$/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Stage actions" })).toBeInTheDocument();
+  });
+
+  it("highlights the Loop Stage selected by the stage query", () => {
+    search = new URLSearchParams(`stage=${LoopStage.gap}`);
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const nav = screen.getByRole("navigation", { name: "Loop Stages" });
+
+    expect(within(nav).getByRole("link", { name: /Gap/ })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("link", { name: /Grilling/ })).not.toHaveAttribute("aria-current");
+  });
+
+  it("does not show Decision history or an always-on Produced Spec Version", () => {
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
+    expect(screen.queryByRole("region", { name: "Decision history" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
+  });
+
+  it("opens Spec Draft as a workspace placeholder without Produced Spec Version", () => {
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(screen.queryByRole("region", { name: "Spec Draft overview" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("The Produced Spec Version will appear here after you confirm feasibility."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+  });
+
+  it("shows a Stale Produced Spec Version on Spec Draft and keeps Continue disabled", () => {
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          produced_spec_version: {
+            id: "spec-old",
+            created_at: "2026-08-16T12:00:00Z",
+            document: {
+              nodes: {
+                idea_interpretation: {
+                  narrative: { text: "Earlier understanding" },
+                  card_snapshot: [],
+                },
+              },
+            },
+          },
+          valid_spec_version_id: null,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(spec).toHaveTextContent("Stale");
+    expect(spec).toHaveTextContent("Earlier understanding");
+    expect(within(actions).getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
+  it("enables Continue to Independent judges when Spec Draft has a Valid Spec Version", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 20,
+          produced_spec_version: {
+            id: "spec-valid",
+            created_at: "2026-08-16T12:00:00Z",
+            document: {
+              nodes: {
+                idea_interpretation: {
+                  narrative: { text: "Latency in GPU kernels" },
+                  card_snapshot: [],
+                },
+              },
+            },
+          },
+          valid_spec_version_id: "spec-valid",
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.current,
+            [WorkflowNode.claims]: NodeHeadStatus.current,
+            [WorkflowNode.evidence]: NodeHeadStatus.current,
+            [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+            [WorkflowNode.feasibility]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const prepared = session({
+      version: 21,
+      working_draft_node: WorkflowNode.gap_judge,
+    });
+    const prepareMutate = vi.fn().mockResolvedValue({ status: 200, data: prepared });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(spec).toHaveTextContent("Valid Spec Version");
+    expect(spec).toHaveTextContent("Latency in GPU kernels");
+    expect(spec).not.toHaveTextContent("Stale");
+    expect(within(actions).getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+
+    await userEvent.click(within(actions).getByRole("button", { name: "Continue" }));
+    expect(prepareMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { stage: LoopStage.independent_judges, expected_version: 20 },
+    });
+    expect(replace).toHaveBeenCalledWith(
+      `/sessions/session-1?stage=${LoopStage.independent_judges}`,
+    );
+  });
+
+  it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
 
     expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual([
       expect.stringContaining("Grilling"),
       expect.stringContaining("Related work"),
+      expect.stringContaining("Gap"),
+      expect.stringContaining("Contribution"),
       expect.stringContaining("Claims/evidence"),
       expect.stringContaining("Experiment planning"),
+      expect.stringContaining("Spec Draft"),
       expect.stringContaining("Independent judges"),
       expect.stringContaining("Readiness"),
     ]);
@@ -299,7 +459,6 @@ describe("LoopSessionWorkbench", () => {
     expect(relatedWork).toHaveTextContent("Needs work");
     expect(relatedWork).not.toHaveTextContent("Unavailable");
     expect(relatedWork).not.toHaveTextContent("Editing");
-    expect(within(nav).queryByRole("link", { name: /^Contribution/ })).not.toBeInTheDocument();
   });
 
   it("selects a Loop Stage only through the query string and issues no mutations", async () => {
@@ -316,21 +475,384 @@ describe("LoopSessionWorkbench", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  it("exposes one sub-tab per Workflow Node on multi-node Loop Stages", () => {
+    const stages: { stage: LoopStage; labels: string[] }[] = [
+      {
+        stage: LoopStage.grilling,
+        labels: ["Idea interpretation", "Idea decomposition"],
+      },
+      {
+        stage: LoopStage.related_work,
+        labels: ["Research inputs", "Related work"],
+      },
+      {
+        stage: LoopStage.claims_evidence,
+        labels: ["Claims", "Evidence"],
+      },
+      {
+        stage: LoopStage.experiment_planning,
+        labels: ["Experiment plan", "Feasibility"],
+      },
+      {
+        stage: LoopStage.independent_judges,
+        labels: [
+          "Gap Judge",
+          "Contribution Judge",
+          "Evidence Judge",
+          "Experiment Judge",
+          "Conference Judge",
+          "Aggregator",
+        ],
+      },
+    ];
+
+    for (const { stage, labels } of stages) {
+      search = new URLSearchParams(`stage=${stage}`);
+      const view = render(<LoopSessionWorkbench sessionId="session-1" />);
+      const tabs = screen.getByRole("tablist", { name: "Workflow Nodes" });
+      expect(within(tabs).getAllByRole("tab").map((tab) => tab.textContent)).toEqual(
+        labels.map((label) => expect.stringContaining(label)),
+      );
+      view.unmount();
+    }
+  });
+
+  it("does not show sub-tabs on Gap, Contribution, Spec Draft, or Readiness", () => {
+    for (const stage of [LoopStage.gap, LoopStage.contribution, LoopStage.spec_draft, LoopStage.readiness]) {
+      search = new URLSearchParams(`stage=${stage}`);
+      const { unmount } = render(<LoopSessionWorkbench sessionId="session-1" />);
+      expect(screen.queryByRole("tablist", { name: "Workflow Nodes" })).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("selecting a current sibling tab patches the Working Draft to that node", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 6,
+          working_draft_node: WorkflowNode.idea_interpretation,
+          working_draft_narrative: answeredTurns("kept interpretation"),
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const switched = session({
+      version: 7,
+      working_draft_node: WorkflowNode.idea_decomposition,
+      working_draft_narrative: { text: "kept decomposition" },
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      }),
+    });
+    const mutateAsync = vi.fn().mockResolvedValue({ status: 200, data: switched });
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("tab", { name: /Idea decomposition/ }));
+
+    expect(mutateAsync).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: {
+        expected_version: 6,
+        node: WorkflowNode.idea_decomposition,
+      },
+    });
+    expect(mutateAsync.mock.calls[0][0].data).not.toHaveProperty("narrative");
+    expect(screen.getByText("Working Draft Card canvas for session-1")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Idea decomposition/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("does not patch when the selected tab is already the Working Draft", async () => {
+    const mutateAsync = vi.fn();
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("tab", { name: /Idea interpretation/ }));
+
+    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByRole("tab", { name: /Idea interpretation/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("explains a blocked empty tab without changing the Working Draft", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 3,
+          working_draft_node: WorkflowNode.idea_interpretation,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const mutateAsync = vi.fn();
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("tab", { name: /Idea decomposition/ }));
+
+    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("current Workflow Node");
+    expect(screen.getByRole("tab", { name: /Idea interpretation/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("explains a blocked tab when upstream Workflow Nodes are not current", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 4,
+          working_draft_node: WorkflowNode.research_inputs,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const mutateAsync = vi.fn();
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("tab", { name: /^Related work/ }));
+
+    expect(mutateAsync).not.toHaveBeenCalled();
+    expect(await screen.findByRole("alert")).toHaveTextContent("not current");
+    expect(screen.getByRole("tab", { name: /Research inputs/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("shows Edit in the action panel when viewing confirmed work", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.research_inputs,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(within(actions).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Edit Idea decomposition" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  });
+
+  it("shows Confirm in the action panel while editing a confirmable Working Draft", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_narrative: unansweredTurns(completeFrame()),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(within(actions).getByRole("button", { name: "Confirm" })).toBeEnabled();
+    expect(within(actions).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  });
+
+  it("shows Continue in the action panel after Confirm", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.contribution}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 12,
+          working_draft_node: WorkflowNode.contribution,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 13,
+      working_draft_node: WorkflowNode.contribution,
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+        [WorkflowNode.related_work]: NodeHeadStatus.current,
+        [WorkflowNode.gap]: NodeHeadStatus.current,
+        [WorkflowNode.contribution]: NodeHeadStatus.current,
+      }),
+    });
+    confirmHook.mockReturnValue({
+      mutateAsync: vi.fn().mockResolvedValue({ status: 200, data: confirmed }),
+      error: null,
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(within(actions).getByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(within(actions).getByRole("status")).toHaveTextContent(
+      "Saved. Select Continue to proceed to the next step.",
+    );
+  });
+
+  it("shows Start in the action panel when the selected Loop Stage can be prepared", () => {
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 4,
+          working_draft_node: WorkflowNode.idea_decomposition,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(within(actions).getByRole("button", { name: "Start" })).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
+  it("shows autosave status in the action panel while editing and has no Working Draft Save", () => {
+    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    saveStatus.current = "saving";
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_narrative: answeredTurns(),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    const { rerender } = render(<LoopSessionWorkbench sessionId="session-1" />);
+    const actions = screen.getByRole("complementary", { name: "Stage actions" });
+
+    expect(within(actions).getByText("Saving…")).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Confirm" })).toBeDisabled();
+
+    saveStatus.current = "conflict";
+    rerender(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(within(stageActions()).getByText("Resolve conflict")).toBeInTheDocument();
+  });
+
+  it("does not offer Edit or Confirm on Spec Draft or Readiness", () => {
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.idea_interpretation,
+          working_draft_narrative: answeredTurns(),
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    const { rerender } = render(<LoopSessionWorkbench sessionId="session-1" />);
+    const specActions = screen.getByRole("complementary", { name: "Stage actions" });
+    expect(within(specActions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(specActions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+
+    search = new URLSearchParams(`stage=${LoopStage.readiness}`);
+    rerender(<LoopSessionWorkbench sessionId="session-1" />);
+    const readinessActions = screen.getByRole("complementary", { name: "Stage actions" });
+    expect(within(readinessActions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(within(readinessActions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+  });
+
   it("warns instead of continuing when the current work has not been confirmed", async () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     const prepare = vi.fn();
     prepareHook.mockReturnValue({ mutateAsync: prepare, error: null });
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
+    const actions = stageActions();
 
-    await userEvent.click(within(overview).getByRole("button", { name: "Continue" }));
+    await userEvent.click(within(actions).getByRole("button", { name: "Start" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent(
       "This work has not been confirmed. Select Confirm to save it before continuing.",
     );
     expect(prepare).not.toHaveBeenCalled();
-    expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
 
   it("offers Recompute and Edit confirmed work from Node Heads", () => {
@@ -352,48 +874,23 @@ describe("LoopSessionWorkbench", () => {
     });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
+    const actions = stageActions();
 
-    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-    expect(within(overview).getByRole("button", { name: "Recompute" })).toBeInTheDocument();
-    expect(within(overview).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Recompute" })).toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
 
-  it("offers Edit confirmed work when every Workflow Node is current", () => {
-    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          working_draft_node: WorkflowNode.research_inputs,
-          node_heads: heads({
-            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
-            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
-          }),
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
-
-    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
-    expect(within(overview).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
-    expect(within(overview).getByRole("button", { name: "Edit Idea decomposition" })).toBeInTheDocument();
-  });
-
-  it("does not offer Continue, Recompute, or Edit on an unavailable Loop Stage", () => {
+  it("does not offer Start, Recompute, or Edit on an unavailable Loop Stage", () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Related work overview" });
+    const actions = stageActions();
 
-    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: "Recompute" })).not.toBeInTheDocument();
+    expect(within(actions).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
 
   it("starts empty work through recompute-prepare and applies the server Loop Session", async () => {
@@ -428,9 +925,8 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Related work overview" });
     expect(screen.queryByText(/Working Draft narrative editor/)).not.toBeInTheDocument();
-    await userEvent.click(within(overview).getByRole("button", { name: "Continue" }));
+    await userEvent.click(within(stageActions()).getByRole("button", { name: "Start" }));
 
     expect(mutateAsync).toHaveBeenCalledWith({
       sessionId: "session-1",
@@ -440,7 +936,6 @@ describe("LoopSessionWorkbench", () => {
       status: 200,
       data: prepared,
     });
-    expect(screen.getByText("Working Draft: Research inputs")).toBeInTheDocument();
     expect(screen.getByText("Working Draft narrative editor for session-1")).toBeInTheDocument();
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
     expect(within(nav).getByRole("link", { name: /Related work/ })).toHaveTextContent("Editing");
@@ -484,7 +979,10 @@ describe("LoopSessionWorkbench", () => {
       sessionId: "session-1",
       data: { stage: LoopStage.grilling, expected_version: 3 },
     });
-    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Idea decomposition/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   it("reopens a chosen current Workflow Node through the Working Draft mutation", async () => {
@@ -528,13 +1026,12 @@ describe("LoopSessionWorkbench", () => {
         node: WorkflowNode.idea_interpretation,
       },
     });
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(screen.getByText("kept interpretation")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toHaveTextContent("Editing");
   });
 
   it("preserves local Loop Session state and recovers from a version conflict", async () => {
-    search = new URLSearchParams(`stage=${LoopStage.grilling}`);
+    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     const refetch = vi.fn().mockResolvedValue({
       data: {
         status: 200,
@@ -543,6 +1040,10 @@ describe("LoopSessionWorkbench", () => {
           title: "Server title",
           working_draft_node: WorkflowNode.idea_interpretation,
           working_draft_narrative: answeredTurns("Server idea"),
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
         }),
       },
     });
@@ -554,6 +1055,7 @@ describe("LoopSessionWorkbench", () => {
           working_draft_narrative: answeredTurns("Local idea"),
           node_heads: heads({
             [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
           }),
         }),
       },
@@ -571,10 +1073,9 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("version conflict");
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
     expect(mutateAsync).toHaveBeenCalledTimes(1);
 
@@ -587,6 +1088,10 @@ describe("LoopSessionWorkbench", () => {
         title: "Server title",
         working_draft_node: WorkflowNode.idea_interpretation,
         working_draft_narrative: answeredTurns("Server idea"),
+        node_heads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        }),
       }),
     });
   });
@@ -618,10 +1123,9 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("not current");
-    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
   });
 
@@ -652,10 +1156,9 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("already current");
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
   });
 
@@ -683,31 +1186,30 @@ describe("LoopSessionWorkbench", () => {
     });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
+    const tabs = screen.getByRole("tablist", { name: "Workflow Nodes" });
 
-    expect(within(overview).getByText("Idea interpretation")).toBeInTheDocument();
-    expect(within(overview).getByText(/Node Head: Current/)).toBeInTheDocument();
-    expect(within(overview).getByText("Idea decomposition")).toBeInTheDocument();
-    expect(within(overview).getByText(/Node Head: Empty/)).toBeInTheDocument();
+    expect(within(tabs).getByRole("tab", { name: /Idea interpretation/ })).toHaveTextContent("Current");
+    expect(within(tabs).getByRole("tab", { name: /Idea decomposition/ })).toHaveTextContent("Empty");
   });
 
   it("explains unavailable stages from incomplete upstream Node Heads", () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Related work overview" });
+    const nav = screen.getByRole("navigation", { name: "Loop Stages" });
 
-    expect(overview).toHaveTextContent("Unavailable");
-    expect(overview).toHaveTextContent("Idea interpretation");
-    expect(overview).toHaveTextContent("Idea decomposition");
+    expect(within(nav).getByRole("link", { name: /Related work/ })).toHaveTextContent("Unavailable");
+    expect(screen.queryByRole("region", { name: "Related work overview" })).not.toBeInTheDocument();
   });
 
   it("shows Readiness as Not evaluated with no percentage", () => {
     search = new URLSearchParams(`stage=${LoopStage.readiness}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Readiness overview" });
+    const nav = screen.getByRole("navigation", { name: "Loop Stages" });
+    const readiness = within(nav).getByRole("link", { name: /Readiness/ });
 
-    expect(overview).toHaveTextContent("Not evaluated");
-    expect(overview).not.toHaveTextContent("%");
+    expect(readiness).toHaveTextContent("Not evaluated");
+    expect(readiness).not.toHaveTextContent("%");
+    expect(screen.queryByRole("region", { name: "Readiness overview" })).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /readiness criteria met/i })).not.toBeInTheDocument();
   });
 
@@ -802,7 +1304,10 @@ describe("LoopSessionWorkbench", () => {
         expected_version: 3,
       },
     });
-    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Idea decomposition/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     await waitFor(() => expect(readSseStream).toHaveBeenCalled());
     expect(readSseStream).toHaveBeenCalledWith(
       "/api/idea/sessions/session-1/generate",
@@ -1143,7 +1648,7 @@ describe("LoopSessionWorkbench", () => {
   });
 
   it("continues from confirmed Contribution Direction to Claims/evidence", async () => {
-    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    search = new URLSearchParams(`stage=${LoopStage.contribution}`);
     getHook.mockReturnValue({
       data: {
         status: 200,
@@ -1211,7 +1716,7 @@ describe("LoopSessionWorkbench", () => {
   });
 
   it("restores Continue after reloading a just-confirmed Contribution Direction", async () => {
-    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    search = new URLSearchParams(`stage=${LoopStage.contribution}`);
     const confirmedAt = "2026-08-24T11:48:05.482568Z";
     const confirmed = session({
       version: 52,
@@ -1268,7 +1773,7 @@ describe("LoopSessionWorkbench", () => {
   });
 
   it("does not restore Continue when the Working Draft changed after Confirm", () => {
-    search = new URLSearchParams(`stage=${LoopStage.related_work}`);
+    search = new URLSearchParams(`stage=${LoopStage.contribution}`);
     getHook.mockReturnValue({
       data: {
         status: 200,
@@ -1338,233 +1843,7 @@ describe("LoopSessionWorkbench", () => {
     await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("version conflict");
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
-  });
-
-  it("shows empty Decision history and Produced Spec Version states", () => {
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-
-    const history = screen.getByRole("region", { name: "Decision history" });
-    expect(history).toHaveTextContent("Decision history");
-    expect(history).toHaveTextContent("No Decisions");
-    expect(history).toHaveTextContent(
-      "Decision history does not include snapshot content, version diff, or revert",
-    );
-    expect(screen.queryByRole("button", { name: /revert/i })).not.toBeInTheDocument();
-
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-    expect(spec).toHaveTextContent("Produced Spec Version");
-    expect(spec).toHaveTextContent("No Produced Spec Version");
-    expect(spec).not.toHaveTextContent("latest spec");
-    expect(spec).not.toHaveTextContent("Draft Research Spec");
-    expect(spec).not.toHaveTextContent("Final Spec");
-  });
-
-  it("shows Decision kind, Workflow Node, timestamp, and Stage Revision id", () => {
-    decisionsHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: [
-          {
-            id: "decision-1",
-            kind: "confirm",
-            node: WorkflowNode.idea_interpretation,
-            stage_revision_id: "revision-abc",
-            created_at: "2026-08-16T10:00:00Z",
-          },
-        ],
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const history = screen.getByRole("region", { name: "Decision history" });
-
-    expect(history).toHaveTextContent("confirm");
-    expect(history).toHaveTextContent("Idea interpretation");
-    expect(history).toHaveTextContent("Aug 16, 2026, 10:00 AM UTC");
-    expect(history).toHaveTextContent("revision-abc");
-    expect(history).not.toHaveTextContent("No Decisions");
-    expect(screen.queryByRole("button", { name: /diff|revert|snapshot/i })).not.toBeInTheDocument();
-  });
-
-  it("renders a Produced Spec Version read-only in Loop Stage order", () => {
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          produced_spec_version: {
-            id: "spec-valid",
-            created_at: "2026-08-16T12:00:00Z",
-            document: {
-              nodes: {
-                contribution: {
-                  narrative: { text: "A fused kernel scheduler" },
-                  card_snapshot: [
-                    {
-                      id: "card-1",
-                      kind: CardKind.contribution,
-                      body: { text: "Schedule overlapping copies" },
-                    },
-                  ],
-                },
-                idea_interpretation: {
-                  narrative: { text: "Latency in GPU kernels" },
-                  card_snapshot: [],
-                },
-              },
-            },
-          },
-          valid_spec_version_id: "spec-valid",
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-    const text = spec.textContent ?? "";
-
-    expect(spec).toHaveTextContent("Produced Spec Version");
-    expect(spec).toHaveTextContent("Valid Spec Version");
-    expect(spec).not.toHaveTextContent("Stale");
-    expect(spec).toHaveTextContent("Grilling");
-    expect(spec).toHaveTextContent("Latency in GPU kernels");
-    expect(spec).toHaveTextContent("Contribution");
-    expect(spec).toHaveTextContent("A fused kernel scheduler");
-    expect(spec).toHaveTextContent("Schedule overlapping copies");
-    expect(text.indexOf("Grilling")).toBeGreaterThan(-1);
-    expect(text.indexOf("Grilling")).toBeLessThan(text.indexOf("Contribution"));
-    expect(spec).not.toHaveTextContent("latest spec");
-    expect(spec).not.toHaveTextContent("Draft Research Spec");
-    expect(spec).not.toHaveTextContent("Final Spec");
-    expect(within(spec).queryByRole("textbox")).not.toBeInTheDocument();
-  });
-
-  it("renders a legacy Produced Spec Version Gap only once", () => {
-    const gap = {
-      statement: "Research loops need multi-benchmark verification.",
-      status: "candidate",
-    };
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          produced_spec_version: {
-            id: "spec-valid",
-            created_at: "2026-08-16T12:00:00Z",
-            document: {
-              nodes: {
-                gap: {
-                  narrative: { candidate: gap },
-                  card_snapshot: [
-                    {
-                      id: "gap-card",
-                      kind: CardKind.gap,
-                      body: gap,
-                    },
-                  ],
-                },
-              },
-            },
-          },
-          valid_spec_version_id: "spec-valid",
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-    const occurrences = spec.textContent?.match(/Research loops need multi-benchmark verification\./g);
-
-    expect(occurrences).toHaveLength(1);
-    expect(spec.textContent).not.toMatch(/"candidate"\s*:/);
-  });
-
-  it("keeps unknown Produced Spec Version fields visible as JSON", () => {
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          produced_spec_version: {
-            id: "spec-valid",
-            created_at: "2026-08-16T12:00:00Z",
-            document: {
-              assembler: "v2",
-              nodes: {
-                idea_interpretation: {
-                  narrative: { text: "Known idea", schema: "keep-me" },
-                  card_snapshot: [
-                    {
-                      id: "card-1",
-                      kind: CardKind.problem,
-                      body: { text: "Bandwidth", extra: 3 },
-                    },
-                  ],
-                  future_field: { score: 9 },
-                },
-              },
-            },
-          },
-          valid_spec_version_id: "spec-valid",
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-
-    expect(spec).toHaveTextContent("Known idea");
-    expect(spec).toHaveTextContent("Bandwidth");
-    expect(spec).toHaveTextContent('"schema": "keep-me"');
-    expect(spec).toHaveTextContent('"extra": 3');
-    expect(spec).toHaveTextContent('"score": 9');
-    expect(spec).toHaveTextContent('"assembler": "v2"');
-  });
-
-  it("marks a Produced Spec Version Stale when it is not the Valid Spec Version", () => {
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: session({
-          produced_spec_version: {
-            id: "spec-old",
-            created_at: "2026-08-16T12:00:00Z",
-            document: {
-              nodes: {
-                idea_interpretation: {
-                  narrative: { text: "Earlier understanding" },
-                  card_snapshot: [],
-                },
-              },
-            },
-          },
-          valid_spec_version_id: null,
-        }),
-      },
-      isLoading: false,
-      isError: false,
-      refetch: vi.fn(),
-    });
-
-    render(<LoopSessionWorkbench sessionId="session-1" />);
-    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
-
-    expect(spec).toHaveTextContent("Stale");
-    expect(spec).toHaveTextContent("Produced Spec Version");
-    expect(spec).toHaveTextContent("Valid Spec Version");
-    expect(spec).toHaveTextContent("Earlier understanding");
   });
 
   it("keeps Readiness as Not evaluated when every Workflow Node is current", () => {
@@ -1586,18 +1865,16 @@ describe("LoopSessionWorkbench", () => {
     });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Readiness overview" });
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
     const readiness = within(nav).getByRole("link", { name: /Readiness/ });
 
-    expect(overview).toHaveTextContent("Not evaluated");
-    expect(overview).not.toHaveTextContent("%");
-    expect(overview).not.toHaveTextContent("Complete");
+    expect(screen.queryByRole("region", { name: "Readiness overview" })).not.toBeInTheDocument();
     expect(readiness).toHaveTextContent("Not evaluated");
+    expect(readiness).not.toHaveTextContent("%");
     expect(readiness).not.toHaveTextContent("Complete");
   });
 
-  it("refreshes Decisions, Produced Spec Version, and dashboard queries after Confirm", async () => {
+  it("refreshes Decisions and dashboard queries after Confirm", async () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     getHook.mockReturnValue({
       data: {
@@ -1636,17 +1913,10 @@ describe("LoopSessionWorkbench", () => {
     confirmHook.mockReturnValue({ mutateAsync, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    expect(screen.getByRole("region", { name: "Produced Spec Version" })).toHaveTextContent(
-      "No Produced Spec Version",
-    );
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
-    expect(screen.getByRole("region", { name: "Produced Spec Version" })).toHaveTextContent(
-      "Confirmed interpretation",
-    );
-    expect(screen.getByRole("region", { name: "Produced Spec Version" })).toHaveTextContent(
-      "Valid Spec Version",
-    );
+    expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: ["/api/loop/sessions/session-1/decisions"],
     });

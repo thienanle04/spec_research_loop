@@ -11,9 +11,11 @@ export type LoopStage = typeof LoopStage[keyof typeof LoopStage];
 export const LoopStage = {
   grilling: 'grilling',
   related_work: 'related_work',
+  gap: 'gap',
   contribution: 'contribution',
   claims_evidence: 'claims_evidence',
   experiment_planning: 'experiment_planning',
+  spec_draft: 'spec_draft',
   independent_judges: 'independent_judges',
   readiness: 'readiness',
 } as const;

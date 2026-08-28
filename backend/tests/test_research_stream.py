@@ -119,6 +119,7 @@ async def test_related_work_stream_persists_citations_and_findings(
     assert all(item["source_object_key"] for item in listed_findings.json())
 
     old_ids = {item["id"] for item in listed.json()}
+    old_finding_ids = {item["id"] for item in listed_findings.json()}
     for pinned_id in old_ids:
         pinned = await client.patch(
             f"/api/research/sessions/{session_id}/citations/{pinned_id}/selection",
@@ -134,7 +135,7 @@ async def test_related_work_stream_persists_citations_and_findings(
     assert rerun.status_code == 200, rerun.text
     after_rerun = await client.get(f"/api/research/sessions/{session_id}/citations")
     assert len(after_rerun.json()) == 1
-    assert {item["id"] for item in after_rerun.json()} < old_ids
+    assert {item["id"] for item in after_rerun.json()}.isdisjoint(old_ids)
     assert all(not item["pinned"] for item in after_rerun.json())
     async with get_session_factory()() as db:
         citations = list(
@@ -159,6 +160,7 @@ async def test_related_work_stream_persists_citations_and_findings(
         )
         assert len(citations) == 1
         assert len(findings) == 1
+        assert {str(item.id) for item in findings}.isdisjoint(old_finding_ids)
         assert all(item.citation_id for item in findings)
         assert all(item.supporting_passage for item in findings)
 
@@ -268,6 +270,9 @@ async def test_related_work_skips_inaccessible_source_and_backfills(
     patch = next(event for event in events if event["type"] == "draft_patch")
     assert patch["narrative"]["citation_count"] == 2
     assert patch["narrative"]["skipped_inaccessible_count"] == 1
+    assert patch["narrative"]["selection_rule"].startswith(
+        "quality_diversity_portfolio_"
+    )
     assert events[-1]["citation_count"] == 2
 
 
@@ -278,7 +283,7 @@ async def test_gap_stream_uses_confirmed_citation_support(client: AsyncClient) -
     session_id = draft["id"]
     related = await client.post(
         f"/api/research/sessions/{session_id}/nodes/related_work/generate",
-        json={"expected_version": draft["version"], "max_results": 1},
+        json={"expected_version": draft["version"], "max_results": 5},
     )
     related_events = _events(related.text)
     related_version = related_events[-1]["version"]
@@ -291,7 +296,7 @@ async def test_gap_stream_uses_confirmed_citation_support(client: AsyncClient) -
     gap_draft = await _prepare(
         client,
         session_id,
-        "related_work",
+        "gap",
         confirmed["version"],
     )
     response = await client.post(
@@ -305,6 +310,14 @@ async def test_gap_stream_uses_confirmed_citation_support(client: AsyncClient) -
     assert candidate["statement"]
     assert candidate["supporting_citation_keys"]
     assert candidate["status"] == "candidate"
+    assert (
+        candidate["search_audit"]["counter_evidence_outcome"]
+        == "no_direct_counter_evidence"
+    )
+    assert all(
+        result["relevance_status"] == "relevant"
+        for result in candidate["search_audit"]["counter_evidence_results"]
+    )
     assert candidate["search_audit"]["complete"] is True
     assert len(candidate["search_audit"]["related_work_queries"]) >= 4
     assert len(candidate["search_audit"]["counter_evidence_queries"]) >= 3
@@ -329,7 +342,7 @@ async def test_gap_regeneration_replaces_saved_gap_without_confirming(
     gap_draft = await _prepare(
         client,
         session_id,
-        "related_work",
+        "gap",
         confirmed["version"],
     )
     first = await client.post(
@@ -397,6 +410,16 @@ async def test_all_provider_queries_failing_stops_generation(
     await _auth_client(client)
     account = (await client.get("/api/identity/me")).json()
     draft = await _prepare_related_work(client)
+    initial = await client.post(
+        f"/api/research/sessions/{draft['id']}/nodes/related_work/generate",
+        json={"expected_version": draft["version"], "max_results": 1},
+    )
+    initial_events = _events(initial.text)
+    initial_version = initial_events[-1]["version"]
+    assert len(
+        (await client.get(f"/api/research/sessions/{draft['id']}/citations")).json()
+    ) == 1
+
     async with get_session_factory()() as db:
         service = ResearchService(
             db,
@@ -408,7 +431,7 @@ async def test_all_provider_queries_failing_stops_generation(
             session_id=UUID(draft["id"]),
             account_id=UUID(account["id"]),
             node=ResearchNode.RELATED_WORK,
-            body=ResearchGenerateRequest(expected_version=draft["version"]),
+            body=ResearchGenerateRequest(expected_version=initial_version),
         )
         events = [event async for event in service.generate(run)]
     assert events[-1] == {
@@ -418,3 +441,12 @@ async def test_all_provider_queries_failing_stops_generation(
         "message": "Scholarly provider failed: TimeoutError",
     }
     assert not any(event["type"] == "done" for event in events)
+    assert (
+        await client.get(f"/api/research/sessions/{draft['id']}/citations")
+    ).json() == []
+    assert (
+        await client.get(f"/api/research/sessions/{draft['id']}/findings")
+    ).json() == []
+    session = (await client.get(f"/api/loop/sessions/{draft['id']}")).json()
+    assert session["working_draft_narrative"] == {}
+    assert session["version"] == initial_version + 1

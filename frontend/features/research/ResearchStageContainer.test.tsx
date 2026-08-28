@@ -205,6 +205,75 @@ describe("ResearchStageContainer", () => {
     );
   });
 
+  it("clears the saved Gap and its audit as soon as regeneration starts", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const oldCandidate = {
+      statement: "Old Gap Candidate.",
+      search_audit: {
+        counter_evidence_results: [{ title: "Old counter-evidence article" }],
+      },
+    };
+    const oldSession = session(4, { candidate: oldCandidate }, WorkflowNode.gap, [
+      {
+        id: "old-gap-card",
+        kind: CardKind.gap,
+        body: oldCandidate,
+        created_at: "2026-08-21T00:00:00Z",
+        updated_at: "2026-08-21T00:00:00Z",
+      },
+    ]);
+    const sessionKey = ["/api/loop/sessions", "session-1"];
+    queryClient.setQueryData(sessionKey, { status: 200, data: oldSession });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ResearchStageContainer sessionId="session-1" session={oldSession} />
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Regenerate Gap Candidate" }));
+
+    const cached = queryClient.getQueryData(sessionKey) as {
+      data: LoopSessionResponse;
+    };
+    expect(cached.data.working_draft_narrative).toEqual({});
+    expect(cached.data.cards).toEqual([]);
+  });
+
+  it("clears Related Work articles and comparison rows before searching again", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const citationKey = ["/api/research/citations", "session-1"];
+    const findingKey = ["/api/research/findings", "session-1"];
+    queryClient.setQueryData(citationKey, {
+      status: 200,
+      data: [{ id: "old-citation", title: "Old article" }],
+    });
+    queryClient.setQueryData(findingKey, {
+      status: 200,
+      data: [{ id: "old-finding", citation_id: "old-citation" }],
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ResearchStageContainer
+          sessionId="session-1"
+          session={session(4, {}, WorkflowNode.related_work)}
+        />
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Search and analyze" }));
+
+    expect(queryClient.getQueryData(citationKey)).toMatchObject({ data: [] });
+    expect(queryClient.getQueryData(findingKey)).toMatchObject({ data: [] });
+  });
+
   it("restores the saved Gap without regenerating on access", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },

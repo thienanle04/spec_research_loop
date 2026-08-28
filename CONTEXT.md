@@ -1,6 +1,6 @@
 # SpecResearch Loop
 
-A website that turns a vague research idea into a verified research specification through a human-in-the-loop workflow (grilling, related work, contribution, claims/evidence, experiment planning, and independent judges). The system evaluates readiness criteria; it does not guarantee conference acceptance.
+A website that turns a vague research idea into a verified research specification through a human-in-the-loop workflow (grilling, related work, gap, contribution, claims/evidence, experiment planning, Spec Draft, independent judges, and readiness). The system evaluates readiness criteria; it does not guarantee conference acceptance.
 
 ## Language
 
@@ -41,7 +41,7 @@ The most recently minted Spec Version in a Loop Session; it may be stale after a
 _Avoid_: latest spec (alone)
 
 **Valid Spec Version**:
-The Produced Spec Version when it is not stale; otherwise the Loop Session has none until Spec Construction is recomputed and confirmed.
+The Produced Spec Version when it is not stale; otherwise the Loop Session has none until feasibility is confirmed again and mints a new Spec Version.
 _Avoid_: current spec, head
 
 **Working Draft**:
@@ -49,11 +49,15 @@ The session's current editing Workflow Node plus narrative JSONB. In-progress ty
 _Avoid_: temp, cache, unsaved changes
 
 **Loop Stage**:
-A user-facing group of Workflow Nodes the Account recomputes together: Grilling, Related work, Contribution, Claims/evidence, Experiment planning, Independent judges, Readiness. Confirm is per Workflow Node.
-_Avoid_: step, bước, pipeline stage (when you mean this UI unit)
+A user-facing group of Workflow Nodes the Account recomputes together via `recompute-prepare`: Grilling (interpretation, decomposition), Related work (research inputs, related work), Gap, Contribution, Claims/evidence, Experiment planning, Spec Draft, Independent judges, Readiness. Spec Draft and Readiness have no Workflow Nodes. Confirm is per Workflow Node.
+_Avoid_: step, bước, pipeline stage (when you mean this UI unit), Nav Unit
+
+**Spec Draft**:
+The Loop Stage whose UI shows the Produced Spec Version (and whether it is Valid or Stale). It is not a Workflow Node and has no Working Draft; confirming feasibility mints the Spec Version the Account reads here. Product copy may say Spec Draft; glossary terms for the document remain Spec Version / Produced / Valid.
+_Avoid_: Working Draft, Spec Version (as the stage name), spec construction stage
 
 **Workflow Node**:
-A confirmable unit in a Loop Session's invalidation graph (for example idea interpretation, contribution, or a Judge). A Loop Stage groups one or more Workflow Nodes. Readiness has none. A Spec Version is not a Workflow Node; confirming feasibility mints it.
+A confirmable unit in a Loop Session's invalidation graph (for example idea interpretation, contribution, or a Judge). A Loop Stage groups zero or more Workflow Nodes. Spec Draft and Readiness have none. A Spec Version is not a Workflow Node; confirming feasibility mints it.
 _Avoid_: DAG node (in product copy), step, pipeline stage (that is a Loop Stage)
 
 **Node Head**:

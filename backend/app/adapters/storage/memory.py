@@ -13,3 +13,7 @@ class MemoryObjectStorage:
 
     async def get_bytes(self, *, key: str) -> bytes:
         return self.objects[key]
+
+    async def delete_bytes(self, *, key: str) -> None:
+        self.objects.pop(key, None)
+        self.content_types.pop(key, None)

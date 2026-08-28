@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { GrillingWorkspace, generateIdea, isGrillingNode } from "@/features/idea";
 import type { GrillingAnswer } from "@/features/idea";
 import { getApiErrorMessage } from "@/lib/api/config";
@@ -39,23 +38,23 @@ import { ExperimentPlanningStageContainer } from "@/features/spec/ExperimentPlan
 import {
   LOOP_STAGE_CATALOG,
   WORKFLOW_NODE_LABELS,
+  ancestors,
   catalogStage,
   resolveSelectedStage,
   stageForWorkflowNode,
 } from "./catalog";
-import { DecisionHistory } from "./DecisionHistory";
 import { LoopSessionTitleEditor } from "./LoopSessionTitleEditor";
 import { ProducedSpecVersionView } from "./ProducedSpecVersionView";
 import { WorkingDraftCardCanvas } from "./WorkingDraftCardCanvas";
 import { WorkingDraftNarrativeEditor } from "./WorkingDraftNarrativeEditor";
 import { LoopSessionSaveProvider, useLoopSessionSave } from "./loop-session-save";
+import { type SaveStatus } from "./mutation-queue";
 import { operationalError } from "./operational-error";
 import { LOOP_STAGE_ICONS } from "./stage-icons";
 import {
   deriveStageActions,
   deriveStageSignals,
   hasConfirmableWorkingDraft,
-  incompleteUpstreamNodes,
   staleInvalidationStages,
   type CompletionSignal,
 } from "./stage-signals";
@@ -71,6 +70,14 @@ const NODE_HEAD_LABEL: Record<NodeHeadStatus, string> = {
   [NodeHeadStatus.empty]: "Empty",
   [NodeHeadStatus.current]: "Current",
   [NodeHeadStatus.stale]: "Stale",
+};
+
+const SAVE_STATUS_LABEL: Record<SaveStatus, string | null> = {
+  idle: null,
+  saving: "Saving…",
+  saved: "Saved",
+  failed: "Save failed",
+  conflict: "Resolve conflict",
 };
 
 function completionClass(completion: CompletionSignal): string {
@@ -101,6 +108,24 @@ type ContinueTarget = {
   node?: WorkflowNode;
 };
 
+function isValidSpecVersion(session: LoopSessionResponse): boolean {
+  return (
+    session.produced_spec_version != null &&
+    session.valid_spec_version_id === session.produced_spec_version.id
+  );
+}
+
+function specDraftContinueTarget(nodeHeads: NodeHeadResponse[]): ContinueTarget {
+  const judgeActions = deriveStageActions({
+    stage: LoopStage.independent_judges,
+    nodeHeads,
+  });
+  return {
+    stage: LoopStage.independent_judges,
+    prepare: judgeActions.canStart || judgeActions.canRecompute,
+  };
+}
+
 function continueTargetAfterConfirm(
   next: LoopSessionResponse,
   confirmedNode: WorkflowNode,
@@ -125,7 +150,7 @@ function continueTargetAfterConfirm(
   const currentIndex = LOOP_STAGE_CATALOG.findIndex((stage) => stage.id === currentStage);
   const following = LOOP_STAGE_CATALOG[currentIndex + 1];
   if (!following) return null;
-  if (following.id === LoopStage.readiness) {
+  if (following.nodes.length === 0) {
     return { stage: following.id, prepare: false };
   }
   const followingActions = deriveStageActions({
@@ -150,6 +175,29 @@ function transitionMessage(error: OperationalError): string {
     default:
       return error.detail;
   }
+}
+
+function workingDraftMoveError(
+  node: WorkflowNode,
+  nodeHeads: NodeHeadResponse[],
+): OperationalError | null {
+  const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
+  for (const ancestor of ancestors(node)) {
+    if (statusByNode.get(ancestor) !== NodeHeadStatus.current) {
+      return {
+        code: "upstream_not_current",
+        detail: "Upstream Node Heads must be current",
+      };
+    }
+  }
+  if (statusByNode.get(node) !== NodeHeadStatus.current) {
+    return {
+      code: "",
+      detail:
+        "Working Draft can only move to a current Workflow Node. Your current Working Draft was kept.",
+    };
+  }
+  return null;
 }
 
 function formatStageList(names: string[]): string {
@@ -226,15 +274,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   }
 
   const selected = catalogStage(selectedStage);
-  const selectedSignals = deriveStageSignals({
-    stage: selectedStage,
-    nodeHeads: session.node_heads,
-    workingDraftNode: session.working_draft_node,
-  });
-  const incompleteUpstream = incompleteUpstreamNodes({
-    stage: selectedStage,
-    nodeHeads: session.node_heads,
-  });
   const actions = deriveStageActions({
     stage: selectedStage,
     nodeHeads: session.node_heads,
@@ -274,8 +313,17 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const persistedContinueTarget = workingDraftWasLastConfirmed
     ? continueTargetAfterConfirm(session, workingDraftNode)
     : null;
-  const availableContinueTarget = continueTarget ?? persistedContinueTarget;
+  const specDraftTarget =
+    selectedStage === LoopStage.spec_draft ? specDraftContinueTarget(session.node_heads) : null;
+  const availableContinueTarget = specDraftTarget ?? continueTarget ?? persistedContinueTarget;
   const continuing = prepareMutation.isPending || patchWorkingDraft.isPending;
+  const continueDisabled =
+    continuing || (selectedStage === LoopStage.spec_draft && !isValidSpecVersion(session));
+  const draftConfirmable = editingStructuredDraft
+    ? researchConfirmable
+    : hasConfirmableWorkingDraft(session);
+  const showConfirm =
+    editingWorkingDraft && selected.nodes.length > 0 && draftConfirmable;
   const confirmDisabled =
     generating ||
     grillEditing ||
@@ -284,7 +332,21 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     status === "failed" ||
     status === "conflict" ||
     researchRunning ||
-    (editingStructuredDraft ? !researchConfirmable : !hasConfirmableWorkingDraft(session));
+    !draftConfirmable;
+  const stageNodes = [...selected.nodes];
+  const selectedNode = stageNodes.includes(workingDraftNode)
+    ? workingDraftNode
+    : stageNodes[0];
+  const canEditSelected =
+    selectedNode != null &&
+    actions.editableNodes.includes(selectedNode) &&
+    selectedNode !== workingDraftNode;
+  const showStart =
+    actions.canStart &&
+    !availableContinueTarget &&
+    !showConfirm &&
+    !(editingWorkingDraft && workingDraftNode === WorkflowNode.idea_decomposition);
+  const saveStatusLabel = editingWorkingDraft ? SAVE_STATUS_LABEL[status] : null;
 
   function expectedVersion(): number {
     const cached = queryClient.getQueryData(sessionKey) as
@@ -355,6 +417,23 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         data: { node, expected_version: version },
       }),
     );
+  }
+
+  function selectWorkingDraftNode(node: WorkflowNode) {
+    if (!session) return;
+    if (node === workingDraftNode) {
+      setTransitionError(null);
+      return;
+    }
+    const blocked = workingDraftMoveError(node, session.node_heads);
+    if (blocked) {
+      setContinueTarget(null);
+      setConfirmationMessage(null);
+      setContinueWarning(null);
+      setTransitionError(blocked);
+      return;
+    }
+    editConfirmedWork(node);
   }
 
   async function runGenerate(
@@ -444,90 +523,68 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     });
   }
 
-  const confirmActions = (
-    <div className="grid gap-3">
-      {warningStages.length > 0 ? (
-        <p role="note" className="text-sm text-pending">
-          {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
-          become Stale. Invalidation depends on whether this confirmation changes content.
-        </p>
-      ) : null}
-      <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
-        Confirm
-      </Button>
-      {interpretation ? (
-        <p className="text-sm text-muted-foreground">
-          Unanswered Grilling Questions are not saved as answers.
-        </p>
-      ) : null}
-      {confirmationMessage ? (
-        <p role="status" className="text-sm text-navy">
-          {confirmationMessage}
-        </p>
-      ) : null}
-      {availableContinueTarget ? (
-        <Button disabled={continuing} onClick={continueWork}>
-          Continue
-        </Button>
-      ) : null}
-    </div>
-  );
-
   return (
-    <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 lg:grid-cols-12">
-      <aside className="grid gap-4 lg:col-span-3 xl:col-span-3">
-        <div className="rounded-md border bg-card p-3 shadow-sm">
-          <p className="text-xs font-medium text-muted-foreground">
-            Loop Stage {LOOP_STAGE_CATALOG.findIndex((stage) => stage.id === selectedStage) + 1} of{" "}
-            {LOOP_STAGE_CATALOG.length}
-          </p>
-          <p className="font-serif text-lg text-navy">{selected.name}</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Working Draft: {WORKFLOW_NODE_LABELS[session.working_draft_node]}
-          </p>
+    <div className="mx-auto flex max-w-7xl flex-col gap-4 pb-12">
+      <header
+        aria-label="Loop Session"
+        className="flex flex-wrap items-center gap-3 border-b border-border pb-3"
+      >
+        <Link
+          className="text-sm text-in-progress underline-offset-4 hover:underline"
+          href="/sessions"
+        >
+          ← Back to Loop Sessions
+        </Link>
+        <div className="min-w-0 flex-1">
+          <LoopSessionTitleEditor sessionId={sessionId} />
         </div>
-        <nav aria-label="Loop Stages" className="rounded-md border bg-card shadow-sm">
-          <ol className="flex gap-2 overflow-x-auto p-2 lg:flex-col lg:overflow-visible">
-            {LOOP_STAGE_CATALOG.map((stage, index) => {
-              const signals = deriveStageSignals({
-                stage: stage.id,
-                nodeHeads: session.node_heads,
-                workingDraftNode: session.working_draft_node,
-              });
-              const Icon = LOOP_STAGE_ICONS[stage.id];
-              const active = stage.id === selectedStage;
-              return (
-                <li key={stage.id} className="min-w-44 lg:min-w-0">
-                  <Link
-                    href={`/sessions/${sessionId}?stage=${stage.id}`}
-                    aria-current={active ? "page" : undefined}
-                    className={cn(
-                      "flex items-start gap-2 rounded-md px-2 py-2",
-                      active && "border-l-2 border-navy bg-muted lg:rounded-l-none",
-                    )}
-                  >
-                    <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-navy" />
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-foreground">
-                        {index + 1}. {stage.name}
-                      </p>
-                      <StageSignalSummary signals={signals} />
-                    </div>
-                  </Link>
-                </li>
-              );
-            })}
-          </ol>
-        </nav>
-      </aside>
+      </header>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)_minmax(12rem,16rem)] lg:items-start">
+        <aside className="grid gap-4 lg:sticky lg:top-6">
+          <nav aria-label="Loop Stages" className="rounded-md border bg-card shadow-sm">
+            <ol className="flex gap-2 overflow-x-auto p-2 lg:flex-col lg:overflow-visible">
+              {LOOP_STAGE_CATALOG.map((stage, index) => {
+                const signals = deriveStageSignals({
+                  stage: stage.id,
+                  nodeHeads: session.node_heads,
+                  workingDraftNode: session.working_draft_node,
+                });
+                const Icon = LOOP_STAGE_ICONS[stage.id];
+                const active = stage.id === selectedStage;
+                return (
+                  <li key={stage.id} className="min-w-44 lg:min-w-0">
+                    <Link
+                      href={`/sessions/${sessionId}?stage=${stage.id}`}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "flex items-start gap-2 rounded-md px-2 py-2",
+                        active && "border-l-2 border-navy bg-muted lg:rounded-l-none",
+                      )}
+                    >
+                      <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-navy" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground">
+                          {index + 1}. {stage.name}
+                        </p>
+                        <StageSignalSummary signals={signals} />
+                      </div>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ol>
+          </nav>
+        </aside>
 
-      <div className="grid min-w-0 grid-cols-1 gap-4 lg:col-span-9">
-        <p>
-          <Link className="text-sm text-in-progress underline-offset-4 hover:underline" href="/sessions">
-            ← All Loop Sessions
-          </Link>
-        </p>
-        <LoopSessionTitleEditor sessionId={sessionId} />
+      <div className="grid min-w-0 grid-cols-1 gap-4">
+        {selected.nodes.length > 1 ? (
+          <WorkflowNodeTabs
+            nodes={selected.nodes}
+            nodeHeads={session.node_heads}
+            workingDraftNode={workingDraftNode}
+            onSelect={selectWorkingDraftNode}
+          />
+        ) : null}
         {editingWorkingDraft ? (
           <>
             {isGrillingNode(workingDraftNode) ? (
@@ -549,7 +606,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   setGrillDirty(dirty);
                 }}
                 onGenerate={(payload) => void runGenerate(session, payload)}
-                frameActions={interpretation ? confirmActions : undefined}
               />
             ) : editingResearchDraft ? (
               <ResearchStageContainer
@@ -568,6 +624,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               />
             ) : editingClaimsDraft ? (
               <ClaimsEvidenceStageContainer
+                key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
                 onRunningChange={setResearchRunning}
@@ -575,6 +632,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               />
             ) : editingExperimentDraft ? (
               <ExperimentPlanningStageContainer
+                key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
                 onRunningChange={setResearchRunning}
@@ -586,109 +644,93 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 <WorkingDraftCardCanvas locked={generating} sessionId={sessionId} />
               </>
             )}
-            {interpretation ? null : confirmActions}
           </>
         ) : null}
-        <section aria-label={`${selected.name} overview`}>
-          <Card>
-            <CardHeader>
-              <CardTitle className="font-serif text-navy">{selected.name}</CardTitle>
-              <CardDescription>{selected.description}</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4">
-              <StageSignalSummary signals={selectedSignals} />
-              {selectedStage === LoopStage.readiness ? (
-                <p>Not evaluated. Readiness is a criteria check, not a workflow-completion proxy.</p>
-              ) : (
-                <WorkflowNodeList
-                  nodes={selected.nodes}
-                  nodeHeads={session.node_heads}
-                  workingDraftNode={session.working_draft_node}
-                />
-              )}
-              {!selectedSignals.available ? (
-                <div>
-                  <p className="text-sm font-medium text-destructive">Unavailable</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Upstream Workflow Nodes are not current:
-                  </p>
-                  <ul className="mt-2 list-disc pl-5 text-sm">
-                    {incompleteUpstream.map((node) => (
-                      <li key={node}>{WORKFLOW_NODE_LABELS[node]}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              {actions.canStart || actions.canRecompute || actions.editableNodes.length > 0 ? (
-                <div className="grid gap-3">
-                  {actions.canStart &&
-                  !availableContinueTarget &&
-                  !(
-                    editingWorkingDraft &&
-                    workingDraftNode === WorkflowNode.idea_decomposition
-                  ) ? (
-                    <Button onClick={startOrRecompute}>Continue</Button>
-                  ) : null}
-                  {actions.canRecompute ? (
-                    <Button onClick={startOrRecompute}>Recompute</Button>
-                  ) : null}
-                  {actions.editableNodes.length > 0 ? (
-                    <div className="grid gap-2">
-                      <p className="text-sm font-medium">Edit confirmed work</p>
-                      <div className="flex flex-wrap gap-2">
-                        {actions.editableNodes.map((node) => (
-                          <Button
-                            key={node}
-                            variant="outline"
-                            onClick={() => editConfirmedWork(node)}
-                          >
-                            Edit {WORKFLOW_NODE_LABELS[node]}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {transitionError ? (
-                <div role="alert" className="rounded-md border border-pending bg-card p-3">
-                  <p className="text-sm">{transitionMessage(transitionError)}</p>
-                  {transitionError.code === "version_conflict" ? (
-                    <Button
-                      className="mt-3"
-                      variant="outline"
-                      onClick={() => {
-                        void sessionQuery.refetch().then((refreshed) => {
-                          if (refreshed.data?.status === 200) {
-                            queryClient.setQueryData(sessionKey, refreshed.data);
-                            setAppliedSession(refreshed.data.data);
-                            setTransitionError(null);
-                          }
-                        });
-                      }}
-                    >
-                      Load current Loop Session
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-              {continueWarning ? (
-                <div role="alert" className="rounded-md border border-pending bg-card p-3">
-                  <p className="text-sm">{continueWarning}</p>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-        </section>
-        <DecisionHistory
-          decisions={
-            decisionsQuery.data?.status === 200 ? decisionsQuery.data.data : []
-          }
-        />
-        <ProducedSpecVersionView
-          produced={session.produced_spec_version}
-          validSpecVersionId={session.valid_spec_version_id}
-        />
+        {selectedStage === LoopStage.spec_draft && session.produced_spec_version ? (
+          <ProducedSpecVersionView
+            produced={session.produced_spec_version}
+            validSpecVersionId={session.valid_spec_version_id}
+          />
+        ) : null}
+      </div>
+
+        <aside
+          aria-label="Stage actions"
+          className="rounded-md border bg-card p-4 shadow-sm lg:sticky lg:top-6"
+        >
+          <div className="grid gap-3">
+            <p className="text-sm font-medium text-foreground">Stage actions</p>
+            {saveStatusLabel ? (
+              <p role="status" aria-label="Working Draft save" className="text-sm text-muted-foreground">
+                {saveStatusLabel}
+              </p>
+            ) : null}
+            {showConfirm && warningStages.length > 0 ? (
+              <p role="note" className="text-sm text-pending">
+                {formatStageList(warningStages.map((stage) => catalogStage(stage).name))} may
+                become Stale. Invalidation depends on whether this confirmation changes content.
+              </p>
+            ) : null}
+            {showConfirm ? (
+              <Button disabled={confirmDisabled} onClick={confirmWorkingDraft}>
+                Confirm
+              </Button>
+            ) : null}
+            {showConfirm && interpretation ? (
+              <p className="text-sm text-muted-foreground">
+                Unanswered Grilling Questions are not saved as answers.
+              </p>
+            ) : null}
+            {confirmationMessage ? (
+              <p role="status" className="text-sm text-navy">
+                {confirmationMessage}
+              </p>
+            ) : null}
+            {availableContinueTarget ? (
+              <Button disabled={continueDisabled} onClick={continueWork}>
+                Continue
+              </Button>
+            ) : null}
+            {showStart ? (
+              <Button onClick={startOrRecompute}>Start</Button>
+            ) : null}
+            {actions.canRecompute ? (
+              <Button onClick={startOrRecompute}>Recompute</Button>
+            ) : null}
+            {canEditSelected ? (
+              <Button variant="outline" onClick={() => editConfirmedWork(selectedNode)}>
+                Edit {WORKFLOW_NODE_LABELS[selectedNode]}
+              </Button>
+            ) : null}
+            {continueWarning ? (
+              <div role="alert" className="rounded-md border border-pending bg-card p-3">
+                <p className="text-sm">{continueWarning}</p>
+              </div>
+            ) : null}
+            {transitionError ? (
+              <div role="alert" className="rounded-md border border-pending bg-card p-3">
+                <p className="text-sm">{transitionMessage(transitionError)}</p>
+                {transitionError.code === "version_conflict" ? (
+                  <Button
+                    className="mt-3"
+                    variant="outline"
+                    onClick={() => {
+                      void sessionQuery.refetch().then((refreshed) => {
+                        if (refreshed.data?.status === 200) {
+                          queryClient.setQueryData(sessionKey, refreshed.data);
+                          setAppliedSession(refreshed.data.data);
+                          setTransitionError(null);
+                        }
+                      });
+                    }}
+                  >
+                    Load current Loop Session
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </aside>
       </div>
     </div>
   );
@@ -708,30 +750,50 @@ function StageSignalSummary({
   );
 }
 
-function WorkflowNodeList({
+function WorkflowNodeTabs({
   nodes,
   nodeHeads,
   workingDraftNode,
+  onSelect,
 }: {
   nodes: readonly WorkflowNode[];
   nodeHeads: NodeHeadResponse[];
   workingDraftNode: WorkflowNode;
+  onSelect: (node: WorkflowNode) => void;
 }) {
   return (
-    <ol className="grid gap-3">
+    <div
+      role="tablist"
+      aria-label="Workflow Nodes"
+      className="flex gap-2 overflow-x-auto rounded-md border bg-card p-2 shadow-sm"
+    >
       {nodes.map((node) => {
+        const selected = workingDraftNode === node;
         const head = nodeHeads.find((item) => item.node === node);
         const status = head?.status ?? NodeHeadStatus.empty;
         return (
-          <li key={node} className="rounded-md border bg-muted/40 px-3 py-2">
-            <p className="text-sm font-medium">{WORKFLOW_NODE_LABELS[node]}</p>
-            <p className="text-sm text-muted-foreground">
-              Node Head: {NODE_HEAD_LABEL[status]}
-              {workingDraftNode === node ? " · Working Draft" : ""}
-            </p>
-          </li>
+          <Button
+            key={node}
+            type="button"
+            role="tab"
+            variant="ghost"
+            aria-selected={selected}
+            className={cn(
+              "h-auto min-w-36 shrink-0 flex-col items-start px-3 py-2 text-left",
+              selected && "border-l-2 border-navy bg-muted",
+            )}
+            onClick={() => onSelect(node)}
+          >
+            <span className="block text-sm font-medium text-foreground">
+              {WORKFLOW_NODE_LABELS[node]}
+            </span>
+            <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+              {NODE_HEAD_LABEL[status]}
+              {selected ? " · Working Draft" : ""}
+            </span>
+          </Button>
         );
       })}
-    </ol>
+    </div>
   );
 }

@@ -22,8 +22,8 @@ export default function HomePage() {
             </h1>
             <p className="mt-4 max-w-2xl text-lg text-muted-foreground">
               SpecResearch Loop is a human-in-the-loop workflow: grilling, related work,
-              contribution direction within related work, claims and evidence, experiment
-              planning, and independent judges.
+              gap, contribution, claims and evidence, experiment planning, Spec Draft,
+              independent judges, and readiness.
             </p>
             <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
               The system evaluates readiness criteria. It does not guarantee conference acceptance.
