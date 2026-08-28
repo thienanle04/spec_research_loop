@@ -259,7 +259,7 @@ describe("LoopSessionWorkbench", () => {
 
     expect(getHook).toHaveBeenCalledWith("session-1");
     expect(screen.getByText("Title editor for session-1")).toBeInTheDocument();
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
+    expect(screen.queryByText(/^Working Draft:/)).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
   });
@@ -268,7 +268,7 @@ describe("LoopSessionWorkbench", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
 
     const strip = screen.getByRole("banner", { name: "Loop Session" });
-    expect(within(strip).getByRole("link", { name: "All Loop Sessions" })).toHaveAttribute(
+    expect(within(strip).getByRole("link", { name: "← Back to Loop Sessions" })).toHaveAttribute(
       "href",
       "/sessions",
     );
@@ -279,7 +279,7 @@ describe("LoopSessionWorkbench", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
 
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Grilling overview" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /overview$/ })).not.toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "Stage actions" })).toBeInTheDocument();
   });
 
@@ -304,9 +304,10 @@ describe("LoopSessionWorkbench", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const actions = screen.getByRole("complementary", { name: "Stage actions" });
 
-    expect(screen.getByRole("region", { name: "Spec Draft overview" })).toHaveTextContent(
-      "The Produced Spec Version will appear here after you confirm feasibility.",
-    );
+    expect(screen.queryByRole("region", { name: "Spec Draft overview" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("The Produced Spec Version will appear here after you confirm feasibility."),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
     expect(within(actions).getByRole("button", { name: "Continue" })).toBeDisabled();
     expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
@@ -567,7 +568,6 @@ describe("LoopSessionWorkbench", () => {
       },
     });
     expect(mutateAsync.mock.calls[0][0].data).not.toHaveProperty("narrative");
-    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
     expect(screen.getByText("Working Draft Card canvas for session-1")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Idea decomposition/ })).toHaveAttribute(
       "aria-selected",
@@ -587,7 +587,6 @@ describe("LoopSessionWorkbench", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
   });
 
   it("explains a blocked empty tab without changing the Working Draft", async () => {
@@ -616,7 +615,10 @@ describe("LoopSessionWorkbench", () => {
 
     expect(mutateAsync).not.toHaveBeenCalled();
     expect(await screen.findByRole("alert")).toHaveTextContent("current Workflow Node");
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Idea interpretation/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   it("explains a blocked tab when upstream Workflow Nodes are not current", async () => {
@@ -646,7 +648,10 @@ describe("LoopSessionWorkbench", () => {
 
     expect(mutateAsync).not.toHaveBeenCalled();
     expect(await screen.findByRole("alert")).toHaveTextContent("not current");
-    expect(screen.getByText("Working Draft: Research inputs")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Research inputs/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   it("shows Edit in the action panel when viewing confirmed work", () => {
@@ -669,14 +674,12 @@ describe("LoopSessionWorkbench", () => {
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const actions = screen.getByRole("complementary", { name: "Stage actions" });
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
 
     expect(within(actions).getByRole("button", { name: "Edit Idea interpretation" })).toBeInTheDocument();
     expect(within(actions).queryByRole("button", { name: "Edit Idea decomposition" })).not.toBeInTheDocument();
     expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
     expect(within(actions).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
     expect(within(actions).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
   });
 
   it("shows Confirm in the action panel while editing a confirmable Working Draft", () => {
@@ -772,12 +775,9 @@ describe("LoopSessionWorkbench", () => {
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const actions = screen.getByRole("complementary", { name: "Stage actions" });
-    const overview = screen.getByRole("region", { name: "Related work overview" });
 
     expect(within(actions).getByRole("button", { name: "Start" })).toBeInTheDocument();
     expect(within(actions).queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: "Start" })).not.toBeInTheDocument();
-    expect(within(overview).queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
   });
 
   it("shows autosave status in the action panel while editing and has no Working Draft Save", () => {
@@ -936,7 +936,6 @@ describe("LoopSessionWorkbench", () => {
       status: 200,
       data: prepared,
     });
-    expect(screen.getByText("Working Draft: Research inputs")).toBeInTheDocument();
     expect(screen.getByText("Working Draft narrative editor for session-1")).toBeInTheDocument();
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
     expect(within(nav).getByRole("link", { name: /Related work/ })).toHaveTextContent("Editing");
@@ -980,7 +979,10 @@ describe("LoopSessionWorkbench", () => {
       sessionId: "session-1",
       data: { stage: LoopStage.grilling, expected_version: 3 },
     });
-    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Idea decomposition/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   it("reopens a chosen current Workflow Node through the Working Draft mutation", async () => {
@@ -1024,7 +1026,6 @@ describe("LoopSessionWorkbench", () => {
         node: WorkflowNode.idea_interpretation,
       },
     });
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(screen.getByText("kept interpretation")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Loop Stages" })).toHaveTextContent("Editing");
   });
@@ -1075,7 +1076,6 @@ describe("LoopSessionWorkbench", () => {
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("version conflict");
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
     expect(mutateAsync).toHaveBeenCalledTimes(1);
 
@@ -1126,7 +1126,6 @@ describe("LoopSessionWorkbench", () => {
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("not current");
-    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
   });
 
@@ -1160,7 +1159,6 @@ describe("LoopSessionWorkbench", () => {
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("already current");
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
   });
 
@@ -1188,31 +1186,30 @@ describe("LoopSessionWorkbench", () => {
     });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Grilling overview" });
+    const tabs = screen.getByRole("tablist", { name: "Workflow Nodes" });
 
-    expect(within(overview).getByText("Idea interpretation")).toBeInTheDocument();
-    expect(within(overview).getByText(/Node Head: Current/)).toBeInTheDocument();
-    expect(within(overview).getByText("Idea decomposition")).toBeInTheDocument();
-    expect(within(overview).getByText(/Node Head: Empty/)).toBeInTheDocument();
+    expect(within(tabs).getByRole("tab", { name: /Idea interpretation/ })).toHaveTextContent("Current");
+    expect(within(tabs).getByRole("tab", { name: /Idea decomposition/ })).toHaveTextContent("Empty");
   });
 
   it("explains unavailable stages from incomplete upstream Node Heads", () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Related work overview" });
+    const nav = screen.getByRole("navigation", { name: "Loop Stages" });
 
-    expect(overview).toHaveTextContent("Unavailable");
-    expect(overview).toHaveTextContent("Idea interpretation");
-    expect(overview).toHaveTextContent("Idea decomposition");
+    expect(within(nav).getByRole("link", { name: /Related work/ })).toHaveTextContent("Unavailable");
+    expect(screen.queryByRole("region", { name: "Related work overview" })).not.toBeInTheDocument();
   });
 
   it("shows Readiness as Not evaluated with no percentage", () => {
     search = new URLSearchParams(`stage=${LoopStage.readiness}`);
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Readiness overview" });
+    const nav = screen.getByRole("navigation", { name: "Loop Stages" });
+    const readiness = within(nav).getByRole("link", { name: /Readiness/ });
 
-    expect(overview).toHaveTextContent("Not evaluated");
-    expect(overview).not.toHaveTextContent("%");
+    expect(readiness).toHaveTextContent("Not evaluated");
+    expect(readiness).not.toHaveTextContent("%");
+    expect(screen.queryByRole("region", { name: "Readiness overview" })).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /readiness criteria met/i })).not.toBeInTheDocument();
   });
 
@@ -1307,7 +1304,10 @@ describe("LoopSessionWorkbench", () => {
         expected_version: 3,
       },
     });
-    expect(screen.getByText("Working Draft: Idea decomposition")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Idea decomposition/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     await waitFor(() => expect(readSseStream).toHaveBeenCalled());
     expect(readSseStream).toHaveBeenCalledWith(
       "/api/idea/sessions/session-1/generate",
@@ -1843,7 +1843,6 @@ describe("LoopSessionWorkbench", () => {
     await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("version conflict");
-    expect(screen.getByText("Working Draft: Idea interpretation")).toBeInTheDocument();
     expect(setQueryData).not.toHaveBeenCalled();
   });
 
@@ -1866,14 +1865,12 @@ describe("LoopSessionWorkbench", () => {
     });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    const overview = screen.getByRole("region", { name: "Readiness overview" });
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
     const readiness = within(nav).getByRole("link", { name: /Readiness/ });
 
-    expect(overview).toHaveTextContent("Not evaluated");
-    expect(overview).not.toHaveTextContent("%");
-    expect(overview).not.toHaveTextContent("Complete");
+    expect(screen.queryByRole("region", { name: "Readiness overview" })).not.toBeInTheDocument();
     expect(readiness).toHaveTextContent("Not evaluated");
+    expect(readiness).not.toHaveTextContent("%");
     expect(readiness).not.toHaveTextContent("Complete");
   });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -31,22 +31,47 @@ const STATUS_LABEL: Record<SaveStatus, string | null> = {
   conflict: "Resolve conflict",
 };
 
+function displayTitle(title: string | null | undefined): string {
+  return title?.trim() ? title : "Untitled Loop Session";
+}
+
 export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient();
   const sessionQuery = useGetSessionApiLoopSessionsSessionIdGet(sessionId);
   const patchTitle = usePatchSessionApiLoopSessionsSessionIdPatch();
   const { queue, status, setStatus } = useLoopSessionSave();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState("");
   const [dirty, setDirty] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [conflict, setConflict] = useState<Conflict | null>(null);
 
   const session = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
+  const showEditor = editing || conflict != null;
 
   useEffect(() => {
     if (session && !dirty && !conflict) {
       setTitle(session.title ?? "");
     }
   }, [conflict, dirty, session]);
+
+  useEffect(() => {
+    if (showEditor && !conflict) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [conflict, showEditor]);
+
+  function enterEdit() {
+    setEditing(true);
+  }
+
+  function cancelEdit() {
+    if (status === "saving" || conflict) return;
+    setTitle(session?.title ?? "");
+    setDirty(false);
+    setEditing(false);
+  }
 
   async function saveTitle(localTitle: string, expectedVersion: number) {
     try {
@@ -69,6 +94,7 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
           queryKey: getListSessionsApiLoopSessionsGetQueryKey(),
         });
         setDirty(false);
+        setEditing(false);
       }
     } catch (error) {
       if (!isVersionConflict(error)) {
@@ -131,8 +157,21 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
     setTitle(conflict.serverTitle);
     setDirty(false);
     setConflict(null);
+    setEditing(false);
     queue.resumeAfterConflict();
     setStatus("saved");
+  }
+
+  function statusMessage() {
+    if (!STATUS_LABEL[status]) return null;
+    return (
+      <p
+        className={`text-sm ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+        role={status === "failed" ? "alert" : "status"}
+      >
+        {STATUS_LABEL[status]}
+      </p>
+    );
   }
 
   if (sessionQuery.isLoading) {
@@ -151,38 +190,59 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="min-w-0">
-      <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={submit}>
-        <label className="grid min-w-0 flex-1 gap-1 text-sm font-medium">
-          <span className="sr-only">Loop Session title</span>
-          <Input
-            aria-label="Loop Session title"
-            className="h-9 font-serif text-base"
-            disabled={status === "saving" || status === "conflict"}
-            maxLength={200}
-            placeholder="Untitled Loop Session"
-            value={title}
-            onChange={(event) => {
-              setTitle(event.target.value);
-              setDirty(true);
-            }}
-          />
-        </label>
-        <Button
-          type="submit"
-          size="sm"
-          disabled={!dirty || status === "saving" || status === "conflict"}
-        >
-          Save title
-        </Button>
-        {STATUS_LABEL[status] ? (
-          <p
-            className={`text-sm ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
-            role={status === "failed" ? "alert" : "status"}
+      {showEditor ? (
+        <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={submit}>
+          <label className="grid min-w-0 flex-1 gap-1 text-sm font-medium">
+            <span className="sr-only">Loop Session title</span>
+            <Input
+              ref={inputRef}
+              aria-label="Loop Session title"
+              className="h-9 font-serif text-base"
+              disabled={status === "saving" || status === "conflict"}
+              maxLength={200}
+              placeholder="Untitled Loop Session"
+              value={title}
+              onChange={(event) => {
+                setTitle(event.target.value);
+                setDirty(true);
+              }}
+            />
+          </label>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={!dirty || status === "saving" || status === "conflict"}
           >
-            {STATUS_LABEL[status]}
-          </p>
-        ) : null}
-      </form>
+            Save title
+          </Button>
+          {statusMessage()}
+          {conflict ? null : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={status === "saving"}
+              onClick={cancelEdit}
+            >
+              Cancel
+            </Button>
+          )}
+        </form>
+      ) : (
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="min-w-0 flex-1 text-center font-serif text-xl leading-snug text-foreground underline-offset-4 hover:underline"
+            onClick={enterEdit}
+          >
+            {displayTitle(session.title)}
+          </button>
+          {statusMessage()}
+          <Button type="button" size="sm" variant="outline" onClick={enterEdit}>
+            Edit
+          </Button>
+        </div>
+      )}
       {status === "failed" && patchTitle.error ? (
         <p className="mt-1 text-sm text-destructive">{getApiErrorMessage(patchTitle.error)}</p>
       ) : null}

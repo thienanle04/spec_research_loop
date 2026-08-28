@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { GrillingWorkspace, generateIdea, isGrillingNode } from "@/features/idea";
 import type { GrillingAnswer } from "@/features/idea";
 import { getApiErrorMessage } from "@/lib/api/config";
@@ -56,7 +55,6 @@ import {
   deriveStageActions,
   deriveStageSignals,
   hasConfirmableWorkingDraft,
-  incompleteUpstreamNodes,
   staleInvalidationStages,
   type CompletionSignal,
 } from "./stage-signals";
@@ -276,15 +274,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   }
 
   const selected = catalogStage(selectedStage);
-  const selectedSignals = deriveStageSignals({
-    stage: selectedStage,
-    nodeHeads: session.node_heads,
-    workingDraftNode: session.working_draft_node,
-  });
-  const incompleteUpstream = incompleteUpstreamNodes({
-    stage: selectedStage,
-    nodeHeads: session.node_heads,
-  });
   const actions = deriveStageActions({
     stage: selectedStage,
     nodeHeads: session.node_heads,
@@ -544,7 +533,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           className="text-sm text-in-progress underline-offset-4 hover:underline"
           href="/sessions"
         >
-          All Loop Sessions
+          ← Back to Loop Sessions
         </Link>
         <div className="min-w-0 flex-1">
           <LoopSessionTitleEditor sessionId={sessionId} />
@@ -552,9 +541,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       </header>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)_minmax(12rem,16rem)] lg:items-start">
         <aside className="grid gap-4 lg:sticky lg:top-6">
-          <p className="text-sm text-muted-foreground">
-            Working Draft: {WORKFLOW_NODE_LABELS[session.working_draft_node]}
-          </p>
           <nav aria-label="Loop Stages" className="rounded-md border bg-card shadow-sm">
             <ol className="flex gap-2 overflow-x-auto p-2 lg:flex-col lg:overflow-visible">
               {LOOP_STAGE_CATALOG.map((stage, index) => {
@@ -660,50 +646,13 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
             )}
           </>
         ) : null}
-        <section aria-label={`${selected.name} overview`}>
-          <Card>
-            <CardHeader>
-              <CardTitle className="font-serif text-navy">{selected.name}</CardTitle>
-              <CardDescription>{selected.description}</CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4">
-              <StageSignalSummary signals={selectedSignals} />
-              {selectedStage === LoopStage.readiness ? (
-                <p>Not evaluated. Readiness is a criteria check, not a workflow-completion proxy.</p>
-              ) : selectedStage === LoopStage.spec_draft ? (
-                session.produced_spec_version ? null : (
-                  <p>The Produced Spec Version will appear here after you confirm feasibility.</p>
-                )
-              ) : (
-                <WorkflowNodeList
-                  nodes={selected.nodes}
-                  nodeHeads={session.node_heads}
-                  workingDraftNode={session.working_draft_node}
-                />
-              )}
-              {!selectedSignals.available ? (
-                <div>
-                  <p className="text-sm font-medium text-destructive">Unavailable</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Upstream Workflow Nodes are not current:
-                  </p>
-                  <ul className="mt-2 list-disc pl-5 text-sm">
-                    {incompleteUpstream.map((node) => (
-                      <li key={node}>{WORKFLOW_NODE_LABELS[node]}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-          </section>
-          {selectedStage === LoopStage.spec_draft && session.produced_spec_version ? (
-            <ProducedSpecVersionView
-              produced={session.produced_spec_version}
-              validSpecVersionId={session.valid_spec_version_id}
-            />
-          ) : null}
-        </div>
+        {selectedStage === LoopStage.spec_draft && session.produced_spec_version ? (
+          <ProducedSpecVersionView
+            produced={session.produced_spec_version}
+            validSpecVersionId={session.valid_spec_version_id}
+          />
+        ) : null}
+      </div>
 
         <aside
           aria-label="Stage actions"
@@ -846,33 +795,5 @@ function WorkflowNodeTabs({
         );
       })}
     </div>
-  );
-}
-
-function WorkflowNodeList({
-  nodes,
-  nodeHeads,
-  workingDraftNode,
-}: {
-  nodes: readonly WorkflowNode[];
-  nodeHeads: NodeHeadResponse[];
-  workingDraftNode: WorkflowNode;
-}) {
-  return (
-    <ol className="grid gap-3">
-      {nodes.map((node) => {
-        const head = nodeHeads.find((item) => item.node === node);
-        const status = head?.status ?? NodeHeadStatus.empty;
-        return (
-          <li key={node} className="rounded-md border bg-muted/40 px-3 py-2">
-            <p className="text-sm font-medium">{WORKFLOW_NODE_LABELS[node]}</p>
-            <p className="text-sm text-muted-foreground">
-              Node Head: {NODE_HEAD_LABEL[status]}
-              {workingDraftNode === node ? " · Working Draft" : ""}
-            </p>
-          </li>
-        );
-      })}
-    </ol>
   );
 }
