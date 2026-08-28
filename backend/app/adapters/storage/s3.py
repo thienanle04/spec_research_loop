@@ -59,6 +59,11 @@ class S3ObjectStorage(ObjectStoragePort):
             body = response["Body"]
             return await body.read()
 
+    async def delete_bytes(self, *, key: str) -> None:
+        settings = self._settings
+        async with self._client() as client:
+            await client.delete_object(Bucket=settings.s3_bucket, Key=key)
+
 
 def get_object_storage() -> S3ObjectStorage:
     return S3ObjectStorage()

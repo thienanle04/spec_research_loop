@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.errors import OperationalErrorException
 from app.modules.loop.catalog import CardKind, NodeHeadStatus, WorkflowNode, ancestors
-from app.modules.loop.models import Card, LoopSession, NodeHead
+from app.modules.loop.models import Card, LoopSession, NodeHead, StageRevision
 from app.modules.loop.service import LoopService
 from app.modules.research.models import Citation, RelatedWorkFinding
 from app.modules.research.normalization import (
@@ -46,12 +46,18 @@ from app.modules.research.schemas import (
     CitationCreate,
     CitationResponse,
     CitationUpsertEvent,
+    CounterEvidenceContentBasis,
     CounterEvidenceOutcome,
+    CounterEvidenceRelevance,
     CounterEvidenceResult,
+    CounterEvidenceSupport,
     DoneEvent,
     DraftPatchEvent,
     ErrorEvent,
     GapCardBody,
+    GapClaimAssessment,
+    GapClaimEvidence,
+    GapClaimKind,
     GapEvidenceCheck,
     GapSearchAudit,
     GapStatus,
@@ -85,6 +91,14 @@ class ResearchGenerationError(RuntimeError):
     """Generation failure with a message safe to return in the SSE stream."""
 
 
+class _GapClaim(BaseModel):
+    claim_id: str = Field(min_length=1)
+    kind: GapClaimKind
+    statement: str = Field(min_length=1)
+    supporting_citation_keys: list[str] = Field(min_length=1)
+    supporting_evidence: list[GapClaimEvidence] = Field(default_factory=list)
+
+
 class _GapQuestionAnswers(BaseModel):
     """Internal analysis used to produce the single user-facing Gap statement."""
 
@@ -93,17 +107,46 @@ class _GapQuestionAnswers(BaseModel):
     importance: str = Field(min_length=1)
     testability: str = Field(min_length=1)
     covered_citation_keys: list[str] = Field(min_length=1)
-    addressed_counter_evidence_keys: list[str] = Field(default_factory=list)
+    claims: list[_GapClaim] = Field(default_factory=list)
 
 
 class _GapSynthesis(BaseModel):
     statement: str = Field(min_length=1)
 
 
+class _GapClaimSupportItem(BaseModel):
+    claim_id: str = Field(min_length=1)
+    support_status: CounterEvidenceSupport
+    atomicity_status: Literal["atomic", "compound", "uncertain"] = "uncertain"
+    evidence_span: str = ""
+    unsupported_fragments: list[str] = Field(default_factory=list)
+
+
+class _GapClaimSupportResponse(BaseModel):
+    assessments: list[_GapClaimSupportItem] = Field(min_length=1)
+
+
 class _CounterEvidenceFinding(BaseModel):
     result_key: str = Field(min_length=1)
+    claim_ids: list[str] = Field(default_factory=list)
     impact: CounterEvidenceOutcome
     rationale: str = Field(min_length=1)
+    supporting_passage: str = ""
+    source_location: str = ""
+    relevance_status: CounterEvidenceRelevance
+    content_basis: CounterEvidenceContentBasis = (
+        CounterEvidenceContentBasis.METADATA_ONLY
+    )
+    grounding_status: GroundingStatus = GroundingStatus.PENDING
+    support_status: CounterEvidenceSupport = CounterEvidenceSupport.PENDING
+
+
+class _CounterEvidenceClaimAssessment(BaseModel):
+    claim_id: str = Field(min_length=1)
+    outcome: CounterEvidenceOutcome
+    assessment: str = Field(min_length=1)
+    revised_statement: str | None = None
+    counter_evidence_result_keys: list[str] = Field(default_factory=list)
 
 
 class _CounterEvidenceAssessment(BaseModel):
@@ -112,6 +155,35 @@ class _CounterEvidenceAssessment(BaseModel):
     assessment: str = Field(min_length=1)
     covered_result_keys: list[str] = Field(default_factory=list)
     findings: list[_CounterEvidenceFinding] = Field(default_factory=list)
+    claim_assessments: list[_CounterEvidenceClaimAssessment] = Field(
+        default_factory=list
+    )
+
+
+class _CounterSourceClaimFinding(BaseModel):
+    claim_id: str = Field(min_length=1)
+    impact: CounterEvidenceOutcome
+    rationale: str = Field(min_length=1)
+    revised_statement: str | None = None
+
+
+class _CounterSourceAssessment(BaseModel):
+    result_key: str = Field(min_length=1)
+    impact: CounterEvidenceOutcome
+    rationale: str = Field(min_length=1)
+    relevance_status: CounterEvidenceRelevance
+    supporting_passage: str = ""
+    source_location: str = ""
+    claim_findings: list[_CounterSourceClaimFinding] = Field(default_factory=list)
+
+
+class _CounterSupportItem(BaseModel):
+    result_key: str = Field(min_length=1)
+    support_status: CounterEvidenceSupport
+
+
+class _CounterSupportResponse(BaseModel):
+    assessments: list[_CounterSupportItem] = Field(min_length=1)
 
 
 class _RerankItem(BaseModel):
@@ -128,9 +200,19 @@ class _CounterEvidenceSearch:
     queries: list[str]
     records: list[ScholarlyRecord]
     selected_records: list[ScholarlyRecord]
+    candidate_records: list[ScholarlyRecord]
     candidate_count: int
     complete: bool
     warnings: list[str]
+
+
+@dataclass(slots=True)
+class _CounterEvidenceMaterial:
+    record: ScholarlyRecord
+    source_text: str
+    source_kind: str
+    source_location: str
+    source_object_key: str | None = None
 
 
 @dataclass(slots=True)
@@ -275,6 +357,15 @@ class ResearchService:
             ResearchNode.GAP: "Gap Candidate generation complete",
         }[run.node]
         try:
+            if run.node is ResearchNode.RELATED_WORK:
+                await self._delete_working_related_work(run.session_id)
+                await self._set_narrative(run.session_id, run.node.value, {})
+                await self._db.commit()
+            elif run.node is ResearchNode.GAP:
+                await self._delete_working_gap(run.session_id)
+                await self._set_narrative(run.session_id, run.node.value, {})
+                await self._db.commit()
+
             yield self._event(
                 ProgressEvent(
                     node=run.node,
@@ -294,11 +385,13 @@ class ResearchService:
                         citation_count += 1
                     yield event
             else:
-                narrative, warnings = await self._generate_gaps(run.context)
+                narrative, warnings = await self._generate_gaps(
+                    run.context,
+                    session_id=run.session_id,
+                )
                 for warning in warnings:
                     yield self._warning(run.node, "llm_fallback", warning)
                 await self._set_narrative(run.session_id, run.node.value, narrative)
-                await self._delete_working_gap_card(run.session_id)
                 yield self._event(DraftPatchEvent(node=run.node, narrative=narrative))
 
             await self._db.commit()
@@ -372,7 +465,7 @@ class ResearchService:
             limit=candidate_limit,
         )
 
-        if queries and len(provider_failures) == len(queries):
+        if queries and provider_failures and not records:
             raise ResearchGenerationError(provider_failures[-1])
         for failure in provider_failures:
             yield self._warning(run.node, "provider_error", failure)
@@ -426,17 +519,6 @@ class ResearchService:
         ranked_records = rerank.records
         ranked_candidate_count = len(ranked_records)
 
-        # Keep the old working rows available until the replacement generation
-        # succeeds. The surrounding transaction restores them if generation fails.
-        await self._db.execute(
-            update(Citation)
-            .where(
-                Citation.session_id == run.session_id,
-                Citation.stage_revision_id.is_(None),
-            )
-            .values(is_active=False, pinned=False)
-            .execution_options(synchronize_session=False)
-        )
         prepared_records: list[
             tuple[ScholarlyRecord, Citation, DocumentText, list[str]]
         ] = []
@@ -456,7 +538,7 @@ class ResearchService:
                 citation=citation,
                 record=record,
             )
-            if not _is_usable_research_document(
+            if document is None or not _is_usable_research_document(
                 document,
                 require_downloadable_full_text=require_full_text,
             ):
@@ -546,30 +628,25 @@ class ResearchService:
                 )
             )
 
-        await self._delete_replaced_related_work(
-            run.session_id,
-            retained_citation_ids=[citation.id for _, citation, _, _ in prepared_records],
-        )
-        narrative = dict(run.context.get("working_draft", {}).get("narrative", {}))
-        narrative.update(
-            {
-                "search_queries": queries,
-                "query_language": "en",
-                "query_plan": _query_plan(queries),
-                "citation_count": len(unique_records),
-                "candidate_count": len(records),
-                "ranked_candidate_count": ranked_candidate_count,
-                "reranked_candidate_count": rerank.candidate_count,
-                "reranking_applied": rerank.applied,
-                "analyzed_result_count": len(unique_records),
-                "skipped_inaccessible_count": skipped_inaccessible_count,
-                "selection_rule": (
-                    "llm_listwise_rerank" if rerank.applied else "top_relevance_score"
-                ),
-                "graph_expansion_enabled": isinstance(self._source, CitationGraphPort),
-                "preferred_sources": preferred.model_dump(mode="json"),
-            }
-        )
+        narrative = {
+            "search_queries": queries,
+            "query_language": "en",
+            "query_plan": _query_plan(queries),
+            "citation_count": len(unique_records),
+            "candidate_count": len(records),
+            "ranked_candidate_count": ranked_candidate_count,
+            "reranked_candidate_count": rerank.candidate_count,
+            "reranking_applied": rerank.applied,
+            "analyzed_result_count": len(unique_records),
+            "skipped_inaccessible_count": skipped_inaccessible_count,
+            "selection_rule": (
+                "quality_diversity_portfolio_llm_listwise"
+                if rerank.applied
+                else "quality_diversity_portfolio_heuristic"
+            ),
+            "graph_expansion_enabled": isinstance(self._source, CitationGraphPort),
+            "preferred_sources": preferred.model_dump(mode="json"),
+        }
         await self._set_narrative(run.session_id, run.node.value, narrative)
         yield self._event(DraftPatchEvent(node=run.node, narrative=narrative))
 
@@ -654,9 +731,14 @@ class ResearchService:
                     if isinstance(exc, ScholarlyProviderError)
                     else f"Scholarly provider failed: {type(exc).__name__}"
                 )
-                return [], [failure] * len(queries)
+                # search_many coalesces the logical query set into one provider
+                # operation, so report its failure once rather than once per query.
+                return [], [failure]
             for record in records:
-                record.metadata.setdefault("discovery_queries", list(queries))
+                record.metadata.setdefault(
+                    "discovery_queries",
+                    _matching_record_queries(record, queries),
+                )
             return records, []
 
         search_results = await asyncio.gather(
@@ -736,7 +818,9 @@ class ResearchService:
                 raise ValueError("No queries returned")
             normalized = _normalize_search_queries(model_queries, max_terms=8)
             if not normalized:
-                raise ValueError("All generated queries exceeded the provider query budget")
+                raise ValueError(
+                    "All generated queries exceeded the provider query budget"
+                )
             composed = _compose_search_queries(normalized, inputs, idea)
             english_queries: list[str] = []
             for query in composed:
@@ -789,7 +873,7 @@ class ResearchService:
             )
         if not settings.research_rerank_enabled or len(candidates) < 2:
             return _RerankOutcome(
-                records=records,
+                records=_portfolio_order_records(records, queries=queries),
                 applied=False,
                 candidate_count=0,
                 warnings=[],
@@ -799,7 +883,7 @@ class ResearchService:
         expected_keys = [key for key, _ in keyed]
         if len(set(expected_keys)) != len(expected_keys):
             return _RerankOutcome(
-                records=records,
+                records=_portfolio_order_records(records, queries=queries),
                 applied=False,
                 candidate_count=len(candidates),
                 warnings=[
@@ -814,8 +898,11 @@ class ResearchService:
             "Use the confirmed Problem, Research Questions, Research Inputs, and "
             "search queries. Prioritize direct coverage of the research relationship, "
             "method, outcome, evaluation, and limitations. Prefer evidence-rich "
-            "candidates over broad keyword matches. Use only supplied metadata; do not "
-            "infer missing facts. Return every candidate result_key exactly once, no "
+            "candidates over broad keyword matches. Use explicit publication type, "
+            "peer-review, and full-text availability only as tie-breakers; weak topical "
+            "coverage must never be rescued by venue or publication metadata. Use only "
+            "supplied metadata and never infer venue prestige or missing facts. Return "
+            "every candidate result_key exactly once, no "
             "unknown keys, ordered from most to least relevant. relevance_score must be "
             "between 0 and 1. Do not use markdown, reasoning, or explanations."
         )
@@ -832,6 +919,10 @@ class ResearchService:
                     "year": record.year,
                     "venue": record.venue,
                     "heuristic_score": record.metadata.get("retrieval_score"),
+                    "publication_types": sorted(_publication_kinds(record)),
+                    "is_peer_reviewed": _explicit_peer_review_status(record),
+                    "has_full_text": _record_has_full_text(record),
+                    "discovery_queries": record.metadata.get("discovery_queries", []),
                     "discovery_types": record.metadata.get("discovery_types", []),
                 }
                 for key, record in keyed
@@ -848,7 +939,12 @@ class ResearchService:
             )
             try:
                 response = _validated_rerank_response(raw, expected_keys)
-            except (ValidationError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            except (
+                ValidationError,
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 # A reasoning model can ignore JSON-only instructions, truncate the
                 # object, or omit a candidate. Give it one bounded correction attempt
                 # before falling back to the deterministic retrieval order.
@@ -886,14 +982,17 @@ class ResearchService:
                 record.metadata["reranker_score"] = round(item.relevance_score, 4)
                 reranked.append(record)
             return _RerankOutcome(
-                records=[*reranked, *tail],
+                records=_portfolio_order_records(
+                    [*reranked, *tail],
+                    queries=queries,
+                ),
                 applied=True,
                 candidate_count=len(candidates),
                 warnings=[],
             )
         except Exception as exc:  # noqa: BLE001 - retrieval must survive reranker failure
             return _RerankOutcome(
-                records=records,
+                records=_portfolio_order_records(records, queries=queries),
                 applied=False,
                 candidate_count=len(candidates),
                 warnings=[
@@ -942,7 +1041,7 @@ class ResearchService:
                     "verbatim span from the supplied retrieved_text), evidence "
                     "(an object with what_was_done, method_or_feedback, and limitation; "
                     "each value contains passage and location), and confidence "
-                    "(number from 0 to 1). Do not rename or nest the keys. Assess "
+                    "(number from 0 to 1). Do not rename or nest the keys. "
                     "Use only retrieved_text for source assertions. For every evidence "
                     "item, passage must be a concise verbatim sentence or paragraph "
                     "that separately supports that assertion. Never use a document "
@@ -1041,6 +1140,8 @@ class ResearchService:
     async def _generate_gaps(
         self,
         context: dict[str, Any],
+        *,
+        session_id: UUID | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
         upstream = context.get("upstream", {})
         related_node = upstream.get(WorkflowNode.RELATED_WORK.value, {})
@@ -1068,6 +1169,7 @@ class ResearchService:
         )
         evidence_check = _gap_evidence_check(citations, related_work)
         valid_keys = evidence_check.eligible_citation_keys
+        initially_eligible_keys = list(valid_keys)
         eligible_citations = [
             item for item in citations if item.get("citation_key") in valid_keys
         ]
@@ -1075,15 +1177,48 @@ class ResearchService:
             item for item in related_work if item.get("citation_key") in valid_keys
         ]
         idea = _idea_context(context)
-        previous_counter_feedback = _previous_counter_feedback(context)
-        required_counter_keys = [
-            str(item.get("result_key"))
-            for item in previous_counter_feedback.get("results", [])
-            if item.get("result_key")
-        ]
         warnings: list[str] = []
-        statement = _fallback_gap_statement(eligible_findings)
-        if valid_keys:
+        answers: _GapQuestionAnswers | None = None
+        source_claim_candidates, claim_preparation_warnings = _fallback_gap_claims(
+            eligible_findings,
+            valid_keys,
+        )
+        warnings.extend(claim_preparation_warnings)
+        source_claims, claim_support_warnings = (
+            await self._validate_gap_claim_support(
+                idea=idea,
+                claim_candidates=source_claim_candidates,
+            )
+        )
+        warnings.extend(claim_support_warnings)
+        supported_key_set = {
+            key for claim in source_claims for key in claim.supporting_citation_keys
+        }
+        if supported_key_set != set(valid_keys):
+            valid_keys = [key for key in valid_keys if key in supported_key_set]
+            eligible_citations = [
+                item
+                for item in eligible_citations
+                if item.get("citation_key") in supported_key_set
+            ]
+            eligible_findings = [
+                item
+                for item in eligible_findings
+                if item.get("citation_key") in supported_key_set
+            ]
+            evidence_check.eligible_citation_keys = valid_keys
+            evidence_check.ready = bool(valid_keys)
+            evidence_check.messages.append(
+                "Some grounded Related Work limitations were excluded because their "
+                "passages were unsupported or could not be semantically validated."
+            )
+        eligible_findings = _related_work_with_validated_limitations(
+            eligible_findings,
+            source_claims,
+        )
+        gap_claims = source_claims
+        provisional_statement = _fallback_gap_statement(eligible_findings)
+        if valid_keys and source_claims:
             try:
                 analysis_raw = await self._llm.complete(
                     system=(
@@ -1091,19 +1226,28 @@ class ResearchService:
                         + "research-gap-analysis: perform private source-grounded analysis and "
                         "return only one JSON object with exactly these keys: prior_work, "
                         "limitation, importance, testability (non-empty strings), and "
-                        "covered_citation_keys and addressed_counter_evidence_keys (string "
-                        "arrays). Read and compare EVERY item in citations and related_work; "
+                        "covered_citation_keys (a string array), and claims (an array of 1 to 5 "
+                        "independently falsifiable claim objects copied from claim_candidates). "
+                        "Each claim must contain "
+                        "claim_id, kind, statement, and supporting_citation_keys. kind must be "
+                        "one of existing_capability, unresolved_limitation, technical_mechanism, "
+                        "human_evaluation, or domain_scope. Do not combine a technical mechanism, "
+                        "user-interface effect, and high-risk domain into one claim. "
+                        "Do not invent, merge, expand, quantify, or paraphrase a claim. Select "
+                        "only complete objects from claim_candidates so every claim retains an "
+                        "eligible Citation and its exact limitation passage. Use claims for "
+                        "independently testable Gap-bearing assertions; keep "
+                        "descriptive prior-work context in prior_work rather than inventing a "
+                        "novelty claim from it. Read and "
+                        "compare EVERY item "
+                        "in citations and related_work; "
                         "each supplied citation must materially "
                         "inform at least one answer, and covered_citation_keys must contain "
                         "every required_citation_key. Answer: what prior research accomplished, "
                         "what remains limited across the body of work, why the limitation "
                         "matters, and what experiment can test it. Ground the analysis in the "
                         "supplied findings and evidence. Do not claim proven novelty. Do not "
-                        "If previous_counter_feedback is supplied, do not repeat a Gap that "
-                        "was narrowed, unsupported, or inconclusive. Explicitly use every prior "
-                        "result to formulate a materially revised, narrower, and searchable "
-                        "limitation; addressed_counter_evidence_keys must contain every "
-                        "required_counter_evidence_key. Do not use markdown or add explanatory "
+                        "use markdown or add explanatory "
                         "text outside JSON."
                     ),
                     prompt=json.dumps(
@@ -1112,9 +1256,10 @@ class ResearchService:
                             "research_inputs": research_inputs,
                             "citations": eligible_citations,
                             "related_work": eligible_findings,
+                            "claim_candidates": [
+                                item.model_dump(mode="json") for item in source_claims
+                            ],
                             "required_citation_keys": valid_keys,
-                            "previous_counter_feedback": previous_counter_feedback,
-                            "required_counter_evidence_keys": required_counter_keys,
                         },
                         default=str,
                         ensure_ascii=False,
@@ -1125,56 +1270,25 @@ class ResearchService:
                 )
                 if set(valid_keys) - set(answers.covered_citation_keys):
                     raise ValueError("Gap analysis did not cover every eligible source")
-                if set(required_counter_keys) - set(
-                    answers.addressed_counter_evidence_keys
-                ):
-                    raise ValueError(
-                        "Gap analysis did not address every prior counter-evidence result"
-                    )
+                gap_claims = _gap_claims_from_answers(answers, source_claims)
+                provisional_statement = _gap_statement_from_answers(answers)
             except Exception as exc:  # noqa: BLE001 - conservative source-linked fallback
+                answers = None
                 warnings.append(
                     "Gap analysis used a conservative source-linked fallback: "
                     f"{_llm_failure_summary(exc)}"
                 )
-            else:
-                try:
-                    synthesis_raw = await self._llm.complete(
-                        system=(
-                            _idea_language_instruction(idea)
-                            + "research-gap-synthesis: return only JSON with one non-empty "
-                            "string field named statement. Synthesize the four private "
-                            "analysis answers into one concise, coherent Gap Candidate of "
-                            "2 to 4 sentences. State what existing approaches do and what "
-                            "remains unclear or insufficient. Do not expose field labels, "
-                            "source lists, or separate answers. Do not claim proven novelty."
-                            " When previous_counter_feedback is supplied, the new statement must "
-                            "materially address it instead of restating the previous Gap."
-                        ),
-                        prompt=json.dumps(
-                            {
-                                "idea": idea,
-                                "analysis": answers.model_dump(mode="json"),
-                                "previous_counter_feedback": previous_counter_feedback,
-                            },
-                            default=str,
-                            ensure_ascii=False,
-                        ),
-                    )
-                    statement = _GapSynthesis.model_validate(
-                        _json_value(synthesis_raw, dict)
-                    ).statement
-                except Exception as exc:  # noqa: BLE001 - preserve grounded analysis
-                    statement = _gap_statement_from_answers(answers)
-                    warnings.append(
-                        "Gap synthesis used the validated source-grounded analysis "
-                        "directly because the final model call failed: "
-                        f"{_llm_failure_summary(exc)}"
-                    )
         else:
-            warnings.append(
-                "Gap Candidate is not evidence-ready because no Citation is both "
-                "verified and linked to a grounded Related Work finding."
-            )
+            if initially_eligible_keys:
+                warnings.append(
+                    "Gap Candidate is not evidence-ready because no atomic limitation "
+                    "remained after semantic passage validation."
+                )
+            else:
+                warnings.append(
+                    "Gap Candidate is not evidence-ready because no Citation is both "
+                    "verified and linked to a grounded Related Work limitation passage."
+                )
 
         source_preferences = SourcePreferences(
             peer_reviewed_papers=inputs.preferred_sources.peer_reviewed_papers,
@@ -1183,29 +1297,136 @@ class ResearchService:
             sourced_surveys=inputs.preferred_sources.sourced_surveys,
         )
         related_queries = _string_list(related_narrative.get("search_queries"))
-        counter_search = await self._search_counter_evidence(
-            idea=idea,
-            inputs=inputs,
-            provisional_statement=statement,
-            related_work_queries=related_queries,
-            preferences=source_preferences,
-            previous_counter_feedback=previous_counter_feedback,
+        if gap_claims and valid_keys:
+            counter_search = await self._search_counter_evidence(
+                idea=idea,
+                inputs=inputs,
+                provisional_statement=provisional_statement,
+                gap_claims=gap_claims,
+                related_work_citations=eligible_citations,
+                related_work_queries=related_queries,
+                preferences=source_preferences,
+            )
+            warnings.extend(counter_search.warnings)
+            (
+                selected_counter_records,
+                counter_materials,
+                assessment,
+                audit_warnings,
+            ) = await self._audit_counter_evidence_with_backfill(
+                idea=idea,
+                provisional_statement=provisional_statement,
+                gap_claims=gap_claims,
+                counter_search=counter_search,
+                session_id=session_id,
+            )
+            warnings.extend(audit_warnings)
+        else:
+            counter_search = _CounterEvidenceSearch(
+                queries=[],
+                records=[],
+                selected_records=[],
+                candidate_records=[],
+                candidate_count=0,
+                complete=False,
+                warnings=[],
+            )
+            selected_counter_records = []
+            counter_materials = []
+            assessment = _CounterEvidenceAssessment(
+                outcome=CounterEvidenceOutcome.INCONCLUSIVE,
+                statement=provisional_statement,
+                assessment=(
+                    "Counter-evidence search was skipped because no semantically "
+                    "supported atomic Gap claim remained."
+                ),
+            )
+            warnings.append(
+                "Skipped counter-evidence search because no semantically supported "
+                "atomic Gap claim remained."
+            )
+        counter_search.records = selected_counter_records
+        counter_search.selected_records = selected_counter_records
+        claim_assessments = _gap_claim_assessments(
+            gap_claims,
+            assessment.claim_assessments,
         )
-        warnings.extend(counter_search.warnings)
-        assessment, assessment_warnings = await self._assess_counter_evidence(
-            idea=idea,
-            provisional_statement=statement,
-            records=counter_search.records,
-        )
-        warnings.extend(assessment_warnings)
         statement = assessment.statement
+        if answers is not None and assessment.outcome in {
+            CounterEvidenceOutcome.INCONCLUSIVE,
+            CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE,
+            CounterEvidenceOutcome.GAP_NARROWED,
+        }:
+            try:
+                synthesis_raw = await self._llm.complete(
+                    system=(
+                        _idea_language_instruction(idea)
+                        + "research-gap-synthesis: return only JSON with one non-empty "
+                        "string field named statement. Produce one concise, coherent Gap "
+                        "Candidate with exactly 2 sentences. Sentence 1 must summarize what "
+                        "existing approaches can already do, grounded in analysis.prior_work. "
+                        "Sentence 2 must begin with the language-equivalent of 'It remains "
+                        "unclear' (use 'Chưa rõ' in Vietnamese) and state one testable unknown: "
+                        "whether the proposed mechanism or comparison can address the validated "
+                        "limitation and improve the intended outcome under the stated evaluation "
+                        "constraint. Use the idea and analysis.testability to make that relation "
+                        "specific, but do not present the proposed contribution as established. "
+                        "For no_direct_counter_evidence and gap_narrowed claims, synthesize only "
+                        "supported claim assessments and use each narrowed claim's revised "
+                        "statement. For inconclusive claims, retain their source-grounded "
+                        "limitation as a possibility expressed by 'Chưa rõ'/'It remains unclear'; "
+                        "do not put counter-evidence status, audit disclaimers, or novelty "
+                        "warnings in the Gap statement because the UI displays them separately. "
+                        "Do not reintroduce unsupported claims, expose field labels or source "
+                        "lists, append a separate experiment plan, or claim proven novelty."
+                    ),
+                    prompt=json.dumps(
+                        {
+                            "idea": idea,
+                            "analysis": answers.model_dump(mode="json"),
+                            "claim_assessments": [
+                                item.model_dump(mode="json")
+                                for item in claim_assessments
+                            ],
+                            "counter_evidence_outcome": assessment.outcome.value,
+                            "counter_evidence_assessment": assessment.assessment,
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    ),
+                )
+                synthesized_statement = _GapSynthesis.model_validate(
+                    _json_value(synthesis_raw, dict)
+                ).statement
+                statement = _validate_gap_statement_style(synthesized_statement)
+            except Exception as exc:  # noqa: BLE001 - preserve grounded analysis
+                statement = _two_sentence_gap_fallback(
+                    idea,
+                    answers,
+                    gap_claims,
+                    eligible_findings,
+                )
+                warnings.append(
+                    "Gap synthesis used the validated source-grounded analysis "
+                    "directly because the final model call failed: "
+                    f"{_llm_failure_summary(exc)}"
+                )
+        elif assessment.outcome is CounterEvidenceOutcome.INCONCLUSIVE:
+            statement = _two_sentence_gap_fallback(
+                idea,
+                answers,
+                gap_claims,
+                eligible_findings,
+            )
         counter_results = _counter_evidence_results(
-            counter_search.selected_records,
+            selected_counter_records,
             assessment.findings,
+            counter_materials,
         )
 
         audit_complete = bool(related_queries) and counter_search.complete
         audit = GapSearchAudit(
+            assessed_statement=statement,
             related_work_queries=related_queries,
             counter_evidence_queries=counter_search.queries,
             providers=sorted(
@@ -1230,30 +1451,255 @@ class ResearchService:
             counter_evidence_outcome=assessment.outcome,
             counter_evidence_assessment=assessment.assessment,
             counter_evidence_results=counter_results,
+            claim_assessments=claim_assessments,
             completed_at=datetime.now(UTC),
             complete=audit_complete,
-        )
-        evidence_ready = evidence_check.ready and audit_complete
-        status_value = (
-            GapStatus.CANDIDATE
-            if evidence_ready
-            and assessment.outcome
-            in {
-                CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE,
-                CounterEvidenceOutcome.GAP_NARROWED,
-            }
-            else GapStatus.INSUFFICIENT_EVIDENCE
         )
         candidate = GapCardBody(
             statement=statement,
             supporting_citation_keys=valid_keys,
-            status=status_value,
+            status=GapStatus.INSUFFICIENT_EVIDENCE,
             search_audit=audit,
             evidence_check=evidence_check,
         )
-        narrative = dict(context.get("working_draft", {}).get("narrative", {}))
-        narrative["candidate"] = candidate.model_dump(mode="json")
+        if candidate.is_evidence_ready():
+            candidate.status = GapStatus.CANDIDATE
+        narrative = {"candidate": candidate.model_dump(mode="json")}
         return narrative, warnings
+
+    async def _validate_gap_claim_support(
+        self,
+        *,
+        idea: dict[str, Any],
+        claim_candidates: list[_GapClaim],
+    ) -> tuple[list[_GapClaim], list[str]]:
+        """Keep only Related Work limitations entailed by their cited passages."""
+
+        if not claim_candidates:
+            return [], []
+        required_ids = [item.claim_id for item in claim_candidates]
+        request = {
+            "required_claim_ids": required_ids,
+            "claim_candidates": [
+                item.model_dump(mode="json") for item in claim_candidates
+            ],
+        }
+        instruction = (
+            _idea_language_instruction(idea)
+            + "research-gap-claim-support-check: independently verify whether "
+            "each atomic claim statement is semantically supported by its supplied "
+            "Related Work evidence passage. Return only JSON with assessments, "
+            "containing exactly one object per required claim_id with claim_id and "
+            "support_status. support_status must be supported, unsupported, or "
+            "uncertain. Cross-language paraphrases may be supported. Exact passage "
+            "presence alone is not sufficient. Mark unsupported if the statement "
+            "adds a number, configuration constant, dataset property, causal claim, "
+            "mechanism, comparison, or scope not present in the passage. Mark "
+            "uncertain when the passage is too weak or ambiguous."
+        )
+        validation_failures: list[str] = []
+        try:
+            raw = await self._llm.complete(
+                system=instruction,
+                prompt=json.dumps(request, default=str, ensure_ascii=False),
+            )
+            parsed = _validated_gap_claim_support_response(raw, required_ids)
+        except Exception as first_exc:  # noqa: BLE001 - bounded repair follows
+            validation_failures.append(_structured_failure_detail(first_exc))
+            try:
+                repaired_raw = await self._llm.complete(
+                    system=(
+                        _idea_language_instruction(idea)
+                        + "research-gap-claim-support-repair: repair the previous response. "
+                        "Return only JSON with assessments and exactly one object per "
+                        "required claim_id. Each object must contain claim_id and "
+                        "support_status using supported, unsupported, or uncertain."
+                    ),
+                    prompt=json.dumps(
+                        {
+                            **request,
+                            "validation_error": validation_failures[-1],
+                            "previous_response": str(locals().get("raw", ""))[-8_000:],
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    ),
+                )
+                parsed = _validated_gap_claim_support_response(
+                    repaired_raw,
+                    required_ids,
+                )
+            except Exception as repair_exc:  # noqa: BLE001 - per-item recovery follows
+                validation_failures.append(_structured_failure_detail(repair_exc))
+
+                async def assess_one(claim: _GapClaim) -> object:
+                    return await self._llm.complete(
+                        system=(
+                            _idea_language_instruction(idea)
+                            + "research-gap-claim-support-item-check: assess exactly one "
+                            "claim and return JSON with claim_id and support_status. "
+                            "support_status must be supported, unsupported, or uncertain."
+                        ),
+                        prompt=json.dumps(
+                            {
+                                "required_claim_ids": [claim.claim_id],
+                                "claim_candidate": claim.model_dump(mode="json"),
+                            },
+                            default=str,
+                            ensure_ascii=False,
+                        ),
+                    )
+
+                responses = await asyncio.gather(
+                    *(assess_one(item) for item in claim_candidates),
+                    return_exceptions=True,
+                )
+                recovered: list[_GapClaimSupportItem] = []
+                failed_ids: list[str] = []
+                for claim, response in zip(
+                    claim_candidates,
+                    responses,
+                    strict=True,
+                ):
+                    try:
+                        if isinstance(response, BaseException):
+                            raise response
+                        item_response = _validated_gap_claim_support_response(
+                            str(response),
+                            [claim.claim_id],
+                        )
+                        recovered.extend(item_response.assessments)
+                    except Exception:  # noqa: BLE001 - one item remains uncertain
+                        failed_ids.append(claim.claim_id)
+                        recovered.append(
+                            _GapClaimSupportItem(
+                                claim_id=claim.claim_id,
+                                support_status=CounterEvidenceSupport.UNCERTAIN,
+                            )
+                        )
+                parsed = _GapClaimSupportResponse(assessments=recovered)
+                validation_failures.append(
+                    "per-claim recovery left "
+                    f"{len(failed_ids)}/{len(required_ids)} claim(s) uncertain"
+                )
+
+        bulk_statuses = {
+            item.claim_id: item.support_status for item in parsed.assessments
+        }
+        confirmation_candidates = [
+            item
+            for item in claim_candidates
+            if bulk_statuses[item.claim_id] is CounterEvidenceSupport.SUPPORTED
+            and _claim_statement_precheck(item.statement)
+        ]
+
+        async def confirm_one(claim: _GapClaim) -> object:
+            return await self._llm.complete(
+                system=(
+                    _idea_language_instruction(idea)
+                    + "research-gap-claim-support-confirmation: adversarially verify "
+                    "exactly one proposed atomic Gap claim against only its supplied "
+                    "Related Work passage. Return only JSON with assessments containing "
+                    "one object with claim_id, support_status, atomicity_status, "
+                    "evidence_span, and unsupported_fragments. support_status must be "
+                    "supported, unsupported, or uncertain. atomicity_status must be "
+                    "atomic, compound, or uncertain. evidence_span must be a verbatim "
+                    "span from the supplied passage that entails the complete claim; an "
+                    "empty or merely topically related span is insufficient. List every "
+                    "claim fragment not entailed by the passage in unsupported_fragments. "
+                    "Mark compound when the statement joins independently testable "
+                    "limitations. Mark unsupported when any asserted mechanism, modality, "
+                    "scope, comparison, or application is absent from the passage. Never "
+                    "infer that a method lacks a feature merely because the supplied "
+                    "passage does not mention it. Cross-language paraphrases may be "
+                    "supported, but the evidence_span must remain verbatim source text."
+                ),
+                prompt=json.dumps(
+                    {
+                        "required_claim_ids": [claim.claim_id],
+                        "claim_candidates": [claim.model_dump(mode="json")],
+                    },
+                    default=str,
+                    ensure_ascii=False,
+                ),
+            )
+
+        confirmation_responses = await asyncio.gather(
+            *(confirm_one(item) for item in confirmation_candidates),
+            return_exceptions=True,
+        )
+        confirmations: dict[str, _GapClaimSupportItem] = {}
+        confirmation_failures: list[str] = []
+        for claim, response in zip(
+            confirmation_candidates,
+            confirmation_responses,
+            strict=True,
+        ):
+            try:
+                if isinstance(response, BaseException):
+                    raise response
+                confirmed = _validated_gap_claim_support_response(
+                    str(response),
+                    [claim.claim_id],
+                )
+                confirmations[claim.claim_id] = confirmed.assessments[0]
+            except Exception as exc:  # noqa: BLE001 - fail closed per claim
+                confirmation_failures.append(
+                    f"{claim.claim_id}: {_structured_failure_detail(exc)}"
+                )
+
+        statuses: dict[str, CounterEvidenceSupport] = {}
+        for claim in claim_candidates:
+            bulk_status = bulk_statuses[claim.claim_id]
+            if bulk_status is not CounterEvidenceSupport.SUPPORTED:
+                statuses[claim.claim_id] = bulk_status
+                continue
+            if not _claim_statement_precheck(claim.statement):
+                statuses[claim.claim_id] = CounterEvidenceSupport.UNSUPPORTED
+                continue
+            confirmation = confirmations.get(claim.claim_id)
+            statuses[claim.claim_id] = (
+                _strict_claim_support_status(claim, confirmation)
+                if confirmation is not None
+                else CounterEvidenceSupport.UNCERTAIN
+            )
+        supported = [
+            item
+            for item in claim_candidates
+            if statuses[item.claim_id] is CounterEvidenceSupport.SUPPORTED
+        ]
+        unsupported_count = sum(
+            status is CounterEvidenceSupport.UNSUPPORTED
+            for status in statuses.values()
+        )
+        uncertain_count = sum(
+            status is CounterEvidenceSupport.UNCERTAIN
+            for status in statuses.values()
+        )
+        warnings: list[str] = []
+        if unsupported_count:
+            warnings.append(
+                f"Excluded {unsupported_count} atomic Gap claim candidate(s) whose "
+                "Related Work passages did not semantically support the limitation."
+            )
+        if uncertain_count:
+            warnings.append(
+                f"Excluded {uncertain_count} atomic Gap claim candidate(s) because "
+                "semantic passage support could not be determined conclusively."
+            )
+        if validation_failures:
+            warnings.insert(
+                0,
+                "Atomic Gap claim support used structured-output recovery: "
+                + " | ".join(dict.fromkeys(validation_failures)),
+            )
+        if confirmation_failures:
+            warnings.append(
+                "Atomic Gap claim confirmation failed closed for "
+                f"{len(confirmation_failures)}/{len(confirmation_candidates)} claim(s): "
+                + " | ".join(confirmation_failures)
+            )
+        return supported, warnings
 
     async def _search_counter_evidence(
         self,
@@ -1261,31 +1707,41 @@ class ResearchService:
         idea: dict[str, Any],
         inputs: ResearchInputs,
         provisional_statement: str,
+        gap_claims: list[_GapClaim] | None = None,
+        related_work_citations: list[dict[str, Any]] | None = None,
         related_work_queries: list[str],
         preferences: SourcePreferences,
-        previous_counter_feedback: dict[str, Any] | None = None,
     ) -> _CounterEvidenceSearch:
         warnings: list[str] = []
+        claim_query_count = min(max(len(gap_claims or []), 4), 5)
         try:
             raw = await self._llm.complete(
                 system=(
                     "research-counter-query: return only JSON with a queries string array. "
-                    "Write exactly 4 concise English scholarly queries designed to falsify or "
-                    "narrow the proposed Gap Candidate. Search for methods that already solve "
+                    f"Write exactly {claim_query_count} concise English scholarly queries. "
+                    "Write at least one claim-specific query for every supplied atomic Gap "
+                    "claim before adding a cross-claim survey query. Each query must be designed "
+                    "to falsify or narrow that claim. Search for methods that already solve "
                     "the stated limitation, synonymous names for the proposed combination, "
-                    "recent surveys, benchmarks, and conflicting findings. Do not treat an "
-                    "empty result set as evidence of novelty. Keep each query at no more than "
-                    "eight content words. If previous_counter_feedback is supplied, target the "
-                    "revised unresolved limitation and do not merely repeat searches for the "
-                    "already-addressed Gap."
+                    "recent surveys, benchmarks, and conflicting findings. Use only the "
+                    "confirmed Citation method hints for exact method-name searches; do not "
+                    "promote implementation constants such as MAX_RETRY or ambiguous acronyms "
+                    "such as CoT into standalone queries. Do not treat an empty result set as "
+                    "evidence of novelty. Keep each query at no more than "
+                    "eight content words."
                 ),
                 prompt=json.dumps(
                     {
                         "idea": idea,
                         "research_inputs": inputs.model_dump(mode="json"),
                         "provisional_gap_candidate": provisional_statement,
+                        "gap_claims": [
+                            item.model_dump(mode="json") for item in (gap_claims or [])
+                        ],
+                        "confirmed_citation_method_hints": _citation_method_queries(
+                            related_work_citations or []
+                        ),
                         "prior_queries": related_work_queries,
-                        "previous_counter_feedback": previous_counter_feedback or {},
                     },
                     ensure_ascii=False,
                 ),
@@ -1306,9 +1762,11 @@ class ResearchService:
                 f"{_llm_failure_summary(exc)}"
             )
         settings = get_settings()
+        exact_method_queries = _citation_method_queries(related_work_citations or [])
         queries = _ensure_counter_query_families(
             model_queries,
             related_work_queries,
+            exact_method_queries=exact_method_queries,
             limit=settings.research_counter_query_limit,
         )
         candidate_limit = min(max(settings.research_candidate_limit, 25), 100)
@@ -1319,7 +1777,7 @@ class ResearchService:
         )
         failures = len(provider_failures)
         warnings.extend(
-            f"Counter-evidence provider query failed: {failure}"
+            f"Counter-evidence provider search failed: {failure}"
             for failure in provider_failures
         )
         for record in records:
@@ -1333,11 +1791,14 @@ class ResearchService:
             inputs=inputs,
             idea={**idea, "open_questions": [provisional_statement]},
             queries=queries,
+            require_domain_match=True,
         )
-        if ranked and isinstance(self._source, CitationGraphPort):
+        citation_seeds = _citation_seed_records(related_work_citations or [])
+        if (ranked or citation_seeds) and isinstance(self._source, CitationGraphPort):
             try:
+                graph_seeds = _deduplicate_records([*citation_seeds, *ranked])
                 expanded = await self._source.expand_related(
-                    seeds=ranked[: settings.research_graph_seed_count],
+                    seeds=graph_seeds[: settings.research_graph_seed_count],
                     limit=candidate_limit,
                 )
             except Exception as exc:  # noqa: BLE001 - best-effort graph falsification
@@ -1351,6 +1812,7 @@ class ResearchService:
                     inputs=inputs,
                     idea={**idea, "open_questions": [provisional_statement]},
                     queries=queries,
+                    require_domain_match=True,
                 )
         rerank = await self._rerank_records(
             ranked,
@@ -1363,21 +1825,220 @@ class ResearchService:
             ),
         )
         warnings.extend(rerank.warnings)
-        selected_records = rerank.records[:5]
-        await self._verify_counter_evidence(selected_records)
+        selected_records = await self._select_counter_evidence_records(
+            rerank.records,
+            limit=5,
+        )
+        rejected_count = sum(
+            1
+            for record in rerank.records
+            if record.metadata.get("counter_verification_status")
+            == VerificationStatus.REJECTED.value
+        )
+        if rejected_count:
+            warnings.append(
+                f"Rejected and backfilled {rejected_count} counter-evidence source(s) "
+                "whose identity could not be verified."
+            )
+        if len(selected_records) < 5 and len(rerank.records) >= 5:
+            warnings.append(
+                "Fewer than five counter-evidence sources remained after verification."
+            )
         return _CounterEvidenceSearch(
             queries=queries,
-            records=[
-                record
-                for record in selected_records
-                if record.metadata.get("counter_verification_status")
-                != VerificationStatus.REJECTED.value
-            ],
+            records=selected_records,
             selected_records=selected_records,
-            candidate_count=len(unique),
+            candidate_records=rerank.records,
+            candidate_count=len(rerank.records),
             complete=bool(queries) and failures == 0,
             warnings=warnings,
         )
+
+    async def _select_counter_evidence_records(
+        self,
+        records: list[ScholarlyRecord],
+        *,
+        limit: int,
+    ) -> list[ScholarlyRecord]:
+        """Verify in rank order and backfill rejected counter-evidence sources."""
+        selected: list[ScholarlyRecord] = []
+        cursor = 0
+        while len(selected) < limit and cursor < len(records):
+            batch_size = min(limit - len(selected), len(records) - cursor)
+            batch = records[cursor : cursor + batch_size]
+            cursor += batch_size
+            await self._verify_counter_evidence(batch)
+            selected.extend(
+                record
+                for record in batch
+                if record.metadata.get("counter_verification_status")
+                != VerificationStatus.REJECTED.value
+            )
+        return selected
+
+    async def _audit_counter_evidence_with_backfill(
+        self,
+        *,
+        idea: dict[str, Any],
+        provisional_statement: str,
+        gap_claims: list[_GapClaim],
+        counter_search: _CounterEvidenceSearch,
+        session_id: UUID | None,
+    ) -> tuple[
+        list[ScholarlyRecord],
+        list[_CounterEvidenceMaterial],
+        _CounterEvidenceAssessment,
+        list[str],
+    ]:
+        """Audit a bounded portfolio and replace unusable source assessments."""
+
+        selected = list(counter_search.selected_records)
+        selected_keys = {_record_result_key(record) for record in selected}
+        remaining = [
+            record
+            for record in counter_search.candidate_records
+            if _record_result_key(record) not in selected_keys
+        ]
+        warnings: list[str] = []
+        materials: list[_CounterEvidenceMaterial] = []
+        material_cache: dict[
+            str, tuple[_CounterEvidenceMaterial, list[str]]
+        ] = {}
+        assessment = _CounterEvidenceAssessment(
+            outcome=CounterEvidenceOutcome.INCONCLUSIVE,
+            statement=provisional_statement,
+            assessment="Counter-evidence analysis was not completed.",
+        )
+
+        max_backfill_rounds = 1
+        # Audit the initial portfolio, then allow one replacement round so a noisy
+        # top-five can recover without repeatedly extending the interactive request.
+        for backfill_round in range(max_backfill_rounds + 1):
+            materials, material_warnings = await self._counter_evidence_materials(
+                selected,
+                session_id=session_id,
+                cache=material_cache,
+            )
+            assessment, assessment_warnings = await self._assess_counter_evidence(
+                idea=idea,
+                provisional_statement=provisional_statement,
+                records=selected,
+                materials=materials,
+                gap_claims=gap_claims,
+            )
+            round_warnings = [*material_warnings, *assessment_warnings]
+            warnings.extend(
+                warning
+                for warning in round_warnings
+                if "structured-output recovery" in warning
+                or "semantic support could not" in warning
+            )
+
+            failed_keys = {
+                finding.result_key
+                for finding in assessment.findings
+                if finding.grounding_status is not GroundingStatus.GROUNDED
+                or finding.relevance_status is not CounterEvidenceRelevance.RELEVANT
+                or finding.support_status is not CounterEvidenceSupport.SUPPORTED
+            }
+            if not failed_keys:
+                warnings.extend(round_warnings)
+                break
+
+            retained = [
+                record
+                for record in selected
+                if _record_result_key(record) not in failed_keys
+            ]
+            needed = min(len(failed_keys), max(5 - len(retained), 0))
+            replacements: list[ScholarlyRecord] = []
+            if (
+                needed > 0
+                and backfill_round < max_backfill_rounds
+                and remaining
+            ):
+                replacements = await self._select_counter_evidence_records(
+                    remaining,
+                    limit=needed,
+                )
+                attempted_keys = {
+                    _record_result_key(record)
+                    for record in remaining
+                    if "counter_verification_status" in record.metadata
+                }
+                remaining = [
+                    record
+                    for record in remaining
+                    if _record_result_key(record) not in attempted_keys
+                ]
+
+            if not replacements:
+                cleanup_warnings = await self._delete_counter_material_objects(
+                    materials,
+                    result_keys=failed_keys,
+                )
+                warnings.extend(cleanup_warnings)
+                selected = retained
+                materials, material_warnings = await self._counter_evidence_materials(
+                    selected,
+                    session_id=session_id,
+                    cache=material_cache,
+                )
+                assessment, assessment_warnings = await self._assess_counter_evidence(
+                    idea=idea,
+                    provisional_statement=provisional_statement,
+                    records=selected,
+                    materials=materials,
+                    gap_claims=gap_claims,
+                )
+                warnings.extend(material_warnings)
+                warnings.extend(assessment_warnings)
+                warnings.append(
+                    f"Excluded {len(failed_keys)} counter-evidence source(s) that "
+                    "were not directly relevant, exactly grounded, and semantically "
+                    "supported; final "
+                    f"portfolio contains {len(selected)} source(s)."
+                )
+                break
+
+            cleanup_warnings = await self._delete_counter_material_objects(
+                materials,
+                result_keys=failed_keys,
+            )
+            warnings.extend(cleanup_warnings)
+            selected = [*retained, *replacements]
+            warnings.append(
+                f"Backfilled {len(replacements)} counter-evidence source(s) whose "
+                "assessments were not directly relevant, exactly grounded, and "
+                "semantically supported."
+            )
+
+        return selected, materials, assessment, list(dict.fromkeys(warnings))
+
+    async def _delete_counter_material_objects(
+        self,
+        materials: list[_CounterEvidenceMaterial],
+        *,
+        result_keys: set[str],
+    ) -> list[str]:
+        if self._object_storage is None:
+            return []
+        warnings: list[str] = []
+        for material in materials:
+            object_key = material.source_object_key
+            if (
+                object_key is None
+                or _record_result_key(material.record) not in result_keys
+            ):
+                continue
+            try:
+                await self._object_storage.delete_bytes(key=object_key)
+            except Exception as exc:  # noqa: BLE001 - cleanup is best effort
+                warnings.append(
+                    "Superseded counter-evidence source text could not be removed: "
+                    f"{type(exc).__name__}."
+                )
+        return warnings
 
     async def _verify_counter_evidence(
         self,
@@ -1394,7 +2055,9 @@ class ResearchService:
                     await self._verifier.verify(citation=record) for record in records
                 ]
             if len(verifications) != len(records):
-                raise ValueError("Counter-evidence verification coverage was incomplete")
+                raise ValueError(
+                    "Counter-evidence verification coverage was incomplete"
+                )
         except Exception as exc:  # noqa: BLE001 - retain retrieved metadata with a warning
             message = (
                 "Counter-evidence source identity could not be rechecked: "
@@ -1415,12 +2078,141 @@ class ResearchService:
                 verification.messages
             )
 
+    async def _counter_evidence_materials(
+        self,
+        records: list[ScholarlyRecord],
+        *,
+        session_id: UUID | None = None,
+        cache: dict[str, tuple[_CounterEvidenceMaterial, list[str]]] | None = None,
+    ) -> tuple[list[_CounterEvidenceMaterial], list[str]]:
+        material_cache = cache if cache is not None else {}
+        missing_records: dict[str, ScholarlyRecord] = {}
+        for record in records:
+            result_key = _record_result_key(record)
+            if result_key not in material_cache:
+                missing_records.setdefault(result_key, record)
+
+        async def load_material(
+            record: ScholarlyRecord,
+        ) -> tuple[_CounterEvidenceMaterial, list[str]]:
+            warnings: list[str] = []
+            document: DocumentText | None = None
+            if self._document_text_source is not None:
+                try:
+                    document = await self._document_text_source.fetch_text(
+                        record=record
+                    )
+                except Exception as exc:  # noqa: BLE001 - abstract fallback remains useful
+                    warnings.append(
+                        "Counter-evidence full text could not be fetched for "
+                        f"{record.title}: {_llm_failure_summary(exc)}"
+                    )
+            if document is not None and document.text.strip():
+                source_object_key = await self._persist_counter_evidence_text(
+                    session_id=session_id,
+                    record=record,
+                    source_text=document.text,
+                )
+                return (
+                    _CounterEvidenceMaterial(
+                        record=record,
+                        source_text=document.text[:24_000],
+                        source_kind=document.source_kind,
+                        source_location=_document_location(document, record),
+                        source_object_key=source_object_key,
+                    ),
+                    warnings,
+                )
+            abstract = (record.abstract or "").strip()
+            if abstract:
+                source_object_key = await self._persist_counter_evidence_text(
+                    session_id=session_id,
+                    record=record,
+                    source_text=abstract,
+                )
+                return (
+                    _CounterEvidenceMaterial(
+                        record=record,
+                        source_text=abstract,
+                        source_kind="abstract",
+                        source_location="Abstract",
+                        source_object_key=source_object_key,
+                    ),
+                    warnings,
+                )
+            warnings.append(
+                "Counter-evidence content was unavailable for "
+                f"{record.title}; its impact remains inconclusive."
+            )
+            return (
+                _CounterEvidenceMaterial(
+                    record=record,
+                    source_text="",
+                    source_kind="metadata_only",
+                    source_location="Metadata only",
+                ),
+                warnings,
+            )
+
+        loaded = await asyncio.gather(
+            *(load_material(record) for record in missing_records.values())
+        )
+        warnings: list[str] = []
+        for result_key, (material, material_warnings) in zip(
+            missing_records,
+            loaded,
+            strict=True,
+        ):
+            material_cache[result_key] = (material, material_warnings)
+        requested_keys = list(
+            dict.fromkeys(_record_result_key(record) for record in records)
+        )
+        for result_key in requested_keys:
+            warnings.extend(material_cache[result_key][1])
+        materials = [
+            material_cache[_record_result_key(record)][0] for record in records
+        ]
+        return materials, warnings
+
+    async def _persist_counter_evidence_text(
+        self,
+        *,
+        session_id: UUID | None,
+        record: ScholarlyRecord,
+        source_text: str,
+    ) -> str | None:
+        if session_id is None or self._object_storage is None:
+            return None
+        data = source_text.encode("utf-8")
+        checksum = hashlib.sha256(data).hexdigest()
+        result_digest = hashlib.sha256(
+            _record_result_key(record).encode("utf-8")
+        ).hexdigest()[:16]
+        key = (
+            f"research/{session_id}/gap/counter-evidence/"
+            f"{result_digest}/{checksum}.txt"
+        )
+        try:
+            stored_key = await self._object_storage.put_bytes(
+                key=key,
+                data=data,
+                content_type="text/plain; charset=utf-8",
+            )
+        except Exception as exc:
+            raise ResearchGenerationError(
+                "Counter-evidence source text could not be persisted to object "
+                f"storage for {record.title}: {type(exc).__name__}"
+            ) from exc
+        return stored_key
+
     async def _assess_counter_evidence(
         self,
         *,
         idea: dict[str, Any],
         provisional_statement: str,
         records: list[ScholarlyRecord],
+        materials: list[_CounterEvidenceMaterial] | None = None,
+        gap_claims: list[_GapClaim] | None = None,
     ) -> tuple[_CounterEvidenceAssessment, list[str]]:
         if not records:
             return (
@@ -1428,29 +2220,62 @@ class ResearchService:
                     outcome=CounterEvidenceOutcome.INCONCLUSIVE,
                     statement=provisional_statement,
                     assessment=(
-                        "Counter-evidence search returned no analyzable results; this does "
-                        "not establish novelty."
+                        "No counter-evidence source met the relevance and source-support "
+                        "checks. The limitations below remain plausible, but unconfirmed."
                     ),
                 ),
                 [
                     (
-                        "Counter-evidence search was inconclusive; an empty result set is "
-                        "not evidence that the Gap exists."
+                        "No sufficiently relevant counter-evidence was available to "
+                        "confirm or rule out the potential Gap."
                     )
                 ],
             )
-        payloads = [_counter_record_payload(record) for record in records]
+        material_by_key = {
+            _record_result_key(item.record): item for item in (materials or [])
+        }
+        payloads = []
+        for record in records:
+            payload = _counter_record_payload(record)
+            material = material_by_key.get(payload["result_key"])
+            payload.update(
+                {
+                    "source_text": material.source_text if material else "",
+                    "source_kind": material.source_kind
+                    if material
+                    else "metadata_only",
+                    "source_location": (
+                        material.source_location if material else "Metadata only"
+                    ),
+                }
+            )
+            payloads.append(payload)
         required_keys = [item["result_key"] for item in payloads]
+        required_claim_ids = [item.claim_id for item in (gap_claims or [])]
         counter_system = (
             _idea_language_instruction(idea)
             + "research-counter-analysis: return only one JSON object with exactly "
-            "outcome, statement, assessment, covered_result_keys, and findings. "
+            "outcome, statement, assessment, covered_result_keys, findings, and "
+            "claim_assessments. "
             "Use exactly this shape: "
             '{"outcome":"inconclusive","statement":"...","assessment":"...",'
             '"covered_result_keys":["..."],"findings":[{"result_key":"...",'
-            '"impact":"inconclusive","rationale":"..."}]}. '
+            '"impact":"inconclusive","relevance_status":"relevant",'
+            '"rationale":"...","claim_ids":["c1"],'
+            '"supporting_passage":"...","source_location":"Abstract"}],'
+            '"claim_assessments":[{"claim_id":"c1","outcome":"inconclusive",'
+            '"assessment":"...","revised_statement":null,'
+            '"counter_evidence_result_keys":["..."]}]}. '
             "findings must contain exactly one object per result with result_key, "
-            "impact, and a concise source-specific rationale. outcome and each impact "
+            "claim_ids, impact, relevance_status, a concise source-specific rationale, "
+            "an exact verbatim supporting_passage from source_text, and source_location. "
+            "relevance_status must be relevant, irrelevant, or uncertain. Mark relevant "
+            "only when the source directly concerns LLM reasoning or Chain of Thought and "
+            "can test or materially contextualize at least one supplied Gap claim. Shared "
+            "tokens such as retry, critic, verifier, CoT, or an acronym with a different "
+            "meaning are not sufficient. Mark different domains and different acronym "
+            "senses irrelevant. claim_assessments "
+            "must contain exactly one assessment per supplied Gap claim. outcome and each impact "
             "must be one of no_direct_counter_evidence, gap_narrowed, "
             "gap_not_supported, or inconclusive. Read every supplied result and "
             "actively look for work that already addresses the proposed limitation or "
@@ -1458,15 +2283,20 @@ class ResearchService:
             "narrowed. If a result already addresses it, use gap_not_supported. Never "
             "infer novelty from missing results or weak metadata. Treat warning "
             "verification as lower confidence and never rely on rejected results. "
+            "When source_text is empty, use inconclusive and an empty supporting passage. "
             "covered_result_keys and the finding result_keys must include every "
-            "required_result_key exactly once. Do not use markdown, reasoning, or "
+            "required_result_key exactly once. Every finding.claim_ids must contain "
+            "every required_claim_id, and every claim assessment must contain every "
+            "required_result_key in counter_evidence_result_keys. Do not use markdown, reasoning, or "
             "explanations."
         )
         counter_request = {
             "idea": idea,
             "provisional_gap_candidate": provisional_statement,
+            "gap_claims": [item.model_dump(mode="json") for item in (gap_claims or [])],
             "counter_evidence_results": payloads,
             "required_result_keys": required_keys,
+            "required_claim_ids": required_claim_ids,
         }
         try:
             raw = await self._llm.complete(
@@ -1477,25 +2307,49 @@ class ResearchService:
                     ensure_ascii=False,
                 ),
             )
+            normalization_warning = ""
             try:
-                assessment = _validated_counter_evidence_assessment(raw, required_keys)
-            except (ValidationError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                assessment = _validated_counter_evidence_assessment(
+                    raw,
+                    required_keys,
+                    required_claim_ids,
+                )
+            except (
+                ValidationError,
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 repaired_raw = await self._llm.complete(
                     system=(
                         _idea_language_instruction(idea)
                         + "research-counter-analysis-repair: correct the previous "
                         "counter-evidence response. Return only one valid JSON object "
                         "with exactly outcome, statement, assessment, "
-                        "covered_result_keys, and findings. Use exactly this shape: "
+                        "covered_result_keys, findings, and claim_assessments. Use exactly "
+                        "this shape: "
                         '{"outcome":"inconclusive","statement":"...",'
                         '"assessment":"...","covered_result_keys":["..."],'
-                        '"findings":[{"result_key":"...","impact":"inconclusive",'
-                        '"rationale":"..."}]}. Each finding must have '
-                        "result_key, impact, and rationale. Return every required key "
+                        '"findings":[{"result_key":"...","claim_ids":["c1"],'
+                        '"impact":"inconclusive","relevance_status":"relevant",'
+                        '"rationale":"...",'
+                        '"supporting_passage":"...","source_location":"Abstract"}],'
+                        '"claim_assessments":[{"claim_id":"c1",'
+                        '"outcome":"inconclusive","assessment":"...",'
+                        '"revised_statement":null,'
+                        '"counter_evidence_result_keys":["..."]}]}. Each finding must have '
+                        "result_key, claim_ids, impact, relevance_status, rationale, "
+                        "supporting_passage, and source_location. relevance_status must be "
+                        "relevant, irrelevant, or uncertain and must reject different domains "
+                        "or ambiguous acronym matches. Return every required key "
                         "exactly once in covered_result_keys and findings. outcome and "
                         "impact must use only no_direct_counter_evidence, gap_narrowed, "
                         "gap_not_supported, or inconclusive. Make outcome consistent "
-                        "with the finding impacts. Do not use markdown, reasoning, or "
+                        "with findings and return every required claim exactly once in "
+                        "claim_assessments. Every finding.claim_ids must contain every "
+                        "required_claim_id, and every claim assessment must reference every "
+                        "required_result_key. Make the global outcome consistent with the "
+                        "claim and finding impacts. Do not use markdown, reasoning, or "
                         "explanations."
                     ),
                     prompt=json.dumps(
@@ -1509,11 +2363,59 @@ class ResearchService:
                         ensure_ascii=False,
                     ),
                 )
-                assessment = _validated_counter_evidence_assessment(
-                    repaired_raw,
-                    required_keys,
-                )
-            return assessment, []
+                try:
+                    assessment = _validated_counter_evidence_assessment(
+                        repaired_raw,
+                        required_keys,
+                        required_claim_ids,
+                    )
+                except (
+                    ValidationError,
+                    json.JSONDecodeError,
+                    TypeError,
+                    ValueError,
+                ):
+                    assessment, recovery_warnings = (
+                        await self._recover_counter_evidence_by_source(
+                            idea=idea,
+                            provisional_statement=provisional_statement,
+                            payloads=payloads,
+                            gap_claims=gap_claims or [],
+                        )
+                    )
+                    recovered_count = sum(
+                        item.grounding_status is GroundingStatus.PENDING
+                        and bool(item.supporting_passage)
+                        for item in assessment.findings
+                    )
+                    if recovery_warnings:
+                        normalization_warning = (
+                            "Bulk counter-evidence response remained structurally "
+                            "incomplete after repair; analysis continued independently "
+                            f"per source ({recovered_count}/{len(required_keys)} source "
+                            "response(s) recovered). "
+                            f"{' '.join(recovery_warnings)}"
+                        )
+                    else:
+                        # The alternate source-level path fully recovered the audit.
+                        # Do not surface an internal bulk-format failure to the user.
+                        normalization_warning = ""
+                else:
+                    normalization_warning = ""
+            grounded, grounding_warnings = _ground_counter_evidence_assessment(
+                assessment,
+                materials or [],
+                gap_claims or [],
+            )
+            supported, support_warnings = await self._validate_counter_support(
+                idea=idea,
+                assessment=grounded,
+                materials=materials or [],
+                gap_claims=gap_claims or [],
+            )
+            if normalization_warning:
+                grounding_warnings.insert(0, normalization_warning)
+            return supported, [*grounding_warnings, *support_warnings]
         except Exception as exc:  # noqa: BLE001 - absence must remain inconclusive
             return (
                 _CounterEvidenceAssessment(
@@ -1528,6 +2430,393 @@ class ResearchService:
                     )
                 ],
             )
+
+    async def _validate_counter_support(
+        self,
+        *,
+        idea: dict[str, Any],
+        assessment: _CounterEvidenceAssessment,
+        materials: list[_CounterEvidenceMaterial],
+        gap_claims: list[_GapClaim],
+    ) -> tuple[_CounterEvidenceAssessment, list[str]]:
+        """Check that each source-specific rationale follows from retrieved content."""
+
+        material_by_key = {
+            _record_result_key(item.record): item for item in materials
+        }
+        eligible = [
+            finding
+            for finding in assessment.findings
+            if finding.grounding_status is GroundingStatus.GROUNDED
+            and finding.relevance_status is CounterEvidenceRelevance.RELEVANT
+            and (material := material_by_key.get(finding.result_key)) is not None
+            and bool(material.source_text)
+        ]
+        statuses: dict[str, CounterEvidenceSupport] = {}
+        warnings: list[str] = []
+        if eligible:
+            required_keys = [item.result_key for item in eligible]
+            finding_payloads = [
+                {
+                    **item.model_dump(mode="json"),
+                    "source_text": material_by_key[item.result_key].source_text,
+                    "source_kind": material_by_key[item.result_key].source_kind,
+                }
+                for item in eligible
+            ]
+            request = {
+                "required_result_keys": required_keys,
+                "gap_claims": [
+                    item.model_dump(mode="json") for item in gap_claims
+                ],
+                "findings": finding_payloads,
+            }
+            validation_failures: list[str] = []
+            try:
+                raw = await self._llm.complete(
+                    system=(
+                        _idea_language_instruction(idea)
+                        + "research-counter-support-check: independently verify whether "
+                        "each source-specific rationale and impact are semantically supported "
+                        "by the supplied source_text and linked atomic Gap claims. Return only "
+                        "JSON with assessments, containing exactly one object per required "
+                        "result_key with result_key and support_status. support_status must be "
+                        "supported, unsupported, or uncertain. Exact quote presence alone is "
+                        "not enough. Use unsupported when the rationale introduces a fact, "
+                        "mechanism, number, comparison, or conclusion absent from source_text, "
+                        "or when the quoted passage is unrelated to the rationale. Use uncertain "
+                        "when an abstract is too limited to justify a paper-wide absence claim. "
+                        "Use supported only when the supplied content warrants the stated impact."
+                    ),
+                    prompt=json.dumps(request, default=str, ensure_ascii=False),
+                )
+                parsed = _validated_counter_support_response(
+                    raw,
+                    required_keys,
+                )
+            except Exception as first_exc:  # noqa: BLE001 - bounded repair follows
+                validation_failures.append(_structured_failure_detail(first_exc))
+                try:
+                    repaired_raw = await self._llm.complete(
+                        system=(
+                            _idea_language_instruction(idea)
+                            + "research-counter-support-repair: repair the previous "
+                            "response. Return only JSON with assessments and exactly one "
+                            "object per required_result_key. Each object must contain "
+                            "result_key and support_status using supported, unsupported, "
+                            "or uncertain."
+                        ),
+                        prompt=json.dumps(
+                            {
+                                **request,
+                                "validation_error": validation_failures[-1],
+                                "previous_response": str(locals().get("raw", ""))[
+                                    -8_000:
+                                ],
+                            },
+                            default=str,
+                            ensure_ascii=False,
+                        ),
+                    )
+                    parsed = _validated_counter_support_response(
+                        repaired_raw,
+                        required_keys,
+                    )
+                except Exception as repair_exc:  # noqa: BLE001 - item recovery
+                    validation_failures.append(
+                        _structured_failure_detail(repair_exc)
+                    )
+
+                    async def assess_one(payload: dict[str, Any]) -> object:
+                        return await self._llm.complete(
+                            system=(
+                                _idea_language_instruction(idea)
+                                + "research-counter-support-item-check: assess exactly "
+                                "one source finding and return JSON with result_key and "
+                                "support_status. support_status must be supported, "
+                                "unsupported, or uncertain."
+                            ),
+                            prompt=json.dumps(
+                                {
+                                    "required_result_keys": [payload["result_key"]],
+                                    "gap_claims": request["gap_claims"],
+                                    "finding": payload,
+                                },
+                                default=str,
+                                ensure_ascii=False,
+                            ),
+                        )
+
+                    responses = await asyncio.gather(
+                        *(assess_one(item) for item in finding_payloads),
+                        return_exceptions=True,
+                    )
+                    recovered: list[_CounterSupportItem] = []
+                    failed_keys: list[str] = []
+                    for payload, response in zip(
+                        finding_payloads,
+                        responses,
+                        strict=True,
+                    ):
+                        result_key = str(payload["result_key"])
+                        try:
+                            if isinstance(response, BaseException):
+                                raise response
+                            item_response = _validated_counter_support_response(
+                                str(response),
+                                [result_key],
+                            )
+                            recovered.extend(item_response.assessments)
+                        except Exception:  # noqa: BLE001 - item stays uncertain
+                            failed_keys.append(result_key)
+                            recovered.append(
+                                _CounterSupportItem(
+                                    result_key=result_key,
+                                    support_status=CounterEvidenceSupport.UNCERTAIN,
+                                )
+                            )
+                    parsed = _CounterSupportResponse(assessments=recovered)
+                    validation_failures.append(
+                        "per-source recovery left "
+                        f"{len(failed_keys)}/{len(required_keys)} source(s) uncertain"
+                    )
+            statuses = {
+                item.result_key: item.support_status for item in parsed.assessments
+            }
+            if validation_failures:
+                warnings.append(
+                    "Counter-evidence semantic support used structured-output "
+                    "recovery: "
+                    + " | ".join(dict.fromkeys(validation_failures))
+                )
+
+        unsupported_keys: list[str] = []
+        uncertain_keys: list[str] = []
+        for finding in assessment.findings:
+            finding.support_status = statuses.get(
+                finding.result_key,
+                CounterEvidenceSupport.UNCERTAIN,
+            )
+            if finding.support_status is not CounterEvidenceSupport.SUPPORTED:
+                finding.impact = CounterEvidenceOutcome.INCONCLUSIVE
+                if finding.support_status is CounterEvidenceSupport.UNSUPPORTED:
+                    unsupported_keys.append(finding.result_key)
+                else:
+                    uncertain_keys.append(finding.result_key)
+
+        findings_by_key = {
+            finding.result_key: finding for finding in assessment.findings
+        }
+        for claim in assessment.claim_assessments:
+            linked = [
+                findings_by_key[key]
+                for key in claim.counter_evidence_result_keys
+                if key in findings_by_key
+            ]
+            if not linked or any(
+                item.support_status is not CounterEvidenceSupport.SUPPORTED
+                for item in linked
+            ):
+                claim.outcome = CounterEvidenceOutcome.INCONCLUSIVE
+        impacts = (
+            {item.outcome for item in assessment.claim_assessments}
+            if assessment.claim_assessments
+            else {item.impact for item in assessment.findings}
+        )
+        assessment.outcome = _aggregate_counter_outcome(impacts)
+        if unsupported_keys:
+            warnings.append(
+                f"{len(unsupported_keys)} counter-evidence rationale(s) were not "
+                "semantically supported by retrieved source content and were downgraded "
+                f"to inconclusive: {', '.join(unsupported_keys)}."
+            )
+        if uncertain_keys:
+            warnings.append(
+                f"{len(uncertain_keys)} counter-evidence rationale(s) could not be "
+                "semantically validated conclusively and were downgraded to "
+                f"inconclusive: {', '.join(uncertain_keys)}."
+            )
+        return assessment, warnings
+
+    async def _recover_counter_evidence_by_source(
+        self,
+        *,
+        idea: dict[str, Any],
+        provisional_statement: str,
+        payloads: list[dict[str, Any]],
+        gap_claims: list[_GapClaim],
+    ) -> tuple[_CounterEvidenceAssessment, list[str]]:
+        """Recover a failed bulk audit with bounded source-level completions."""
+
+        claim_ids = [item.claim_id for item in gap_claims]
+        system = (
+            _idea_language_instruction(idea)
+            + "research-counter-source-analysis: analyze exactly one supplied source. "
+            "Return only JSON with result_key, impact, relevance_status, rationale, "
+            "supporting_passage, source_location, and claim_findings. Use this shape: "
+            '{"result_key":"...","impact":"inconclusive",'
+            '"relevance_status":"relevant","rationale":"...",'
+            '"supporting_passage":"exact quote","source_location":"Abstract",'
+            '"claim_findings":[{"claim_id":"c1","impact":"inconclusive",'
+            '"rationale":"...","revised_statement":null}]}. '
+            "Evaluate every supplied Gap claim against this source and return every "
+            "required claim_id exactly once. impact must be one of "
+            "no_direct_counter_evidence, gap_narrowed, gap_not_supported, or "
+            "inconclusive. relevance_status must be relevant, irrelevant, or uncertain. "
+            "Mark relevant only if the source directly concerns LLM reasoning or Chain of "
+            "Thought and can assess at least one Gap claim; reject different domains and "
+            "ambiguous acronym matches. Copy one exact, contiguous supporting passage from "
+            "source_text. If source_text is empty or no passage supports the analysis, "
+            "use inconclusive and an empty passage. Never infer novelty from absence. "
+            "Do not use markdown or explanatory text outside JSON."
+        )
+
+        async def analyze_source(payload: dict[str, Any]) -> object:
+            return await self._llm.complete(
+                system=system,
+                prompt=json.dumps(
+                    {
+                        "provisional_gap_candidate": provisional_statement,
+                        "gap_claims": [
+                            item.model_dump(mode="json") for item in gap_claims
+                        ],
+                        "counter_evidence_result": payload,
+                        "required_result_key": payload["result_key"],
+                        "required_claim_ids": claim_ids,
+                    },
+                    default=str,
+                    ensure_ascii=False,
+                ),
+            )
+
+        responses = await asyncio.gather(
+            *(analyze_source(payload) for payload in payloads),
+            return_exceptions=True,
+        )
+        source_assessments: list[_CounterSourceAssessment] = []
+        failed_keys: list[str] = []
+        for payload, response in zip(payloads, responses, strict=True):
+            result_key = str(payload["result_key"])
+            try:
+                if isinstance(response, BaseException):
+                    raise response
+                parsed = _CounterSourceAssessment.model_validate(
+                    _json_value(str(response), dict)
+                )
+                if parsed.result_key != result_key:
+                    raise ValueError("Source analysis returned the wrong result_key")
+                returned_claim_ids = [item.claim_id for item in parsed.claim_findings]
+                if len(set(returned_claim_ids)) != len(returned_claim_ids) or set(
+                    returned_claim_ids
+                ) != set(claim_ids):
+                    raise ValueError("Source analysis did not cover every Gap claim")
+                if parsed.impact is not _aggregate_counter_outcome(
+                    {item.impact for item in parsed.claim_findings}
+                    if parsed.claim_findings
+                    else {parsed.impact}
+                ):
+                    raise ValueError("Source outcome was inconsistent with claim impacts")
+            except Exception:  # noqa: BLE001 - one source must not discard the audit
+                failed_keys.append(result_key)
+                parsed = _CounterSourceAssessment(
+                    result_key=result_key,
+                    impact=CounterEvidenceOutcome.INCONCLUSIVE,
+                    relevance_status=CounterEvidenceRelevance.UNCERTAIN,
+                    rationale=(
+                        "This source could not be analyzed with the required structured "
+                        "fields."
+                    ),
+                    claim_findings=[
+                        _CounterSourceClaimFinding(
+                            claim_id=claim_id,
+                            impact=CounterEvidenceOutcome.INCONCLUSIVE,
+                            rationale=(
+                                "This claim could not be validated against this source."
+                            ),
+                        )
+                        for claim_id in claim_ids
+                    ],
+                )
+            source_assessments.append(parsed)
+
+        findings = [
+            _CounterEvidenceFinding(
+                result_key=item.result_key,
+                claim_ids=[claim.claim_id for claim in item.claim_findings],
+                impact=item.impact,
+                relevance_status=item.relevance_status,
+                rationale=item.rationale,
+                supporting_passage=item.supporting_passage,
+                source_location=item.source_location,
+            )
+            for item in source_assessments
+        ]
+        claim_assessments: list[_CounterEvidenceClaimAssessment] = []
+        for claim in gap_claims:
+            source_findings = [
+                next(
+                    item
+                    for item in source.claim_findings
+                    if item.claim_id == claim.claim_id
+                )
+                for source in source_assessments
+            ]
+            outcome = _aggregate_counter_outcome(
+                {item.impact for item in source_findings}
+            )
+            revised = next(
+                (
+                    item.revised_statement.strip()
+                    for item in source_findings
+                    if item.impact is CounterEvidenceOutcome.GAP_NARROWED
+                    and item.revised_statement
+                    and item.revised_statement.strip()
+                ),
+                None,
+            )
+            if outcome is CounterEvidenceOutcome.GAP_NARROWED and not revised:
+                outcome = CounterEvidenceOutcome.INCONCLUSIVE
+            claim_assessments.append(
+                _CounterEvidenceClaimAssessment(
+                    claim_id=claim.claim_id,
+                    outcome=outcome,
+                    assessment=" ".join(
+                        dict.fromkeys(item.rationale for item in source_findings)
+                    ),
+                    revised_statement=revised,
+                    counter_evidence_result_keys=[
+                        item.result_key for item in source_assessments
+                    ],
+                )
+            )
+
+        impacts = (
+            {item.outcome for item in claim_assessments}
+            if claim_assessments
+            else {item.impact for item in findings}
+        )
+        assessment = _CounterEvidenceAssessment(
+            outcome=_aggregate_counter_outcome(impacts),
+            statement=provisional_statement,
+            assessment=(
+                "Counter-evidence was analyzed independently per source after the "
+                "combined response could not be validated."
+            ),
+            covered_result_keys=[item.result_key for item in source_assessments],
+            findings=findings,
+            claim_assessments=claim_assessments,
+        )
+        warnings = (
+            [
+                (
+                    f"{len(failed_keys)} source-level counter-evidence response(s) "
+                    "still lacked the required fields and remain inconclusive."
+                )
+            ]
+            if failed_keys
+            else []
+        )
+        return assessment, warnings
 
     async def _persist_document_text(
         self,
@@ -1773,35 +3062,83 @@ class ResearchService:
         )
         return list(rows.all())
 
-    async def _delete_replaced_related_work(
-        self,
-        session_id: UUID,
-        *,
-        retained_citation_ids: list[UUID],
-    ) -> None:
-        finding_filters = [
-            RelatedWorkFinding.session_id == session_id,
-            RelatedWorkFinding.stage_revision_id.is_(None),
-        ]
-        citation_filters = [
-            Citation.session_id == session_id,
-            Citation.stage_revision_id.is_(None),
-        ]
-        if retained_citation_ids:
-            finding_filters.append(
-                RelatedWorkFinding.citation_id.not_in(retained_citation_ids)
+    async def _delete_working_related_work(self, session_id: UUID) -> None:
+        object_keys = {
+            key
+            for key in (
+                await self._db.scalars(
+                    select(Citation.text_object_key).where(
+                        Citation.session_id == session_id,
+                        Citation.stage_revision_id.is_(None),
+                        Citation.text_object_key.is_not(None),
+                    )
+                )
+            ).all()
+            if key
+        }
+        if object_keys:
+            referenced_keys = {
+                key
+                for key in (
+                    await self._db.scalars(
+                        select(Citation.text_object_key).where(
+                            Citation.session_id == session_id,
+                            Citation.stage_revision_id.is_not(None),
+                            Citation.text_object_key.in_(object_keys),
+                        )
+                    )
+                ).all()
+                if key
+            }
+            await self._delete_object_keys(object_keys - referenced_keys)
+        await self._db.execute(
+            delete(RelatedWorkFinding).where(
+                RelatedWorkFinding.session_id == session_id,
+                RelatedWorkFinding.stage_revision_id.is_(None),
             )
-            citation_filters.append(Citation.id.not_in(retained_citation_ids))
-        await self._db.execute(delete(RelatedWorkFinding).where(*finding_filters))
-        await self._db.execute(delete(Citation).where(*citation_filters))
+        )
+        await self._db.execute(
+            delete(Citation).where(
+                Citation.session_id == session_id,
+                Citation.stage_revision_id.is_(None),
+            )
+        )
 
-    async def _delete_working_gap_card(self, session_id: UUID) -> None:
+    async def _delete_working_gap(self, session_id: UUID) -> None:
+        saved_narratives = await self._db.scalar(
+            select(LoopSession.working_draft_narratives).where(
+                LoopSession.id == session_id
+            )
+        )
+        gap_narrative = dict(saved_narratives or {}).get(ResearchNode.GAP.value, {})
+        object_keys = _counter_evidence_object_keys(gap_narrative)
+        if object_keys:
+            revision_narratives = (
+                await self._db.scalars(
+                    select(StageRevision.narrative).where(
+                        StageRevision.session_id == session_id,
+                        StageRevision.node == ResearchNode.GAP.value,
+                    )
+                )
+            ).all()
+            referenced_keys = {
+                key
+                for narrative in revision_narratives
+                for key in _counter_evidence_object_keys(narrative)
+            }
+            await self._delete_object_keys(object_keys - referenced_keys)
         await self._db.execute(
             delete(Card).where(
                 Card.session_id == session_id,
                 Card.kind == CardKind.GAP.value,
             )
         )
+
+    async def _delete_object_keys(self, keys: set[str]) -> None:
+        if self._object_storage is None:
+            return
+        for key in sorted(keys):
+            await self._object_storage.delete_bytes(key=key)
 
     async def _set_narrative(
         self,
@@ -1952,6 +3289,232 @@ def _json_value(raw: str, expected: type[dict | list]) -> Any:
     raise TypeError(f"Expected {expected.__name__} JSON")
 
 
+def _normalized_support_items(
+    raw: str,
+    *,
+    identifier_field: str,
+    required_identifiers: list[str],
+) -> list[dict[str, Any]]:
+    """Normalize common structured-output wrappers and support-status aliases."""
+
+    try:
+        value: object = _json_value(raw, list)
+    except (json.JSONDecodeError, TypeError):
+        value = _json_value(raw, dict)
+
+    def unwrap(candidate: object) -> list[object]:
+        if isinstance(candidate, list):
+            return candidate
+        if not isinstance(candidate, dict):
+            return []
+        if any(
+            key in candidate
+            for key in (
+                identifier_field,
+                "claim_id",
+                "result_key",
+                "id",
+                "key",
+            )
+        ):
+            return [candidate]
+        if any(
+            key in candidate
+            for key in (
+                "support_status",
+                "status",
+                "support",
+                "verdict",
+                "entailed",
+                "is_supported",
+                "supported",
+            )
+        ):
+            return [candidate]
+        for wrapper in (
+            "assessments",
+            "results",
+            "items",
+            "data",
+            "output",
+            "response",
+        ):
+            if wrapper in candidate:
+                unwrapped = unwrap(candidate[wrapper])
+                if unwrapped:
+                    return unwrapped
+        if candidate and all(not isinstance(item, (dict, list)) for item in candidate.values()):
+            return [
+                {identifier_field: key, "support_status": status}
+                for key, status in candidate.items()
+            ]
+        return []
+
+    items = unwrap(value)
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        identifier = next(
+            (
+                str(item[key]).strip()
+                for key in (
+                    identifier_field,
+                    "claim_id",
+                    "result_key",
+                    "id",
+                    "key",
+                )
+                if item.get(key) is not None and str(item[key]).strip()
+            ),
+            "",
+        )
+        if not identifier and len(required_identifiers) == 1:
+            identifier = required_identifiers[0]
+        raw_status = next(
+            (
+                item[key]
+                for key in (
+                    "support_status",
+                    "status",
+                    "support",
+                    "verdict",
+                    "entailed",
+                    "is_supported",
+                    "supported",
+                )
+                if key in item
+            ),
+            None,
+        )
+        status = _normalized_support_status(raw_status)
+        if identifier:
+            normalized_item: dict[str, Any] = {
+                identifier_field: identifier,
+                "support_status": status.value,
+            }
+            if identifier_field == "claim_id":
+                atomicity = next(
+                    (
+                        item[key]
+                        for key in (
+                            "atomicity_status",
+                            "atomicity",
+                            "is_atomic",
+                            "atomic",
+                        )
+                        if key in item
+                    ),
+                    None,
+                )
+                evidence_span = next(
+                    (
+                        str(item[key]).strip()
+                        for key in (
+                            "evidence_span",
+                            "supporting_span",
+                            "exact_evidence",
+                            "quote",
+                        )
+                        if item.get(key) is not None and str(item[key]).strip()
+                    ),
+                    "",
+                )
+                normalized_item.update(
+                    {
+                        "atomicity_status": _normalized_atomicity_status(atomicity),
+                        "evidence_span": evidence_span,
+                        "unsupported_fragments": _string_list(
+                            item.get("unsupported_fragments")
+                        ),
+                    }
+                )
+            normalized.append(normalized_item)
+    return normalized
+
+
+def _normalized_atomicity_status(value: object) -> str:
+    if value is True:
+        return "atomic"
+    if value is False:
+        return "compound"
+    folded = re.sub(r"[^a-z]+", "_", str(value or "").casefold()).strip("_")
+    if folded in {"atomic", "single", "one_claim", "indivisible"}:
+        return "atomic"
+    if folded in {"compound", "composite", "multiple", "not_atomic"}:
+        return "compound"
+    return "uncertain"
+
+
+def _normalized_support_status(value: object) -> CounterEvidenceSupport:
+    if value is True:
+        return CounterEvidenceSupport.SUPPORTED
+    if value is False:
+        return CounterEvidenceSupport.UNSUPPORTED
+    folded = re.sub(r"[^a-z]+", "_", str(value or "").casefold()).strip("_")
+    if folded in {
+        "supported",
+        "support",
+        "yes",
+        "true",
+        "entailed",
+        "directly_supported",
+    }:
+        return CounterEvidenceSupport.SUPPORTED
+    if folded in {
+        "unsupported",
+        "not_supported",
+        "no",
+        "false",
+        "contradicted",
+        "not_entailed",
+    }:
+        return CounterEvidenceSupport.UNSUPPORTED
+    return CounterEvidenceSupport.UNCERTAIN
+
+
+def _validated_gap_claim_support_response(
+    raw: str,
+    required_claim_ids: list[str],
+) -> _GapClaimSupportResponse:
+    response = _GapClaimSupportResponse.model_validate(
+        {
+            "assessments": _normalized_support_items(
+                raw,
+                identifier_field="claim_id",
+                required_identifiers=required_claim_ids,
+            )
+        }
+    )
+    returned_ids = [item.claim_id for item in response.assessments]
+    if len(set(returned_ids)) != len(returned_ids):
+        raise ValueError("Gap claim support check returned duplicate claim identifiers")
+    if set(returned_ids) != set(required_claim_ids):
+        raise ValueError("Gap claim support check did not cover every candidate")
+    return response
+
+
+def _validated_counter_support_response(
+    raw: str,
+    required_result_keys: list[str],
+) -> _CounterSupportResponse:
+    response = _CounterSupportResponse.model_validate(
+        {
+            "assessments": _normalized_support_items(
+                raw,
+                identifier_field="result_key",
+                required_identifiers=required_result_keys,
+            )
+        }
+    )
+    returned_keys = [item.result_key for item in response.assessments]
+    if len(set(returned_keys)) != len(returned_keys):
+        raise ValueError("Counter support check returned duplicate source identifiers")
+    if set(returned_keys) != set(required_result_keys):
+        raise ValueError("Counter support check did not cover every required source")
+    return response
+
+
 def _validated_rerank_response(
     raw: str,
     expected_keys: list[str],
@@ -1965,9 +3528,297 @@ def _validated_rerank_response(
     return response
 
 
+def _portfolio_order_records(
+    records: list[ScholarlyRecord],
+    *,
+    queries: list[str],
+) -> list[ScholarlyRecord]:
+    """Order candidates as a relevant, evidence-rich, non-redundant portfolio.
+
+    The LLM/heuristic rank remains the dominant signal. The greedy portfolio pass
+    adds bounded bonuses for explicit source quality and new query/publication
+    coverage, while penalizing near-duplicates. It orders the full candidate list
+    so both Related Work document backfill and counter-evidence verification backfill
+    use the same policy.
+    """
+    if len(records) < 2:
+        for rank, record in enumerate(records, start=1):
+            _set_portfolio_metadata(
+                record,
+                rank=rank,
+                score=_record_relevance_score(record, rank - 1, len(records)),
+                evidence_quality=_record_evidence_quality(record),
+                query_coverage=_record_query_coverage(record, queries),
+                redundancy=0.0,
+            )
+        return list(records)
+
+    record_count = len(records)
+    remaining = list(range(record_count))
+    selected_indexes: list[int] = []
+    covered_queries: set[int] = set()
+    covered_kinds: set[str] = set()
+    covered_venues: set[str] = set()
+    ordered: list[ScholarlyRecord] = []
+    relevance_by_index = {
+        index: _record_relevance_score(record, index, record_count)
+        for index, record in enumerate(records)
+    }
+    quality_by_index = {
+        index: _record_evidence_quality(record) for index, record in enumerate(records)
+    }
+    queries_by_index = {
+        index: _record_query_coverage(record, queries)
+        for index, record in enumerate(records)
+    }
+    kinds_by_index = {
+        index: _publication_kinds(record) for index, record in enumerate(records)
+    }
+    venues_by_index = {
+        index: _comparison_text(record.venue or "")
+        for index, record in enumerate(records)
+    }
+    similarity_by_pair: dict[tuple[int, int], float] = {}
+
+    def similarity(first_index: int, second_index: int) -> float:
+        pair: tuple[int, int] = (
+            (first_index, second_index)
+            if first_index <= second_index
+            else (second_index, first_index)
+        )
+        cached = similarity_by_pair.get(pair)
+        if cached is None:
+            cached = _record_content_similarity(
+                records[first_index], records[second_index]
+            )
+            similarity_by_pair[pair] = cached
+        return cached
+
+    while remaining:
+        best_position = 0
+        best_details: tuple[float, float, set[int], float] | None = None
+        best_key: tuple[float, float, int] | None = None
+        for position, original_index in enumerate(remaining):
+            relevance = relevance_by_index[original_index]
+            evidence_quality = quality_by_index[original_index]
+            query_coverage = queries_by_index[original_index]
+            new_query_fraction = len(query_coverage - covered_queries) / max(
+                len(queries), 1
+            )
+            kinds = kinds_by_index[original_index]
+            kind_bonus = 1.0 if kinds - covered_kinds else 0.0
+            venue = venues_by_index[original_index]
+            venue_bonus = 1.0 if venue and venue not in covered_venues else 0.0
+            redundancy = max(
+                (
+                    similarity(original_index, selected_index)
+                    for selected_index in selected_indexes
+                ),
+                default=0.0,
+            )
+            score = (
+                0.72 * relevance
+                + 0.12 * evidence_quality
+                + 0.10 * new_query_fraction
+                + 0.035 * kind_bonus
+                + 0.015 * venue_bonus
+                - 0.18 * redundancy
+            )
+            # Stable deterministic tie-breaking preserves the semantic/heuristic order.
+            key = (score, relevance, -original_index)
+            if best_key is None or key > best_key:
+                best_key = key
+                best_position = position
+                best_details = (
+                    score,
+                    evidence_quality,
+                    query_coverage,
+                    redundancy,
+                )
+
+        original_index = remaining.pop(best_position)
+        chosen = records[original_index]
+        assert best_details is not None
+        score, evidence_quality, query_coverage, redundancy = best_details
+        ordered.append(chosen)
+        selected_indexes.append(original_index)
+        covered_queries.update(query_coverage)
+        covered_kinds.update(kinds_by_index[original_index])
+        venue = venues_by_index[original_index]
+        if venue:
+            covered_venues.add(venue)
+        _set_portfolio_metadata(
+            chosen,
+            rank=len(ordered),
+            score=score,
+            evidence_quality=evidence_quality,
+            query_coverage=query_coverage,
+            redundancy=redundancy,
+        )
+    return ordered
+
+
+def _set_portfolio_metadata(
+    record: ScholarlyRecord,
+    *,
+    rank: int,
+    score: float,
+    evidence_quality: float,
+    query_coverage: set[int],
+    redundancy: float,
+) -> None:
+    record.metadata["portfolio_rank"] = rank
+    record.metadata["portfolio_score"] = round(score, 4)
+    record.metadata["portfolio_evidence_quality"] = round(evidence_quality, 4)
+    record.metadata["portfolio_query_indexes"] = sorted(query_coverage)
+    record.metadata["portfolio_redundancy"] = round(redundancy, 4)
+    record.metadata["portfolio_publication_kinds"] = sorted(_publication_kinds(record))
+    record.metadata["selection_rule"] = "quality_diversity_portfolio"
+
+
+def _record_relevance_score(
+    record: ScholarlyRecord,
+    original_index: int,
+    record_count: int,
+) -> float:
+    for key in ("reranker_score", "retrieval_score"):
+        value = record.metadata.get(key)
+        if isinstance(value, (int, float)):
+            return min(max(float(value), 0.0), 1.0)
+    # Preserve the existing order when neither ranking layer emitted a score.
+    return max(0.5, 1.0 - original_index / max(record_count, 1) * 0.5)
+
+
+def _record_evidence_quality(record: ScholarlyRecord) -> float:
+    """Score explicit evidence availability/completeness, never inferred prestige."""
+    score = 0.0
+    abstract_length = len((record.abstract or "").strip())
+    if abstract_length:
+        score += 0.2
+        score += min(abstract_length / 1_500, 1.0) * 0.15
+    if record.venue:
+        score += 0.1
+    if record.doi:
+        score += 0.1
+    if record.provider and record.provider_source_id:
+        score += 0.1
+    if _record_has_full_text(record):
+        score += 0.15
+    peer_reviewed = _explicit_peer_review_status(record)
+    if peer_reviewed is True:
+        score += 0.15
+    kinds = _publication_kinds(record)
+    if kinds & {"review", "survey", "systematicreview", "meta-analysis"}:
+        score += 0.05
+    return min(score, 1.0)
+
+
+def _record_has_full_text(record: ScholarlyRecord) -> bool:
+    metadata = record.metadata
+    open_access = metadata.get("openAccessPdf") or {}
+    best_location = metadata.get("best_oa_location") or {}
+    primary_location = metadata.get("primary_location") or {}
+    return bool(
+        metadata.get("full_text_url")
+        or metadata.get("open_access_pdf_url")
+        or (open_access.get("url") if isinstance(open_access, dict) else None)
+        or (best_location.get("pdf_url") if isinstance(best_location, dict) else None)
+        or (
+            primary_location.get("pdf_url")
+            if isinstance(primary_location, dict)
+            else None
+        )
+    )
+
+
+def _explicit_peer_review_status(record: ScholarlyRecord) -> bool | None:
+    explicit = record.metadata.get("is_peer_reviewed")
+    if isinstance(explicit, bool):
+        return explicit
+    kinds = _publication_kinds(record)
+    if kinds & {"journal", "journalarticle", "conference", "proceedingsarticle"}:
+        return True
+    if kinds & {"preprint", "posted-content"}:
+        return False
+    return None
+
+
+def _publication_kinds(record: ScholarlyRecord) -> set[str]:
+    metadata = record.metadata
+    raw_values: list[object] = [
+        metadata.get("type"),
+        metadata.get("source_type"),
+    ]
+    publication_types = metadata.get("publicationTypes") or []
+    if isinstance(publication_types, list):
+        raw_values.extend(publication_types)
+    primary_location = metadata.get("primary_location") or {}
+    if isinstance(primary_location, dict):
+        source = primary_location.get("source") or {}
+        if isinstance(source, dict):
+            raw_values.append(source.get("type"))
+    return {
+        re.sub(r"[^a-z0-9-]+", "", str(value).casefold())
+        for value in raw_values
+        if value
+    }
+
+
+def _record_query_coverage(
+    record: ScholarlyRecord,
+    queries: list[str],
+) -> set[int]:
+    discoveries = {
+        _comparison_text(item)
+        for item in _string_list(record.metadata.get("discovery_queries"))
+    }
+    text_tokens = _search_tokens(f"{record.title} {record.abstract or ''}")
+    covered: set[int] = set()
+    for index, query in enumerate(queries):
+        if _comparison_text(query) in discoveries:
+            covered.add(index)
+            continue
+        query_tokens = _search_tokens(query)
+        if not query_tokens:
+            continue
+        overlap = len(query_tokens & text_tokens)
+        required = 1 if len(query_tokens) == 1 else min(2, len(query_tokens))
+        if overlap >= required:
+            covered.add(index)
+    return covered
+
+
+def _record_content_similarity(
+    first: ScholarlyRecord,
+    second: ScholarlyRecord,
+) -> float:
+    first_title = _search_tokens(first.title)
+    second_title = _search_tokens(second.title)
+    title_union = first_title | second_title
+    title_jaccard = (
+        len(first_title & second_title) / len(title_union) if title_union else 0.0
+    )
+    title_sequence = SequenceMatcher(
+        None,
+        _comparison_text(first.title),
+        _comparison_text(second.title),
+    ).ratio()
+    first_abstract = _search_tokens((first.abstract or "")[:1_500])
+    second_abstract = _search_tokens((second.abstract or "")[:1_500])
+    abstract_union = first_abstract | second_abstract
+    abstract_jaccard = (
+        len(first_abstract & second_abstract) / len(abstract_union)
+        if abstract_union
+        else 0.0
+    )
+    title_similarity = max(title_jaccard, title_sequence)
+    return min(1.0, 0.7 * title_similarity + 0.3 * abstract_jaccard)
+
+
 def _validated_counter_evidence_assessment(
     raw: str,
     required_keys: list[str],
+    required_claim_ids: list[str] | None = None,
 ) -> _CounterEvidenceAssessment:
     assessment = _CounterEvidenceAssessment.model_validate(_json_value(raw, dict))
     if set(assessment.covered_result_keys) != set(required_keys):
@@ -1977,18 +3828,136 @@ def _validated_counter_evidence_assessment(
         raise ValueError("Counter-evidence analysis returned duplicate findings")
     if set(finding_keys) != set(required_keys):
         raise ValueError("Counter-evidence analysis did not assess every top result")
-    impacts = {item.impact for item in assessment.findings}
-    if CounterEvidenceOutcome.GAP_NOT_SUPPORTED in impacts:
-        expected_outcome = CounterEvidenceOutcome.GAP_NOT_SUPPORTED
-    elif CounterEvidenceOutcome.GAP_NARROWED in impacts:
-        expected_outcome = CounterEvidenceOutcome.GAP_NARROWED
-    elif impacts == {CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE}:
-        expected_outcome = CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+    required_claim_ids = required_claim_ids or []
+    if required_claim_ids:
+        claim_ids = [item.claim_id for item in assessment.claim_assessments]
+        if len(set(claim_ids)) != len(claim_ids):
+            raise ValueError("Counter-evidence analysis returned duplicate Gap claims")
+        if set(claim_ids) != set(required_claim_ids):
+            raise ValueError("Counter-evidence analysis did not assess every Gap claim")
+        if any(
+            set(item.claim_ids) != set(required_claim_ids)
+            for item in assessment.findings
+        ):
+            raise ValueError(
+                "Every counter-evidence finding must assess every Gap claim"
+            )
+        if any(
+            set(item.counter_evidence_result_keys) != set(required_keys)
+            for item in assessment.claim_assessments
+        ):
+            raise ValueError(
+                "Every Gap claim must reference every counter-evidence result"
+            )
+        impacts = {item.outcome for item in assessment.claim_assessments}
     else:
-        expected_outcome = CounterEvidenceOutcome.INCONCLUSIVE
+        impacts = {item.impact for item in assessment.findings}
+    expected_outcome = _aggregate_counter_outcome(impacts)
     if assessment.outcome is not expected_outcome:
-        raise ValueError("Counter-evidence outcome was inconsistent with source findings")
+        raise ValueError(
+            "Counter-evidence outcome was inconsistent with source findings"
+        )
     return assessment
+
+
+def _aggregate_counter_outcome(
+    impacts: set[CounterEvidenceOutcome],
+) -> CounterEvidenceOutcome:
+    if CounterEvidenceOutcome.GAP_NOT_SUPPORTED in impacts:
+        return CounterEvidenceOutcome.GAP_NOT_SUPPORTED
+    if CounterEvidenceOutcome.GAP_NARROWED in impacts:
+        return CounterEvidenceOutcome.GAP_NARROWED
+    if impacts == {CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE}:
+        return CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+    return CounterEvidenceOutcome.INCONCLUSIVE
+
+
+def _ground_counter_evidence_assessment(
+    assessment: _CounterEvidenceAssessment,
+    materials: list[_CounterEvidenceMaterial],
+    gap_claims: list[_GapClaim],
+) -> tuple[_CounterEvidenceAssessment, list[str]]:
+    warnings: list[str] = []
+    ungrounded_keys: list[str] = []
+    nonrelevant_keys: list[str] = []
+    material_by_key = {_record_result_key(item.record): item for item in materials}
+    findings_by_key: dict[str, _CounterEvidenceFinding] = {}
+    for finding in assessment.findings:
+        material = material_by_key.get(finding.result_key)
+        if material is None or not material.source_text:
+            finding.content_basis = CounterEvidenceContentBasis.METADATA_ONLY
+            finding.grounding_status = GroundingStatus.REJECTED
+        else:
+            finding.content_basis = (
+                CounterEvidenceContentBasis.ABSTRACT
+                if material.source_kind == "abstract"
+                else CounterEvidenceContentBasis.FULL_TEXT
+            )
+            finding.grounding_status = _grounding_status(
+                material.source_text,
+                finding.supporting_passage,
+            )
+            finding.source_location = _passage_location(
+                material.source_text,
+                finding.supporting_passage,
+                material.source_location,
+            )
+        if finding.grounding_status is not GroundingStatus.GROUNDED:
+            finding.impact = CounterEvidenceOutcome.INCONCLUSIVE
+            ungrounded_keys.append(finding.result_key)
+        if finding.relevance_status is not CounterEvidenceRelevance.RELEVANT:
+            finding.impact = CounterEvidenceOutcome.INCONCLUSIVE
+            nonrelevant_keys.append(finding.result_key)
+        findings_by_key[finding.result_key] = finding
+
+    if ungrounded_keys:
+        warnings.append(
+            f"{len(ungrounded_keys)} counter-evidence source assessment(s) lacked an "
+            "exact grounded passage and were downgraded to inconclusive: "
+            f"{', '.join(ungrounded_keys)}."
+        )
+
+    if nonrelevant_keys:
+        warnings.append(
+            f"{len(nonrelevant_keys)} counter-evidence source assessment(s) were not "
+            "directly relevant to the Gap claims and were downgraded to "
+            f"inconclusive: {', '.join(nonrelevant_keys)}."
+        )
+
+    claims_by_id = {item.claim_id: item for item in gap_claims}
+    for claim_assessment in assessment.claim_assessments:
+        linked_findings = [
+            findings_by_key[key]
+            for key in claim_assessment.counter_evidence_result_keys
+            if key in findings_by_key
+        ]
+        if not linked_findings or any(
+            item.grounding_status is not GroundingStatus.GROUNDED
+            or item.relevance_status is not CounterEvidenceRelevance.RELEVANT
+            for item in linked_findings
+        ):
+            claim_assessment.outcome = CounterEvidenceOutcome.INCONCLUSIVE
+        original = claims_by_id.get(claim_assessment.claim_id)
+        if claim_assessment.outcome is CounterEvidenceOutcome.GAP_NARROWED:
+            revised = (claim_assessment.revised_statement or "").strip()
+            if (
+                original is None
+                or not revised
+                or _comparison_text(revised) == _comparison_text(original.statement)
+            ):
+                claim_assessment.outcome = CounterEvidenceOutcome.INCONCLUSIVE
+                warnings.append(
+                    "A narrowed Gap claim did not provide a material revision; its "
+                    "assessment was downgraded to inconclusive."
+                )
+
+    impacts = (
+        {item.outcome for item in assessment.claim_assessments}
+        if assessment.claim_assessments
+        else {item.impact for item in assessment.findings}
+    )
+    assessment.outcome = _aggregate_counter_outcome(impacts)
+    return assessment, warnings
 
 
 def _is_usable_research_document(
@@ -2257,7 +4226,9 @@ def _verbatim_source_passage(
             folded_candidate = _comparison_text(candidate)
             if folded_target and folded_target in folded_candidate:
                 # Expand truncated model quotes to the complete source sentence/paragraph.
-                if not re.search(r"[.!?][\"')\]]?$", target) and len(candidate) > len(target):
+                if not re.search(r"[.!?][\"')\]]?$", target) and len(candidate) > len(
+                    target
+                ):
                     return candidate
                 if _is_content_passage(target):
                     start = source_text.casefold().find(target.casefold())
@@ -2282,7 +4253,9 @@ def _verbatim_source_passage(
         return max(candidates, key=score)
     # Metadata-only sources can be a title. Return one bounded line, never a
     # prefix spanning multiple HTML controls, sections, or PDF pages.
-    lines = [" ".join(line.split()) for line in source_text.splitlines() if line.strip()]
+    lines = [
+        " ".join(line.split()) for line in source_text.splitlines() if line.strip()
+    ]
     for line in lines:
         if _section_heading(line) is None and not _looks_like_page_chrome(line):
             return line[:300].strip()
@@ -2291,16 +4264,53 @@ def _verbatim_source_passage(
 
 def _source_passage_candidates(source_text: str) -> list[str]:
     candidates: list[str] = []
-    for line in source_text.splitlines():
-        line = line.strip()
-        if not line or re.fullmatch(r"\[(?:Page \d+|Section)\].*", line):
+    block_lines: list[str] = []
+
+    def flush_block() -> None:
+        if not block_lines:
+            return
+        block = "\n".join(block_lines).strip()
+        block_lines.clear()
+        initial_candidate_count = len(candidates)
+
+        # PDF extractors normally emit one line per visual row. Splitting those
+        # rows independently produces fragments that can start or end midway
+        # through a sentence (or even a hyphenated word). Build logical source
+        # sentences across rows while retaining the exact source substring so
+        # the resulting evidence can still be verified verbatim.
+        start = 0
+        found_sentence_end = False
+        for match in re.finditer(r"[.!?](?:[\"')\]]+)?(?=\s|$)", block):
+            found_sentence_end = True
+            candidate = block[start : match.end()].strip()
+            if _is_content_passage(candidate):
+                candidates.append(candidate)
+            start = match.end()
+            while start < len(block) and block[start].isspace():
+                start += 1
+
+        remainder = block[start:].strip()
+        if _is_content_passage(remainder):
+            candidates.append(remainder)
+
+        # Keep a bounded fallback for source text without sentence punctuation.
+        # This is deliberately secondary to logical sentences.
+        if not found_sentence_end and len(candidates) == initial_candidate_count:
+            candidates.extend(
+                line for line in block.splitlines() if _is_content_passage(line)
+            )
+
+    for raw_line in source_text.splitlines():
+        line = raw_line.strip()
+        if (
+            not line
+            or re.fullmatch(r"\[(?:Page \d+|Section)\].*", line)
+            or _section_heading(line) is not None
+        ):
+            flush_block()
             continue
-        chunks = (
-            re.split(r"(?<=[.!?])\s+", line)
-            if len(line) > 700
-            else [line]
-        )
-        candidates.extend(chunk.strip() for chunk in chunks if _is_content_passage(chunk))
+        block_lines.append(line)
+    flush_block()
     return candidates
 
 
@@ -2345,8 +4355,12 @@ def _gap_citations(citations: object) -> list[dict[str, Any]]:
                 "id": item.get("id"),
                 "citation_key": item.get("citation_key"),
                 "title": item.get("title"),
+                "authors": _string_list(item.get("authors")),
                 "year": item.get("year"),
                 "venue": item.get("venue"),
+                "doi": item.get("doi"),
+                "url": item.get("url"),
+                "provider_source_id": item.get("provider_source_id"),
                 "abstract": str(item.get("abstract") or "")[:1_500],
                 "verification_status": item.get("verification_status"),
                 "provider": item.get("provider"),
@@ -2382,6 +4396,7 @@ def _gap_findings(
                 "limitation": item.get("limitation"),
                 "relevance": item.get("relevance"),
                 "supporting_passage": str(item.get("supporting_passage") or "")[:500],
+                "source_location": item.get("source_location"),
                 "evidence": item.get("evidence"),
                 "grounding_status": item.get("grounding_status"),
             }
@@ -2404,6 +4419,7 @@ def _gap_evidence_check(
         for item in findings
         if item.get("citation_key")
         and str(item.get("grounding_status")) == GroundingStatus.GROUNDED.value
+        and _gap_limitation_evidence(item) is not None
     }
     eligible_set = verified & grounded
     eligible = [
@@ -2463,18 +4479,47 @@ def _counter_record_payload(record: ScholarlyRecord) -> dict[str, Any]:
     }
 
 
+def _counter_evidence_object_keys(narrative: object) -> set[str]:
+    if not isinstance(narrative, dict):
+        return set()
+    candidate = narrative.get("candidate")
+    if not isinstance(candidate, dict):
+        return set()
+    audit = candidate.get("search_audit")
+    if not isinstance(audit, dict):
+        return set()
+    results = audit.get("counter_evidence_results")
+    if not isinstance(results, list):
+        return set()
+    return {
+        key
+        for item in results
+        if isinstance(item, dict)
+        and isinstance((key := item.get("source_object_key")), str)
+        and key.strip()
+    }
+
+
 def _counter_evidence_results(
     records: list[ScholarlyRecord],
     findings: list[_CounterEvidenceFinding],
+    materials: list[_CounterEvidenceMaterial],
 ) -> list[CounterEvidenceResult]:
     findings_by_key = {item.result_key: item for item in findings}
+    materials_by_key = {
+        _record_result_key(item.record): item for item in materials
+    }
     results: list[CounterEvidenceResult] = []
     for record in records:
         result_key = _record_result_key(record)
         finding = findings_by_key.get(result_key)
-        verification_messages = _string_list(
-            record.metadata.get("counter_verification_messages")
+        material = materials_by_key.get(result_key)
+        verification_messages = list(
+            dict.fromkeys(
+                _string_list(record.metadata.get("counter_verification_messages"))
+            )
         )
+
         results.append(
             CounterEvidenceResult(
                 result_key=result_key,
@@ -2496,6 +4541,35 @@ def _counter_evidence_results(
                     "counter_verification_status", VerificationStatus.PENDING.value
                 ),
                 verification_messages=verification_messages,
+                content_basis=(
+                    finding.content_basis
+                    if finding is not None
+                    else CounterEvidenceContentBasis.METADATA_ONLY
+                ),
+                source_object_key=(
+                    material.source_object_key if material is not None else None
+                ),
+                evidence_passage=(
+                    finding.supporting_passage or None if finding is not None else None
+                ),
+                evidence_location=(
+                    finding.source_location or None if finding is not None else None
+                ),
+                grounding_status=(
+                    finding.grounding_status
+                    if finding is not None
+                    else GroundingStatus.PENDING
+                ),
+                relevance_status=(
+                    finding.relevance_status
+                    if finding is not None
+                    else CounterEvidenceRelevance.PENDING
+                ),
+                support_status=(
+                    finding.support_status
+                    if finding is not None
+                    else CounterEvidenceSupport.PENDING
+                ),
                 impact=(
                     finding.impact
                     if finding is not None
@@ -2504,10 +4578,7 @@ def _counter_evidence_results(
                 rationale=(
                     finding.rationale
                     if finding is not None
-                    else (
-                        " ".join(verification_messages)
-                        or "This result was not included in the validated assessment."
-                    )
+                    else "This result was not included in the validated content assessment."
                 ),
             )
         )
@@ -2536,38 +4607,6 @@ def _merge_verified_counter_record(
         if value not in (None, "", []):
             setattr(record, field_name, value)
     record.metadata = {**resolved.metadata, **original_metadata}
-
-
-def _previous_counter_feedback(context: dict[str, Any]) -> dict[str, Any]:
-    """Return the prior saved/generated Gap for the next regeneration."""
-    working_draft = context.get("working_draft", {})
-    raw_candidate = next(
-        (
-            item.get("body")
-            for item in working_draft.get("card_snapshot", [])
-            if isinstance(item, dict) and item.get("kind") == CardKind.GAP.value
-        ),
-        None,
-    )
-    narrative = working_draft.get("narrative", {})
-    if not isinstance(narrative, dict):
-        narrative = {}
-    if raw_candidate is None:
-        raw_candidate = narrative.get("candidate")
-    try:
-        candidate = GapCardBody.model_validate(raw_candidate)
-    except ValidationError:
-        return {}
-    audit = candidate.search_audit
-    return {
-        "previous_statement": candidate.statement,
-        "outcome": audit.counter_evidence_outcome.value,
-        "assessment": audit.counter_evidence_assessment,
-        "results": [
-            item.model_dump(mode="json")
-            for item in audit.counter_evidence_results[:5]
-        ],
-    }
 
 
 def _record_result_key(record: ScholarlyRecord) -> str:
@@ -2639,11 +4678,364 @@ def _gap_statement_from_answers(answers: _GapQuestionAnswers) -> str:
     return " ".join(
         (
             _as_sentence(answers.prior_work),
-            _as_sentence(f"However, {answers.limitation}"),
+            _as_sentence(answers.limitation),
             _as_sentence(answers.importance),
             _as_sentence(answers.testability),
         )
     )
+
+
+def _two_sentence_gap_fallback(
+    idea: dict[str, Any],
+    answers: _GapQuestionAnswers | None,
+    claims: list[_GapClaim],
+    related_work: list[dict[str, Any]],
+) -> str:
+    text = json.dumps(idea, ensure_ascii=False).casefold()
+    vietnamese = bool(re.search(r"[ăâđêôơưáàảãạấầẩẫậắằẳẵặếềểễệ]", text))
+    limitations = [claim.statement.strip().rstrip(".!?") for claim in claims]
+    if limitations:
+        if len(limitations) == 1:
+            limitation_text = limitations[0]
+        else:
+            limitation_text = "; ".join(
+                f"({index}) {limitation}"
+                for index, limitation in enumerate(limitations, start=1)
+            )
+        prior_work = answers.prior_work.strip() if answers is not None else ""
+        if not prior_work:
+            accomplishments = [
+                str(item.get("what_was_done") or "").strip()
+                for item in related_work
+                if str(item.get("what_was_done") or "").strip()
+            ]
+            prior_work = "; ".join(accomplishments)
+        if vietnamese:
+            prior_sentence = _as_sentence(
+                prior_work or "Các nghiên cứu hiện tại đã đề xuất các phương pháp liên quan"
+            )
+            return (
+                f"{prior_sentence} Chưa rõ liệu một cách tiếp cận có thể khắc phục "
+                f"hạn chế “{limitation_text}” trong một đánh giá có kiểm soát hay không."
+            )
+        prior_sentence = _as_sentence(
+            prior_work or "Existing studies have proposed related approaches"
+        )
+        return (
+            f"{prior_sentence} It remains unclear whether an approach can address the "
+            f"limitation “{limitation_text}” under a controlled evaluation."
+        )
+    if vietnamese:
+        return (
+            "Related Work chưa cung cấp hạn chế nào được hỗ trợ đủ rõ để hình thành "
+            "một Gap cụ thể. Cần xem lại nguồn hoặc bổ sung tài liệu trước khi tạo "
+            "Contribution Direction."
+        )
+    return (
+        "The Related Work does not yet provide a clearly supported limitation for a "
+        "specific Gap. Review or add sources before generating a Contribution Direction."
+    )
+
+
+def _validate_gap_statement_style(statement: str) -> str:
+    normalized = " ".join(statement.split()).strip()
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?])\s+", normalized)
+        if item.strip()
+    ]
+    if len(sentences) != 2:
+        raise ValueError("Gap statement must contain exactly two sentences")
+    uncertainty = sentences[1].casefold()
+    if "chưa rõ" not in uncertainty and "unclear" not in uncertainty:
+        raise ValueError("Gap statement must express the testable unknown explicitly")
+    return normalized
+
+
+def _gap_claims_from_answers(
+    answers: _GapQuestionAnswers,
+    source_claims: list[_GapClaim],
+) -> list[_GapClaim]:
+    """Accept only atomic claims copied from grounded Related Work limitations."""
+
+    if not answers.claims:
+        return source_claims
+    claims = answers.claims[:5]
+    identifiers = [item.claim_id for item in claims]
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("Gap analysis returned duplicate atomic claim identifiers")
+    source_by_id = {item.claim_id: item for item in source_claims}
+    selected: list[_GapClaim] = []
+    for claim in claims:
+        source = source_by_id.get(claim.claim_id)
+        if (
+            source is None
+            or claim.kind is not source.kind
+            or _comparison_text(claim.statement)
+            != _comparison_text(source.statement)
+            or set(claim.supporting_citation_keys)
+            != set(source.supporting_citation_keys)
+        ):
+            raise ValueError(
+                "Atomic Gap claims must be copied from grounded claim candidates"
+            )
+        selected.append(source)
+    covered = {
+        key for claim in selected for key in claim.supporting_citation_keys
+    }
+    required = {
+        key for claim in source_claims for key in claim.supporting_citation_keys
+    }
+    if covered != required:
+        raise ValueError("Atomic Gap claims did not retain every eligible source")
+    return selected
+
+
+def _fallback_gap_claims(
+    related_work: list[dict[str, Any]],
+    valid_citation_keys: list[str],
+) -> tuple[list[_GapClaim], list[str]]:
+    claims: list[_GapClaim] = []
+    warnings: list[str] = []
+    valid = set(valid_citation_keys)
+    split_count = 0
+    nonmention_count = 0
+    narrowed_scope_count = 0
+    for item in related_work:
+        limitation = str(item.get("limitation") or "").strip()
+        key = str(item.get("citation_key") or "").strip()
+        if not limitation or key not in valid:
+            continue
+        claim_evidence = _gap_limitation_evidence(item)
+        if claim_evidence is None:
+            continue
+        fragments = _atomic_limitation_fragments(limitation)
+        if len(fragments) > 1:
+            split_count += 1
+        for fragment in fragments:
+            fragment, scope_narrowed = _normalize_gap_claim_statement(
+                fragment,
+                claim_evidence.passage,
+            )
+            if scope_narrowed:
+                narrowed_scope_count += 1
+            if _is_nonmention_inference(fragment):
+                nonmention_count += 1
+                continue
+            claims.append(
+                _GapClaim(
+                    claim_id=f"c{len(claims) + 1}",
+                    kind=GapClaimKind.UNRESOLVED_LIMITATION,
+                    statement=fragment,
+                    supporting_citation_keys=[key],
+                    supporting_evidence=[claim_evidence],
+                )
+            )
+            if len(claims) == 5:
+                break
+        if len(claims) == 5:
+            break
+    if split_count:
+        warnings.append(
+            f"Split {split_count} composite Related Work limitation(s) into atomic "
+            "claim candidates before semantic validation."
+        )
+    if nonmention_count:
+        warnings.append(
+            f"Excluded {nonmention_count} Gap claim candidate(s) that inferred a "
+            "missing capability only from source non-mention."
+        )
+    if narrowed_scope_count:
+        warnings.append(
+            f"Narrowed {narrowed_scope_count} Gap claim candidate(s) by removing "
+            "clinical scope that was not explicit in the supporting passage."
+        )
+    return claims, warnings
+
+
+def _atomic_limitation_fragments(statement: str) -> list[str]:
+    """Split only explicit prose boundaries; semantic splitting remains model-checked."""
+
+    fragments = re.split(
+        r"\s*(?:;|\n+)\s*|(?<=[.!?])\s+(?=[A-ZÀ-Ỹ])",
+        statement.strip(),
+    )
+    return [fragment.strip() for fragment in fragments if fragment.strip()]
+
+
+_CLINICAL_SCOPE_TERMS = re.compile(
+    r"\b(?:clinical|clinic|healthcare|patient|lâm\s*sàng|y\s*tế|bệnh\s*nhân)\b",
+    re.IGNORECASE,
+)
+_UNANCHORED_CLINICAL_QUALIFIERS = (
+    re.compile(r"\s+trong\s+thực\s+tế\s+lâm\s*sàng\b", re.IGNORECASE),
+    re.compile(
+        r"\s+in\s+(?:real[-\s]world\s+)?clinical\s+(?:practice|settings?)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _normalize_gap_claim_statement(
+    statement: str,
+    supporting_passage: str,
+) -> tuple[str, bool]:
+    """Apply conservative presentation and scope normalization before validation."""
+
+    normalized = statement.strip()
+    scope_narrowed = False
+    if not _CLINICAL_SCOPE_TERMS.search(supporting_passage):
+        for pattern in _UNANCHORED_CLINICAL_QUALIFIERS:
+            narrowed = pattern.sub("", normalized)
+            if narrowed != normalized:
+                normalized = narrowed
+                scope_narrowed = True
+    normalized = re.sub(r"\s+([,.;:])", r"\1", normalized).strip()
+    if normalized:
+        normalized = normalized[0].upper() + normalized[1:]
+    return normalized, scope_narrowed
+
+
+_NONMENTION_INFERENCE_PATTERNS = (
+    re.compile(
+        r"\b(?:does|do|did)\s+not\s+(?:mention|discuss|describe|report)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:not|never)\s+(?:mentioned|discussed|described|reported)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:không|chưa)\s+(?:đề\s*cập|nhắc\s*(?:đến|tới)|mô\s*tả|báo\s*cáo)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _is_nonmention_inference(statement: str) -> bool:
+    return any(pattern.search(statement) for pattern in _NONMENTION_INFERENCE_PATTERNS)
+
+
+def _claim_statement_precheck(statement: str) -> bool:
+    return (
+        len(_atomic_limitation_fragments(statement)) == 1
+        and not _is_nonmention_inference(statement)
+    )
+
+
+def _strict_claim_support_status(
+    claim: _GapClaim,
+    assessment: _GapClaimSupportItem,
+) -> CounterEvidenceSupport:
+    if assessment.support_status is not CounterEvidenceSupport.SUPPORTED:
+        return assessment.support_status
+    if assessment.atomicity_status == "compound" or assessment.unsupported_fragments:
+        return CounterEvidenceSupport.UNSUPPORTED
+    if assessment.atomicity_status != "atomic" or not assessment.evidence_span.strip():
+        return CounterEvidenceSupport.UNCERTAIN
+    normalized_span = " ".join(assessment.evidence_span.casefold().split())
+    passage_contains_span = any(
+        normalized_span in " ".join(evidence.passage.casefold().split())
+        for evidence in claim.supporting_evidence
+    )
+    if not passage_contains_span:
+        return CounterEvidenceSupport.UNCERTAIN
+    return CounterEvidenceSupport.SUPPORTED
+
+
+def _related_work_with_validated_limitations(
+    related_work: list[dict[str, Any]],
+    claims: list[_GapClaim],
+) -> list[dict[str, Any]]:
+    """Prevent rejected limitation fragments from leaking into analysis fallbacks."""
+
+    statements_by_key: dict[str, list[str]] = {}
+    for claim in claims:
+        for key in claim.supporting_citation_keys:
+            statements_by_key.setdefault(key, []).append(claim.statement)
+    sanitized: list[dict[str, Any]] = []
+    for finding in related_work:
+        key = str(finding.get("citation_key") or "").strip()
+        statements = statements_by_key.get(key, [])
+        if not statements:
+            continue
+        sanitized.append({**finding, "limitation": " ".join(statements)})
+    return sanitized
+
+
+def _gap_limitation_evidence(
+    finding: dict[str, Any],
+) -> GapClaimEvidence | None:
+    key = str(finding.get("citation_key") or "").strip()
+    evidence = finding.get("evidence")
+    limitation_evidence = (
+        evidence.get("limitation")
+        if isinstance(evidence, dict)
+        and isinstance(evidence.get("limitation"), dict)
+        else {}
+    )
+    passage = str(
+        limitation_evidence.get("passage")
+        or finding.get("supporting_passage")
+        or ""
+    ).strip()
+    location = str(
+        limitation_evidence.get("location")
+        or finding.get("source_location")
+        or ""
+    ).strip()
+    if not key or not passage or not location:
+        return None
+    return GapClaimEvidence(
+        citation_key=key,
+        passage=passage,
+        location=location,
+    )
+
+
+def _gap_claim_assessments(
+    claims: list[_GapClaim],
+    assessments: list[_CounterEvidenceClaimAssessment],
+) -> list[GapClaimAssessment]:
+    assessments_by_id = {item.claim_id: item for item in assessments}
+    persisted: list[GapClaimAssessment] = []
+    for claim in claims:
+        assessment = assessments_by_id.get(claim.claim_id)
+        if assessment is None:
+            persisted.append(
+                GapClaimAssessment(
+                    claim_id=claim.claim_id,
+                    kind=claim.kind,
+                    statement=claim.statement,
+                    supporting_citation_keys=claim.supporting_citation_keys,
+                    supporting_evidence=claim.supporting_evidence,
+                    outcome=CounterEvidenceOutcome.INCONCLUSIVE,
+                    assessment=(
+                        "Not enough verified counter-evidence was available to determine "
+                        "whether this limitation remains unresolved."
+                    ),
+                )
+            )
+            continue
+        statement = (
+            assessment.revised_statement.strip()
+            if assessment.outcome is CounterEvidenceOutcome.GAP_NARROWED
+            and assessment.revised_statement
+            else claim.statement
+        )
+        persisted.append(
+            GapClaimAssessment(
+                claim_id=claim.claim_id,
+                kind=claim.kind,
+                statement=statement,
+                supporting_citation_keys=claim.supporting_citation_keys,
+                supporting_evidence=claim.supporting_evidence,
+                counter_evidence_result_keys=(assessment.counter_evidence_result_keys),
+                outcome=assessment.outcome,
+                assessment=assessment.assessment,
+            )
+        )
+    return persisted
 
 
 def _as_sentence(value: str) -> str:
@@ -3183,24 +5575,100 @@ def _ensure_counter_query_families(
     model_queries: list[str],
     related_work_queries: list[str],
     *,
+    exact_method_queries: list[str] | None = None,
     limit: int | None = None,
 ) -> list[str]:
     normalized = _normalize_search_queries(model_queries)
     anchors = _normalize_search_queries(related_work_queries)
-    base = next(iter(normalized or anchors), "scholarly evidence review")
+    exact = _normalize_search_queries(exact_method_queries or [])
+    base = next(iter(exact or normalized or anchors), "scholarly evidence review")
     anchor = _query_anchor(base)
     branches = (
         f'"{anchor}" AND (survey OR review)',
         f'"{anchor}" AND (benchmark OR replication)',
         f'"{anchor}" AND (limitation OR conflicting)',
     )
-    candidates = _normalize_search_queries([*(normalized or [base]), *branches])
+    prefix = [*exact, *normalized]
+    candidates = _normalize_search_queries([*(prefix or [base]), *branches])
     return _limit_query_families(
         candidates,
         limit=limit,
         family_order=("evaluation", "limitation", "survey", "core"),
-        prefix_count=len(normalized or [base]),
+        prefix_count=len(prefix or [base]),
     )
+
+
+def _citation_method_queries(
+    citations: list[dict[str, Any]],
+    *,
+    limit: int = 2,
+) -> list[str]:
+    """Extract method identifiers only from confirmed scholarly Citation titles."""
+
+    ignored = {
+        "AI",
+        "CHAIN-OF-THOUGHT",
+        "COT",
+        "LLM",
+        "LLMS",
+        "NLP",
+        "RAG",
+    }
+    queries: list[str] = []
+    seen: set[str] = set()
+    for citation in citations:
+        title = str(citation.get("title") or "")
+        identifiers = re.findall(
+            r"\b(?:[A-Z]{3,}(?:-[A-Z0-9]+)*|"
+            r"[A-Z][A-Za-z0-9]+(?:-[A-Za-z0-9]+)+|"
+            r"[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]+)+)\b",
+            title,
+        )
+        for identifier in identifiers:
+            folded = identifier.casefold()
+            if (
+                identifier.upper() in ignored
+                or "_" in identifier
+                or folded in seen
+            ):
+                continue
+            queries.append(f'"{identifier}"')
+            seen.add(folded)
+            if len(queries) >= limit:
+                return queries
+    return queries
+
+
+def _citation_seed_records(
+    citations: list[dict[str, Any]],
+) -> list[ScholarlyRecord]:
+    seeds: list[ScholarlyRecord] = []
+    for citation in citations:
+        title = str(citation.get("title") or "").strip()
+        if not title:
+            continue
+        metadata = citation.get("metadata")
+        seeds.append(
+            ScholarlyRecord(
+                title=title,
+                authors=_string_list(citation.get("authors")),
+                year=(
+                    int(citation["year"])
+                    if isinstance(citation.get("year"), int)
+                    else None
+                ),
+                venue=str(citation.get("venue") or "") or None,
+                doi=str(citation.get("doi") or "") or None,
+                url=str(citation.get("url") or "") or None,
+                provider=str(citation.get("provider") or "") or None,
+                provider_source_id=(
+                    str(citation.get("provider_source_id") or "") or None
+                ),
+                abstract=str(citation.get("abstract") or "") or None,
+                metadata=dict(metadata) if isinstance(metadata, dict) else {},
+            )
+        )
+    return seeds
 
 
 def _limit_query_families(
@@ -3268,9 +5736,7 @@ def _english_query_fallback(
     idea: dict[str, Any],
 ) -> list[str]:
     """Keep provider queries English even when translation generation is unavailable."""
-    candidates = _clean_keywords(
-        [*inputs.keywords, *_idea_search_concepts(idea)]
-    )
+    candidates = _clean_keywords([*inputs.keywords, *_idea_search_concepts(idea)])
     focused: list[str] = []
     for candidate in candidates:
         try:
@@ -3334,6 +5800,62 @@ def _query_concepts(queries: list[str]) -> list[str]:
     return concepts
 
 
+_QUERY_FAMILY_TOKENS = {
+    "approach",
+    "benchmark",
+    "challenge",
+    "comparison",
+    "competing",
+    "conflicting",
+    "equivalent",
+    "evaluation",
+    "finding",
+    "limitation",
+    "method",
+    "replication",
+    "review",
+    "study",
+    "survey",
+}
+
+_AMBIGUOUS_QUERY_TOKENS = {
+    "cot",
+    "max",
+    "min",
+    "retry",
+}
+
+
+def _domain_query_concepts(queries: list[str]) -> list[str]:
+    concepts: list[str] = []
+    for concept in _query_concepts(queries):
+        domain_tokens = [
+            token
+            for raw_token in re.findall(
+                r"[^\W_]+", concept.casefold(), flags=re.UNICODE
+            )
+            if (token := _search_token(raw_token)) not in _KEYWORD_STOPWORDS
+            and token not in _QUERY_FAMILY_TOKENS
+            and token not in _AMBIGUOUS_QUERY_TOKENS
+        ]
+        if domain_tokens:
+            concepts.append(" ".join(domain_tokens))
+    return concepts
+
+
+def _matching_record_queries(
+    record: ScholarlyRecord,
+    queries: list[str],
+) -> list[str]:
+    text_tokens = _search_tokens(f"{record.title} {record.abstract or ''}")
+    matches: list[str] = []
+    for query in queries:
+        groups = _concept_groups(_domain_query_concepts([query]))
+        if groups and _matched_concept_indexes(groups, text_tokens):
+            matches.append(query)
+    return matches
+
+
 def _concept_match_count(groups: list[set[str]], text_tokens: set[str]) -> int:
     return len(_matched_concept_indexes(groups, text_tokens))
 
@@ -3354,9 +5876,10 @@ def _rank_relevant_records(
     inputs: ResearchInputs,
     idea: dict[str, Any],
     queries: list[str] | None = None,
+    require_domain_match: bool = False,
 ) -> tuple[list[ScholarlyRecord], int]:
     """Rank by concept coverage and reject idea-mismatched provider results."""
-    query_concepts = _query_concepts(queries or [])
+    query_concepts = _domain_query_concepts(queries or [])
     idea_groups = _concept_groups(query_concepts or _idea_search_concepts(idea))
     all_groups = _concept_groups(
         query_concepts
@@ -3368,10 +5891,10 @@ def _rank_relevant_records(
         title_tokens = _search_tokens(record.title)
         text_tokens = title_tokens | _search_tokens(record.abstract or "")
         matched_idea = _matched_concept_indexes(idea_groups, text_tokens)
-        # Provider search can be semantic, so a returned English paper need not repeat
-        # every generated query term verbatim. English-query matches drive ranking;
-        # retain provider candidates and let the final top-five cutoff decide.
-        if idea_groups and not matched_idea and not queries:
+        # A broad provider query can return records from an unrelated domain. Keep
+        # semantic variants, but require at least one domain-bearing query concept to
+        # occur in the title or abstract before an LLM reranker can rescue the record.
+        if idea_groups and not matched_idea and (require_domain_match or not queries):
             discarded += 1
             continue
         concept_matches = _concept_match_count(all_groups, text_tokens)
@@ -3454,6 +5977,23 @@ def _llm_failure_summary(exc: Exception) -> str:
         details.append(exc.code)
     suffix = f" ({'; '.join(details)})" if details else ""
     return f"{exc}{suffix}"
+
+
+def _structured_failure_detail(exc: Exception) -> str:
+    """Return bounded schema diagnostics without exposing the model response."""
+
+    if isinstance(exc, ValidationError):
+        details = []
+        for error in exc.errors()[:3]:
+            location = ".".join(str(item) for item in error.get("loc", ()))
+            message = str(error.get("msg") or error.get("type") or "invalid field")
+            details.append(f"{location or 'response'}: {message}")
+        return "schema validation failed (" + "; ".join(details) + ")"
+    if isinstance(exc, json.JSONDecodeError):
+        return f"invalid JSON at line {exc.lineno}, column {exc.colno}"
+    if isinstance(exc, (TypeError, ValueError)):
+        return str(exc)[:300] or type(exc).__name__
+    return _llm_failure_summary(exc)
 
 
 def _grounding_status(source_text: str, passage: str) -> GroundingStatus:

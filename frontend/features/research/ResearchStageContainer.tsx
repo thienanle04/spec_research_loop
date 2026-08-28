@@ -22,6 +22,7 @@ import { ResearchStagePanel } from "./ResearchStagePanel";
 import {
   gapCandidateFrom,
   gapCandidateFromNarrative,
+  isCompleteGap,
   researchInputsFrom,
   type GapCandidate,
   type ResearchStreamEvent,
@@ -29,6 +30,7 @@ import {
 import { useResearchStream } from "./useResearchStream";
 
 type SessionQueryData = { status: number; data: LoopSessionResponse; headers?: Headers };
+type ListQueryData = { status: number; data: unknown[]; headers?: Headers };
 
 function narrative(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -123,6 +125,27 @@ export function ResearchStageContainer({
     updateSession((current) => ({ ...current, version }));
   }
 
+  function clearRegeneratedWorkingSet() {
+    if (researchNode === "related_work") {
+      setPartialCitations([]);
+      for (const queryKey of [
+        getListCitationsApiResearchSessionsSessionIdCitationsGetQueryKey(sessionId),
+        getListFindingsApiResearchSessionsSessionIdFindingsGetQueryKey(sessionId),
+      ]) {
+        queryClient.setQueryData(queryKey, (current: ListQueryData | undefined) =>
+          current?.status === 200 ? { ...current, data: [] } : current,
+        );
+      }
+    } else if (researchNode === "gap") {
+      setGeneratedGapCandidate(null);
+      updateSession((current) => ({
+        ...current,
+        working_draft_narrative: {},
+        cards: current.cards.filter((card) => card.kind !== CardKind.gap),
+      }));
+    }
+  }
+
   function handleInputsChange(next: typeof inputs) {
     setInputs(next);
     setSaveError(null);
@@ -170,7 +193,6 @@ export function ResearchStageContainer({
       updateSession((current) => ({ ...current, working_draft_narrative: event.narrative }));
     } else if (event.type === "done") {
       setVersion(event.version);
-      void refreshResearchData();
     }
   }
 
@@ -178,6 +200,7 @@ export function ResearchStageContainer({
     setSaveError(null);
     try {
       await queue.flush();
+      clearRegeneratedWorkingSet();
       await stream.start({
         sessionId,
         node: researchNode as "research_inputs" | "related_work" | "gap",
@@ -185,6 +208,7 @@ export function ResearchStageContainer({
         maxResults: researchNode === "related_work" ? 5 : undefined,
         onEvent: handleStreamEvent,
       });
+      await refreshResearchData();
     } catch (error) {
       setSaveError(getApiErrorMessage(error));
     }
@@ -192,6 +216,9 @@ export function ResearchStageContainer({
 
   async function selectGap(candidate: GapCandidate) {
     setSaveError(null);
+    const candidateToSave: GapCandidate = isCompleteGap(candidate)
+      ? candidate
+      : { ...candidate, status: "insufficient_evidence" };
     try {
       const response = await queue.enqueue(async () => {
         const version = expectedVersion();
@@ -199,11 +226,15 @@ export function ResearchStageContainer({
           ? patchCard.mutateAsync({
               sessionId,
               cardId: gapCard.id,
-              data: { expected_version: version, body: candidate },
+              data: { expected_version: version, body: candidateToSave },
             })
           : createCard.mutateAsync({
               sessionId,
-              data: { expected_version: version, kind: CardKind.gap, body: candidate },
+              data: {
+                expected_version: version,
+                kind: CardKind.gap,
+                body: candidateToSave,
+              },
             });
       });
       if (response.status === 200 || response.status === 201) {

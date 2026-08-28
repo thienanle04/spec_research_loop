@@ -8,10 +8,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { isCompleteGap, type GapCandidate } from "./types";
 
 const impactLabels = {
-  no_direct_counter_evidence: "No direct counter-evidence",
-  gap_narrowed: "Narrows the Gap",
-  gap_not_supported: "Gap already addressed",
-  inconclusive: "Inconclusive",
+  no_direct_counter_evidence: "No direct counter-evidence found",
+  gap_narrowed: "Potential Gap narrowed by existing work",
+  gap_not_supported: "Existing work appears to address this limitation",
+  inconclusive: "Not enough evidence to decide",
 } as const;
 
 function sourceHref(url: string | null, doi: string | null): string | null {
@@ -44,22 +44,31 @@ export function GapCandidatePicker({ candidate, selectedGap, disabled, onSelect 
 
   const evidenceReady = isCompleteGap(editing);
   const hasStatement = Boolean(editing.statement.trim());
-  const evidenceWarnings = [
-    ...(editing.search_audit.counter_evidence_outcome === "gap_not_supported"
-      ? ["Counter-evidence indicates that the proposed Gap is already addressed by existing work."]
-      : []),
-    ...(editing.search_audit.counter_evidence_outcome === "inconclusive"
-      ? ["The counter-evidence search was inconclusive."]
-      : []),
-    ...editing.evidence_check.messages,
-  ];
+  const normalize = (value: string) => value.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+  const auditStale =
+    normalize(editing.statement) !== normalize(editing.search_audit.assessed_statement);
+  const claimsHaveCounterAudit =
+    editing.search_audit.counter_evidence_results.length > 0 &&
+    editing.search_audit.claim_assessments.every(
+      (claim) => claim.counter_evidence_result_keys.length > 0,
+    );
+  const evidenceWarning = auditStale
+    ? "This summary was edited after the literature review. Regenerate it before treating the evidence as current."
+    : editing.search_audit.counter_evidence_outcome === "gap_not_supported"
+      ? "Existing work appears to address this Gap. Review the counter-evidence before continuing."
+      : editing.search_audit.counter_evidence_outcome === "inconclusive"
+        ? "The limitations below are supported by Related Work, but there is not enough verified counter-evidence to determine whether they remain unresolved. Treat this as a potential Gap."
+        : !evidenceReady
+          ? "Some evidence checks are still incomplete. Only source-supported limitations are shown."
+          : null;
 
   return (
     <section aria-label="Gap Candidate" className="grid gap-4">
       <div>
         <h3 className="font-medium">Gap Candidate</h3>
         <p className="text-sm text-muted-foreground">
-          This candidate synthesizes the top five Related Work results and a separate counter-evidence search. You can edit the summary without changing its audit.
+          This potential Gap summarizes source-supported limitations and how confidently the
+          counter-evidence review could assess them.
         </p>
       </div>
       <div className="grid gap-4 rounded-md border border-navy p-4">
@@ -74,7 +83,11 @@ export function GapCandidatePicker({ candidate, selectedGap, disabled, onSelect 
         </label>
         <div className="grid gap-1 rounded-md bg-muted/50 p-3 text-sm" role="status">
           <p className="font-medium">
-            {evidenceReady ? "Evidence-ready Gap Candidate" : "Evidence warning"}
+            {evidenceReady
+              ? "Evidence-ready Gap Candidate"
+              : editing.search_audit.counter_evidence_outcome === "inconclusive"
+                ? "Potential Gap — further validation needed"
+                : "Evidence needs review"}
           </p>
           <p className="text-muted-foreground">
             {editing.search_audit.related_work_analyzed_count} Related Work result(s) and {editing.search_audit.counter_evidence_analyzed_count} counter-evidence result(s) analyzed.
@@ -82,13 +95,11 @@ export function GapCandidatePicker({ candidate, selectedGap, disabled, onSelect 
           {!evidenceReady ? (
             <div className="grid gap-1 text-pending">
               <p>
-                Evidence is incomplete or does not support this Gap Candidate. You can still save and Confirm; the decision is yours.
+                You can continue with this potential Gap, but keep its uncertainty visible in later stages.
               </p>
-              {evidenceWarnings.length > 0 ? (
+              {evidenceWarning ? (
                 <ul className="list-disc pl-5">
-                  {evidenceWarnings.map((warning, index) => (
-                    <li key={`${warning}-${index}`}>{warning}</li>
-                  ))}
+                  <li>{evidenceWarning}</li>
                 </ul>
               ) : null}
             </div>
@@ -100,6 +111,45 @@ export function GapCandidatePicker({ candidate, selectedGap, disabled, onSelect 
             <p className="text-muted-foreground">
               {editing.search_audit.counter_evidence_assessment}
             </p>
+          </div>
+        ) : null}
+        {editing.search_audit.claim_assessments.length > 0 ? (
+          <div
+            className="grid gap-2 text-sm"
+            role="region"
+            aria-label={
+              claimsHaveCounterAudit
+                ? "Atomic Gap claims"
+                : "Source-grounded limitations awaiting counter-evidence audit"
+            }
+          >
+            <p className="font-medium">
+              {claimsHaveCounterAudit
+                ? "Atomic Gap claims"
+                : "Source-grounded limitations awaiting counter-evidence audit"}
+            </p>
+            <ul className="grid gap-2">
+              {editing.search_audit.claim_assessments.map((claim) => (
+                <li key={claim.claim_id} className="grid gap-1 rounded-md border p-3">
+                  <p>{claim.statement}</p>
+                  <p className="text-muted-foreground">
+                    Supported by Related Work · Counter-evidence review:{" "}
+                    {impactLabels[claim.outcome]}
+                  </p>
+                  {claim.assessment ? (
+                    <p className="text-muted-foreground">{claim.assessment}</p>
+                  ) : null}
+                  {claim.supporting_evidence.map((evidence) => (
+                    <blockquote
+                      key={`${claim.claim_id}-${evidence.citation_key}`}
+                      className="border-l-2 pl-3 text-muted-foreground"
+                    >
+                      “{evidence.passage}” — {evidence.location} · {evidence.citation_key}
+                    </blockquote>
+                  ))}
+                </li>
+              ))}
+            </ul>
           </div>
         ) : null}
         {editing.search_audit.counter_evidence_results.length > 0 ? (
@@ -123,9 +173,20 @@ export function GapCandidatePicker({ candidate, selectedGap, disabled, onSelect 
                       {[result.year, result.venue, result.provider].filter(Boolean).join(" · ")}
                     </p>
                     <p>
-                      {impactLabels[result.impact]} · Verification: {result.verification_status}
+                      {impactLabels[result.impact]} · Source identity: {result.verification_status}
+                    </p>
+                    <p>
+                      Content: {result.content_basis.replaceAll("_", " ")} · Grounding:{" "}
+                      {result.grounding_status} · Relevance: {result.relevance_status} · Support:{" "}
+                      {result.support_status}
                     </p>
                     <p className="text-muted-foreground">{result.rationale}</p>
+                    {result.evidence_passage ? (
+                      <blockquote className="border-l-2 pl-3 text-muted-foreground">
+                        “{result.evidence_passage}”
+                        {result.evidence_location ? ` — ${result.evidence_location}` : ""}
+                      </blockquote>
+                    ) : null}
                     {result.verification_messages.length > 0 ? (
                       <p className="text-muted-foreground">
                         {result.verification_messages.join(" ")}

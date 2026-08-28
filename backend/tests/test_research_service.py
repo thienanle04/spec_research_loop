@@ -1,5 +1,6 @@
 """Fast unit tests for research provider seams and normalization."""
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -7,26 +8,50 @@ from uuid import uuid4
 
 import pytest
 
+from app.adapters.storage import MemoryObjectStorage
 from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.research.adapters.fake_source import FakeScholarlySourcePort
 from app.modules.research.normalization import normalize_doi, normalize_url
 from app.modules.research.ports import (
     DocumentText,
+    ScholarlyProviderError,
     ScholarlyRecord,
     SourcePreferences,
     VerificationResult,
 )
 from app.modules.research.schemas import (
+    CounterEvidenceContentBasis,
+    CounterEvidenceOutcome,
+    CounterEvidenceRelevance,
+    CounterEvidenceResult,
+    CounterEvidenceSupport,
+    GapCardBody,
+    GapClaimAssessment,
+    GapClaimEvidence,
+    GapClaimKind,
+    GapEvidenceCheck,
+    GapSearchAudit,
+    GapStatus,
     GroundingStatus,
     ResearchGenerateRequest,
     ResearchInputs,
     VerificationStatus,
 )
 from app.modules.research.service import (
+    ResearchGenerationError,
     ResearchService,
+    _citation_method_queries,
     _compose_search_queries,
+    _CounterEvidenceSearch,
+    _fallback_gap_claims,
+    _gap_claims_from_answers,
+    _GapClaim,
+    _GapQuestionAnswers,
     _json_value,
+    _portfolio_order_records,
     _rank_relevant_records,
+    _validated_counter_evidence_assessment,
+    _validated_counter_support_response,
 )
 from app.ports.llm import LlmProviderError
 
@@ -54,6 +79,732 @@ def test_json_value_extracts_structured_output_from_model_wrappers(raw: str) -> 
 def test_json_value_still_rejects_unstructured_model_output() -> None:
     with pytest.raises(json.JSONDecodeError):
         _json_value("I could not produce the requested queries.", dict)
+
+
+@pytest.mark.asyncio
+async def test_coalesced_provider_failure_is_reported_once() -> None:
+    class FailingMultiQuerySource:
+        async def search_many(
+            self,
+            *,
+            queries: list[str],
+            preferences: SourcePreferences | None = None,
+            limit: int = 10,
+        ) -> list[ScholarlyRecord]:
+            del queries, preferences, limit
+            raise ScholarlyProviderError(
+                "Semantic Scholar request failed (HTTP 500).",
+                status_code=500,
+            )
+
+        async def search(
+            self,
+            *,
+            query: str,
+            preferences: SourcePreferences | None = None,
+            limit: int = 10,
+        ) -> list[ScholarlyRecord]:
+            del query, preferences, limit
+            return []
+
+        async def get_source(self, *, identifier: str) -> ScholarlyRecord | None:
+            del identifier
+            return None
+
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FailingMultiQuerySource(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+    )
+
+    records, failures = await service._search_provider_queries(
+        queries=["first counter query", "second counter query"],
+        preferences=SourcePreferences(),
+        limit=5,
+    )
+
+    assert records == []
+    assert failures == ["Semantic Scholar request failed (HTTP 500)."]
+
+
+def _ready_gap_candidate() -> GapCardBody:
+    statement = "A source-grounded atomic Gap remains unresolved."
+    return GapCardBody(
+        statement=statement,
+        supporting_citation_keys=["smith-2025"],
+        status=GapStatus.CANDIDATE,
+        search_audit=GapSearchAudit(
+            assessed_statement=statement,
+            related_work_queries=["source grounded gap"],
+            counter_evidence_queries=["source grounded gap competing method"],
+            providers=["fixture"],
+            related_work_candidate_count=1,
+            related_work_analyzed_count=1,
+            counter_evidence_candidate_count=1,
+            counter_evidence_analyzed_count=1,
+            complete=True,
+            completed_at="2026-08-26T00:00:00Z",
+            counter_evidence_outcome=(
+                CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+            ),
+            counter_evidence_results=[
+                CounterEvidenceResult(
+                    result_key="counter-1",
+                    title="Counter source",
+                    verification_status=VerificationStatus.VERIFIED,
+                    content_basis=CounterEvidenceContentBasis.ABSTRACT,
+                    evidence_passage="The study evaluates a different mechanism.",
+                    evidence_location="Abstract",
+                    grounding_status=GroundingStatus.GROUNDED,
+                    relevance_status=CounterEvidenceRelevance.RELEVANT,
+                    support_status=CounterEvidenceSupport.SUPPORTED,
+                    impact=CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE,
+                )
+            ],
+            claim_assessments=[
+                GapClaimAssessment(
+                    claim_id="c1",
+                    kind=GapClaimKind.UNRESOLVED_LIMITATION,
+                    statement=statement,
+                    supporting_citation_keys=["smith-2025"],
+                    supporting_evidence=[
+                        GapClaimEvidence(
+                            citation_key="smith-2025",
+                            passage="The source reports an unresolved atomic limitation.",
+                            location="Abstract",
+                        )
+                    ],
+                    counter_evidence_result_keys=["counter-1"],
+                    outcome=CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE,
+                )
+            ],
+        ),
+        evidence_check=GapEvidenceCheck(
+            eligible_citation_keys=["smith-2025"],
+            ready=True,
+        ),
+    )
+
+
+def test_gap_readiness_becomes_stale_when_statement_changes() -> None:
+    candidate = _ready_gap_candidate()
+
+    assert candidate.is_evidence_ready()
+    candidate.statement = "A materially different Gap statement."
+    assert not candidate.is_evidence_ready()
+    reparsed = GapCardBody.model_validate(candidate.model_dump(mode="json"))
+    assert reparsed.status is GapStatus.INSUFFICIENT_EVIDENCE
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_message"),
+    [
+        ("identity", "source identity"),
+        ("grounding", "grounded in source content"),
+        ("relevance", "directly relevant"),
+        ("claim_counter_mapping", "every selected counter-evidence source"),
+        ("claim_support_mapping", "mapped exactly"),
+        ("portfolio_coverage", "selected source portfolio"),
+        ("aggregate_outcome", "inconsistent with the atomic claims"),
+    ],
+)
+def test_gap_readiness_rejects_incomplete_evidence_contract(
+    case: str,
+    expected_message: str,
+) -> None:
+    candidate = _ready_gap_candidate()
+    if case == "identity":
+        candidate.search_audit.counter_evidence_results[
+            0
+        ].verification_status = VerificationStatus.WARNING
+    elif case == "grounding":
+        candidate.search_audit.counter_evidence_results[
+            0
+        ].grounding_status = GroundingStatus.WARNING
+    elif case == "relevance":
+        candidate.search_audit.counter_evidence_results[
+            0
+        ].relevance_status = CounterEvidenceRelevance.IRRELEVANT
+    elif case == "claim_counter_mapping":
+        candidate.search_audit.claim_assessments[0].counter_evidence_result_keys = []
+    elif case == "claim_support_mapping":
+        candidate.search_audit.claim_assessments[0].supporting_citation_keys = [
+            "lee-2024"
+        ]
+        candidate.evidence_check.eligible_citation_keys.append("lee-2024")
+    elif case == "portfolio_coverage":
+        candidate.search_audit.counter_evidence_analyzed_count = 2
+    elif case == "aggregate_outcome":
+        candidate.search_audit.counter_evidence_outcome = (
+            CounterEvidenceOutcome.GAP_NARROWED
+        )
+    else:  # pragma: no cover - parametrization is exhaustive
+        raise AssertionError(f"Unknown readiness case: {case}")
+
+    messages = candidate.evidence_readiness_messages()
+    assert any(expected_message in message.casefold() for message in messages)
+    assert not candidate.is_evidence_ready()
+    reparsed = GapCardBody.model_validate(candidate.model_dump(mode="json"))
+    assert reparsed.status is GapStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_gap_readiness_allows_a_smaller_relevant_counter_portfolio() -> None:
+    candidate = _ready_gap_candidate()
+    candidate.search_audit.counter_evidence_candidate_count = 5
+
+    assert candidate.evidence_readiness_messages() == []
+    assert candidate.is_evidence_ready() is True
+
+
+def test_gap_claims_reject_model_invented_details_outside_grounded_candidates() -> None:
+    source_claim = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement="The study evaluates only one dataset.",
+        supporting_citation_keys=["smith-2025"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="smith-2025",
+                passage="The evaluation uses a single dataset.",
+                location="Abstract",
+            )
+        ],
+    )
+    answers = _GapQuestionAnswers(
+        prior_work="The study evaluates a verification method.",
+        limitation="The evaluation uses one dataset.",
+        importance="Generalization matters.",
+        testability="Evaluate on held-out datasets.",
+        covered_citation_keys=["smith-2025"],
+        claims=[
+            _GapClaim(
+                claim_id="c1",
+                kind=GapClaimKind.UNRESOLVED_LIMITATION,
+                statement=(
+                    "MAX_RETRY = 3 fails because the classifier was trained only "
+                    "on Indonesian data."
+                ),
+                supporting_citation_keys=["smith-2025"],
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="grounded claim candidates"):
+        _gap_claims_from_answers(answers, [source_claim])
+
+
+@pytest.mark.asyncio
+async def test_gap_claim_support_rejects_a_semantically_unrelated_passage() -> None:
+    candidate = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement="The classifier was trained only on Indonesian data.",
+        supporting_citation_keys=["smith-2025"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="smith-2025",
+                passage="The model exhibits safety vulnerabilities during evaluation.",
+                location="Abstract",
+            )
+        ],
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(
+            responses={
+                "research-gap-claim-support-check": json.dumps(
+                    {
+                        "assessments": [
+                            {
+                                "claim_id": "c1",
+                                "support_status": "unsupported",
+                            }
+                        ]
+                    }
+                )
+            }
+        ),
+    )
+
+    supported, warnings = await service._validate_gap_claim_support(
+        idea={},
+        claim_candidates=[candidate],
+    )
+
+    assert supported == []
+    assert any("Excluded 1 atomic Gap claim" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_gap_claim_support_normalizes_wrapped_alias_fields() -> None:
+    candidate = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement="The evaluation uses one dataset.",
+        supporting_citation_keys=["smith-2025"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="smith-2025",
+                passage="The evaluation uses a single dataset.",
+                location="Abstract",
+            )
+        ],
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-gap-claim-support-check": json.dumps(
+                {"data": {"results": [{"id": "c1", "status": "yes"}]}}
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    supported, warnings = await service._validate_gap_claim_support(
+        idea={},
+        claim_candidates=[candidate],
+    )
+
+    assert supported == [candidate]
+    assert warnings == []
+    assert len(llm.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_gap_claim_support_repairs_an_incomplete_bulk_response() -> None:
+    candidate = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement="The evaluation uses one dataset.",
+        supporting_citation_keys=["smith-2025"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="smith-2025",
+                passage="The evaluation uses a single dataset.",
+                location="Abstract",
+            )
+        ],
+    )
+    llm = FakeLlmPort(
+        responses={"research-gap-claim-support-check": "{}"}
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    supported, warnings = await service._validate_gap_claim_support(
+        idea={},
+        claim_candidates=[candidate],
+    )
+
+    assert supported == [candidate]
+    assert any("structured-output recovery" in warning for warning in warnings)
+    assert any("schema validation failed" in warning for warning in warnings)
+    assert len(llm.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_gap_claim_support_recovers_independently_per_claim() -> None:
+    candidate = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement="The evaluation uses one dataset.",
+        supporting_citation_keys=["smith-2025"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="smith-2025",
+                passage="The evaluation uses a single dataset.",
+                location="Abstract",
+            )
+        ],
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-gap-claim-support-check": "{}",
+            "research-gap-claim-support-repair": "{}",
+            "research-gap-claim-support-item-check": '{"supported":true}',
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    supported, warnings = await service._validate_gap_claim_support(
+        idea={},
+        claim_candidates=[candidate],
+    )
+
+    assert supported == [candidate]
+    assert any("per-claim recovery left 0/1" in warning for warning in warnings)
+    assert len(llm.calls) == 4
+
+
+def test_gap_claim_preparation_splits_composites_and_rejects_nonmention() -> None:
+    related_work = [
+        {
+            "citation_key": "multi-kb-2026",
+            "limitation": (
+                "Cơ chế hiện tại tập trung vào nguồn văn bản và chưa được mở rộng "
+                "sang xác thực đa phương tiện; khuôn khổ hiện chỉ được tối ưu hóa "
+                "cho một cơ sở dữ liệu kiến thức duy nhất."
+            ),
+            "evidence": {
+                "limitation": {
+                    "passage": (
+                        "The framework is currently optimized only for a single "
+                        "knowledge base and does not explore coordination across "
+                        "multiple heterogeneous knowledge bases."
+                    ),
+                    "location": "Limitations",
+                }
+            },
+        },
+        {
+            "citation_key": "dynamic-kg-2026",
+            "limitation": (
+                "Hệ thống dùng Dynamic KG nhưng không đề cập đến việc tự động "
+                "khởi động lại suy luận hoặc sử dụng External Critic."
+            ),
+            "evidence": {
+                "limitation": {
+                    "passage": (
+                        "Dynamic KG injection substantially reduces factual errors."
+                    ),
+                    "location": "Abstract",
+                }
+            },
+        },
+    ]
+
+    claims, warnings = _fallback_gap_claims(
+        related_work,
+        ["multi-kb-2026", "dynamic-kg-2026"],
+    )
+
+    assert [claim.statement for claim in claims] == [
+        "Cơ chế hiện tại tập trung vào nguồn văn bản và chưa được mở rộng sang xác thực đa phương tiện",
+        "Khuôn khổ hiện chỉ được tối ưu hóa cho một cơ sở dữ liệu kiến thức duy nhất.",
+    ]
+    assert any("Split 1 composite" in warning for warning in warnings)
+    assert any("source non-mention" in warning for warning in warnings)
+
+
+def test_gap_claim_preparation_removes_unanchored_clinical_scope() -> None:
+    claims, warnings = _fallback_gap_claims(
+        [
+            {
+                "citation_key": "ultrasound-2026",
+                "limitation": (
+                    "Nghiên cứu dựa trên đầu vào văn bản có cấu trúc thay vì ảnh "
+                    "siêu âm thô, nên kết quả có thể không chuyển trực tiếp sang "
+                    "ứng dụng đa phương thức trong thực tế lâm sàng."
+                ),
+                "evidence": {
+                    "limitation": {
+                        "passage": (
+                            "The study relied on structured text inputs rather than raw "
+                            "ultrasound images; therefore, the findings may not directly "
+                            "translate to multimodal image-based applications."
+                        ),
+                        "location": "Page 10",
+                    }
+                },
+            }
+        ],
+        ["ultrasound-2026"],
+    )
+
+    assert claims[0].statement.endswith("ứng dụng đa phương thức.")
+    assert "lâm sàng" not in claims[0].statement
+    assert any("removing clinical scope" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_gap_claim_confirmation_rejects_an_unsupported_fragment() -> None:
+    candidate = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement=(
+            "Cơ chế hiện tại chưa được mở rộng sang xác thực cộng tác của thông tin "
+            "đa phương tiện."
+        ),
+        supporting_citation_keys=["multi-kb-2026"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="multi-kb-2026",
+                passage=(
+                    "The framework is currently optimized only for a single knowledge "
+                    "base and does not explore coordination across heterogeneous "
+                    "knowledge bases."
+                ),
+                location="Limitations",
+            )
+        ],
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-gap-claim-support-confirmation": json.dumps(
+                {
+                    "assessments": [
+                        {
+                            "claim_id": "c1",
+                            "support_status": "supported",
+                            "atomicity_status": "atomic",
+                            "evidence_span": (
+                                "The framework is currently optimized only for a single "
+                                "knowledge base"
+                            ),
+                            "unsupported_fragments": [
+                                "xác thực cộng tác của thông tin đa phương tiện"
+                            ],
+                        }
+                    ]
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    supported, warnings = await service._validate_gap_claim_support(
+        idea={},
+        claim_candidates=[candidate],
+    )
+
+    assert supported == []
+    assert any("Excluded 1 atomic Gap claim" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_gap_claim_support_accepts_the_grounded_ultrasound_limitation() -> None:
+    candidate = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement=(
+            "Nghiên cứu dựa trên đầu vào văn bản có cấu trúc thay vì hình ảnh siêu "
+            "âm thô, nên kết quả có thể không chuyển trực tiếp sang ứng dụng đa phương thức."
+        ),
+        supporting_citation_keys=["ultrasound-2026"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="ultrasound-2026",
+                passage=(
+                    "The study relied on structured text inputs rather than raw "
+                    "ultrasound images; therefore, the findings may not directly "
+                    "translate to multimodal image-based applications."
+                ),
+                location="Page 10",
+            )
+        ],
+    )
+    llm = FakeLlmPort()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    supported, warnings = await service._validate_gap_claim_support(
+        idea={},
+        claim_candidates=[candidate],
+    )
+
+    assert supported == [candidate]
+    assert warnings == []
+    assert len(llm.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_gap_claim_support_rejects_nonmention_without_confirmation() -> None:
+    candidate = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement=(
+            "Dynamic KG giảm lỗi nhưng không đề cập đến restart hoặc External Critic."
+        ),
+        supporting_citation_keys=["dynamic-kg-2026"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="dynamic-kg-2026",
+                passage="Dynamic KG injection substantially reduces factual errors.",
+                location="Abstract",
+            )
+        ],
+    )
+    llm = FakeLlmPort()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    supported, warnings = await service._validate_gap_claim_support(
+        idea={},
+        claim_candidates=[candidate],
+    )
+
+    assert supported == []
+    assert any("Excluded 1 atomic Gap claim" in warning for warning in warnings)
+    assert len(llm.calls) == 1
+
+
+def test_counter_support_normalizes_wrapped_alias_fields() -> None:
+    response = _validated_counter_support_response(
+        '{"output":[{"key":"result-1","verdict":"entailed"}]}',
+        ["result-1"],
+    )
+
+    assert response.assessments[0].result_key == "result-1"
+    assert (
+        response.assessments[0].support_status
+        is CounterEvidenceSupport.SUPPORTED
+    )
+
+
+@pytest.mark.asyncio
+async def test_gap_generation_skips_counter_search_without_supported_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = FakeLlmPort(
+        responses={
+            "research-gap-claim-support-check": json.dumps(
+                {
+                    "assessments": [
+                        {"claim_id": "c1", "support_status": "unsupported"}
+                    ]
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(_relevant_counter_records(5)),
+        verifier=_RecordingVerifier(),
+        llm=llm,
+    )
+
+    async def unexpected_counter_search(**_kwargs: Any) -> None:
+        raise AssertionError("Counter search must be skipped without supported claims")
+
+    monkeypatch.setattr(service, "_search_counter_evidence", unexpected_counter_search)
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {"kind": "problem", "body": {"text": "Unsupported claims"}}
+                ]
+            },
+            "research_inputs": {"narrative": {"keywords": ["claim verification"]}},
+            "related_work": {
+                "narrative": {
+                    "search_queries": ["claim verification"],
+                    "candidate_count": 1,
+                },
+                "projected": {
+                    "citations": [
+                        {
+                            "id": "citation-1",
+                            "citation_key": "smith-2025",
+                            "title": "Claim verification",
+                            "provider": "fixture",
+                            "verification_status": "verified",
+                        }
+                    ],
+                    "related_work": [
+                        {
+                            "citation_id": "citation-1",
+                            "what_was_done": "Evaluates aggregate feedback",
+                            "limitation": "Does not isolate claim-level errors",
+                            "source_location": "Abstract",
+                            "evidence": {
+                                "limitation": {
+                                    "passage": "Does not isolate claim-level errors",
+                                    "location": "Abstract",
+                                }
+                            },
+                            "grounding_status": "grounded",
+                        }
+                    ],
+                },
+            },
+        },
+        "working_draft": {"narrative": {}},
+    }
+
+    narrative, warnings = await service._generate_gaps(context)
+
+    audit = narrative["candidate"]["search_audit"]
+    assert audit["counter_evidence_queries"] == []
+    assert audit["counter_evidence_candidate_count"] == 0
+    assert "search was skipped" in audit["counter_evidence_assessment"]
+    assert any("Skipped counter-evidence search" in warning for warning in warnings)
+    assert not any("research-counter-query" in call["system"] for call in llm.calls)
+
+
+def test_counter_assessment_requires_a_complete_claim_source_matrix() -> None:
+    payload = {
+        "outcome": "no_direct_counter_evidence",
+        "statement": "The limitation remains testable.",
+        "assessment": "Neither source resolves either claim.",
+        "covered_result_keys": ["r1", "r2"],
+        "findings": [
+            {
+                "result_key": key,
+                "claim_ids": ["c1"],
+                "impact": "no_direct_counter_evidence",
+                "relevance_status": "relevant",
+                "rationale": "The source does not resolve the claims.",
+                "supporting_passage": "A directly relevant source passage.",
+                "source_location": "Abstract",
+            }
+            for key in ("r1", "r2")
+        ],
+        "claim_assessments": [
+            {
+                "claim_id": claim_id,
+                "outcome": "no_direct_counter_evidence",
+                "assessment": "The sources do not resolve this claim.",
+                "counter_evidence_result_keys": ["r1", "r2"],
+            }
+            for claim_id in ("c1", "c2")
+        ],
+    }
+
+    with pytest.raises(ValueError, match="every Gap claim"):
+        _validated_counter_evidence_assessment(
+            json.dumps(payload),
+            ["r1", "r2"],
+            ["c1", "c2"],
+        )
+
+    for finding in payload["findings"]:
+        finding["claim_ids"] = ["c1", "c2"]
+    payload["claim_assessments"][0]["counter_evidence_result_keys"] = ["r1"]
+    with pytest.raises(ValueError, match="every counter-evidence result"):
+        _validated_counter_evidence_assessment(
+            json.dumps(payload),
+            ["r1", "r2"],
+            ["c1", "c2"],
+        )
 
 
 @pytest.mark.asyncio
@@ -111,15 +862,15 @@ async def test_search_queries_use_english_while_outputs_follow_idea_language() -
                 '"covered_citation_keys":["nguyen-2026"]}'
             ),
             "research-gap-synthesis": (
-                '{"statement":"Các nghiên cứu đã kiểm tra từng tuyên bố, nhưng chưa '
-                'rõ phương pháp có khái quát sang nhiều lĩnh vực hay không."}'
+                '{"statement":"Các nghiên cứu đã kiểm tra từng tuyên bố. Chưa rõ '
+                'phương pháp có khái quát sang nhiều lĩnh vực hay không."}'
             ),
         }
     )
     service = ResearchService(
         _UnusedDb(),  # type: ignore[arg-type]
-        source=FakeScholarlySourcePort(),
-        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(_relevant_counter_records()),
+        verifier=_RecordingVerifier(),
         llm=llm,
     )
     idea = {
@@ -158,6 +909,12 @@ async def test_search_queries_use_english_while_outputs_follow_idea_language() -
                             "citation_id": "citation-1",
                             "what_was_done": "Kiểm tra từng tuyên bố",
                             "limitation": "Chỉ đánh giá một tập dữ liệu",
+                            "evidence": {
+                                "limitation": {
+                                    "passage": "Chỉ đánh giá một tập dữ liệu",
+                                    "location": "Abstract",
+                                }
+                            },
                             "grounding_status": "grounded",
                         }
                     ],
@@ -187,7 +944,7 @@ async def test_search_queries_use_english_while_outputs_follow_idea_language() -
     assert any("survey OR review" in query for query in queries)
     assert finding.what_was_done == "Kiểm tra từng tuyên bố"
     assert gap["candidate"]["statement"].startswith("Các nghiên cứu")
-    assert len(llm.calls) == 8
+    assert len(llm.calls) == 11
     assert any("research-rerank" in call["system"] for call in llm.calls)
     query_call = next(call for call in llm.calls if "research-query" in call["system"])
     assert "English regardless of the input language" in query_call["system"]
@@ -291,7 +1048,9 @@ async def test_analysis_normalizes_fit_webui_field_aliases() -> None:
 
 
 @pytest.mark.asyncio
-async def test_analysis_uses_distinct_content_passages_instead_of_html_or_pdf_dump() -> None:
+async def test_analysis_uses_distinct_content_passages_instead_of_html_or_pdf_dump() -> (
+    None
+):
     source_text = (
         "Username Password Remember me Journal Content Search Scope Browse By Title\n"
         "Abstract\n"
@@ -311,9 +1070,18 @@ async def test_analysis_uses_distinct_content_passages_instead_of_html_or_pdf_du
                     "relevance": "Directly relevant.",
                     "supporting_passage": "Full text (HTML)",
                     "evidence": {
-                        "what_was_done": {"passage": "Full text (HTML)", "location": "HTML"},
-                        "method_or_feedback": {"passage": "Full text (PDF)", "location": "PDF"},
-                        "limitation": {"passage": "VI. RESEARCH METHODOLOGY", "location": "PDF"},
+                        "what_was_done": {
+                            "passage": "Full text (HTML)",
+                            "location": "HTML",
+                        },
+                        "method_or_feedback": {
+                            "passage": "Full text (PDF)",
+                            "location": "PDF",
+                        },
+                        "limitation": {
+                            "passage": "VI. RESEARCH METHODOLOGY",
+                            "location": "PDF",
+                        },
                     },
                     "confidence": 0.8,
                 }
@@ -348,6 +1116,80 @@ async def test_analysis_uses_distinct_content_passages_instead_of_html_or_pdf_du
 
 
 @pytest.mark.asyncio
+async def test_analysis_expands_pdf_line_fragments_to_complete_source_sentences() -> None:
+    source_text = (
+        "Abstract\n"
+        "Dependencies between tokens (e.g., bank must be prop-\n"
+        "erly contextualized) remain difficult for large language models.\n"
+        "Method\n"
+        "We provide correlational and causal evidence in\n"
+        "controlled experiments across three model families.\n"
+        "Limitations\n"
+        "Errors due to missing factual knowledge (Haset et al.,\n"
+        "2024) are outside the scope of this analysis."
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-analysis": json.dumps(
+                {
+                    "what_was_done": "Studies contextualization errors.",
+                    "method_or_feedback": "Uses correlational and causal evidence.",
+                    "limitation": "Does not cover missing factual knowledge.",
+                    "relevance": "Directly relevant.",
+                    "supporting_passage": "cies between tokens (e.g., bank must be prop-",
+                    "evidence": {
+                        "what_was_done": {
+                            "passage": "cies between tokens (e.g., bank must be prop-",
+                            "location": "Page 1",
+                        },
+                        "method_or_feedback": {
+                            "passage": "we provide correlational and causal evidence in",
+                            "location": "Page 1",
+                        },
+                        "limitation": {
+                            "passage": "rors due to missing factual knowledge (Haset et al.,",
+                            "location": "Page 1",
+                        },
+                    },
+                    "confidence": 0.9,
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    finding, warnings = await service._analyze(
+        ScholarlyRecord(title="Contextualization errors", abstract=None),
+        uuid4(),
+        research_context={"idea": {}, "research_inputs": {}},
+        document=DocumentText(text=source_text, source_kind="full_text_pdf"),
+    )
+
+    assert finding.evidence["what_was_done"].passage == (
+        "Dependencies between tokens (e.g., bank must be prop-\n"
+        "erly contextualized) remain difficult for large language models."
+    )
+    assert finding.evidence["method_or_feedback"].passage == (
+        "We provide correlational and causal evidence in\n"
+        "controlled experiments across three model families."
+    )
+    assert finding.evidence["limitation"].passage == (
+        "Errors due to missing factual knowledge (Haset et al.,\n"
+        "2024) are outside the scope of this analysis."
+    )
+    assert finding.source_location == "Abstract"
+    assert finding.evidence["method_or_feedback"].location == "Method"
+    assert finding.evidence["limitation"].location == "Limitations"
+    assert finding.grounding_status is GroundingStatus.GROUNDED
+    assert warnings == []
+
+
+@pytest.mark.asyncio
 async def test_analysis_fallback_hides_validation_implementation_details() -> None:
     llm = FakeLlmPort(responses={"research-analysis": "not-json"})
     service = ResearchService(
@@ -377,8 +1219,8 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
     llm = FakeLlmPort()
     service = ResearchService(
         _UnusedDb(),  # type: ignore[arg-type]
-        source=FakeScholarlySourcePort(),
-        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(_relevant_counter_records()),
+        verifier=_RecordingVerifier(),
         llm=llm,
     )
     context = {
@@ -429,12 +1271,24 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
                             "citation_id": "citation-1",
                             "what_was_done": "Optimizes prompts with aggregate scores",
                             "limitation": "Uses aggregate feedback",
+                            "evidence": {
+                                "limitation": {
+                                    "passage": "Uses aggregate feedback",
+                                    "location": "Abstract",
+                                }
+                            },
                             "grounding_status": "grounded",
                         },
                         {
                             "citation_id": "citation-2",
                             "what_was_done": "Refines outputs with textual feedback",
                             "limitation": "Does not verify evidence per claim",
+                            "evidence": {
+                                "limitation": {
+                                    "passage": "Does not verify evidence per claim",
+                                    "location": "Abstract",
+                                }
+                            },
                             "grounding_status": "grounded",
                         },
                     ],
@@ -481,24 +1335,29 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
     assert (
         narrative["candidate"]["search_audit"]["counter_evidence_analyzed_count"] == 2
     )
-    counter_results = narrative["candidate"]["search_audit"][
-        "counter_evidence_results"
-    ]
+    counter_results = narrative["candidate"]["search_audit"]["counter_evidence_results"]
     assert len(counter_results) == 2
     assert all(result["title"] for result in counter_results)
     assert all(result["rationale"] for result in counter_results)
     assert narrative["candidate"]["search_audit"]["counter_evidence_assessment"]
+    claim_assessments = narrative["candidate"]["search_audit"]["claim_assessments"]
+    assert {item["claim_id"] for item in claim_assessments} == {"c1", "c2"}
+    assert all(item["supporting_citation_keys"] for item in claim_assessments)
+    assert all(item["supporting_evidence"] for item in claim_assessments)
+    assert all(result["grounding_status"] == "grounded" for result in counter_results)
+    assert all(result["support_status"] == "supported" for result in counter_results)
+    assert '"claim_assessments"' in synthesis_prompt
     assert narrative["candidate"]["evidence_check"]["ready"] is True
     assert warnings == []
 
 
 @pytest.mark.asyncio
-async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
+async def test_gap_regeneration_ignores_prior_gap_and_counter_evidence() -> None:
     llm = FakeLlmPort()
     service = ResearchService(
         _UnusedDb(),  # type: ignore[arg-type]
-        source=FakeScholarlySourcePort(),
-        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(_relevant_counter_records()),
+        verifier=_RecordingVerifier(),
         llm=llm,
     )
     prior_result = {
@@ -520,9 +1379,7 @@ async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
                     {"kind": "problem", "body": {"text": "Unsupported claims"}}
                 ]
             },
-            "research_inputs": {
-                "narrative": {"keywords": ["claim verification"]}
-            },
+            "research_inputs": {"narrative": {"keywords": ["claim verification"]}},
             "related_work": {
                 "narrative": {
                     "search_queries": ["claim verification"],
@@ -544,6 +1401,12 @@ async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
                             "citation_id": "citation-1",
                             "what_was_done": "Optimizes prompts with aggregate scores",
                             "limitation": "Uses aggregate feedback",
+                            "evidence": {
+                                "limitation": {
+                                    "passage": "Uses aggregate feedback",
+                                    "location": "Abstract",
+                                }
+                            },
                             "grounding_status": "grounded",
                         }
                     ],
@@ -577,7 +1440,7 @@ async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
                         "counter_evidence_results": [prior_result],
                     },
                 }
-            }
+            },
         },
     }
 
@@ -597,14 +1460,21 @@ async def test_gap_regeneration_uses_prior_counter_evidence_feedback() -> None:
         for call in llm.calls
         if "research-counter-query" in call["system"]
     )
+    counter_query_system = next(
+        call["system"]
+        for call in llm.calls
+        if "research-counter-query" in call["system"]
+    )
 
     for prompt in (analysis_prompt, synthesis_prompt, counter_query_prompt):
-        assert "gap_not_supported" in prompt
-        assert "Edited saved Gap takes precedence." in prompt
+        assert "gap_not_supported" not in prompt
+        assert "Edited saved Gap takes precedence." not in prompt
         assert "No system verifies evidence for every claim." not in prompt
-        assert "Existing claim-level verifier" in prompt
-        assert "already addresses the proposed limitation" in prompt
-    assert '"required_counter_evidence_keys": ["prior-counter-1"]' in analysis_prompt
+        assert "Existing claim-level verifier" not in prompt
+        assert "already addresses the proposed limitation" not in prompt
+        assert "previous_counter_feedback" not in prompt
+    assert "required_counter_evidence_keys" not in analysis_prompt
+    assert "claim-specific query" in counter_query_system
     assert warnings == []
 
 
@@ -630,8 +1500,14 @@ async def test_counter_evidence_analysis_repairs_missing_required_fields() -> No
                     "findings": [
                         {
                             "result_key": identifier,
-                            "impact": "no_direct_counter_evidence",
-                            "rationale": "The metadata does not report the proposed check.",
+                            "claim_ids": [],
+                                "impact": "no_direct_counter_evidence",
+                                "relevance_status": "relevant",
+                                "rationale": "The abstract does not report the proposed check.",
+                            "supporting_passage": (
+                                "Evaluates an existing claim verification method."
+                            ),
+                            "source_location": "Abstract",
                         }
                         for identifier in ("first", "second")
                     ],
@@ -652,17 +1528,319 @@ async def test_counter_evidence_analysis_repairs_missing_required_fields() -> No
         llm=llm,
     )
 
+    materials, material_warnings = await service._counter_evidence_materials(records)
     assessment, warnings = await service._assess_counter_evidence(
         idea={},
         provisional_statement="The limitation remains testable.",
         records=records,
+        materials=materials,
     )
 
     assert assessment.outcome.value == "no_direct_counter_evidence"
     assert {item.result_key for item in assessment.findings} == {"first", "second"}
+    assert material_warnings == []
     assert warnings == []
-    assert len(llm.calls) == 2
+    assert len(llm.calls) == 3
     assert "research-counter-analysis-repair" in llm.calls[1]["system"]
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_downgrades_semantically_unsupported_rationale() -> None:
+    record = ScholarlyRecord(
+        title="Reasoning safety analysis",
+        abstract="The study reports safety vulnerabilities in a reasoning model.",
+        provider="fixture",
+        provider_source_id="reasoning-safety",
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-counter-support-check": json.dumps(
+                {
+                    "assessments": [
+                        {
+                            "result_key": "reasoning-safety",
+                            "support_status": "unsupported",
+                        }
+                    ]
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    materials, _ = await service._counter_evidence_materials([record])
+    assessment, warnings = await service._assess_counter_evidence(
+        idea={},
+        provisional_statement="An external critic restarts reasoning at the error point.",
+        records=[record],
+        materials=materials,
+    )
+
+    assert assessment.outcome is CounterEvidenceOutcome.INCONCLUSIVE
+    assert assessment.findings[0].support_status is CounterEvidenceSupport.UNSUPPORTED
+    assert any("semantically supported" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_counter_support_repairs_an_incomplete_bulk_response() -> None:
+    record = ScholarlyRecord(
+        title="Claim verification method",
+        abstract="The study evaluates claim verification with evidence feedback.",
+        provider="fixture",
+        provider_source_id="claim-verification",
+    )
+    llm = FakeLlmPort(responses={"research-counter-support-check": "{}"})
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    materials, _ = await service._counter_evidence_materials([record])
+    assessment, warnings = await service._assess_counter_evidence(
+        idea={},
+        provisional_statement="Claim-level verification remains limited.",
+        records=[record],
+        materials=materials,
+    )
+
+    assert assessment.outcome is CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+    assert assessment.findings[0].support_status is CounterEvidenceSupport.SUPPORTED
+    assert any("structured-output recovery" in warning for warning in warnings)
+    assert any("schema validation failed" in warning for warning in warnings)
+    assert len(llm.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_analysis_recovers_a_second_incomplete_response() -> (
+    None
+):
+    records = [
+        ScholarlyRecord(
+            title=f"Counter evidence {identifier}",
+            abstract="Evaluates an existing uncertainty method.",
+            provider="fixture",
+            provider_source_id=identifier,
+        )
+        for identifier in ("first", "second")
+    ]
+    incomplete = json.dumps(
+        {
+            "outcome": "inconclusive",
+            "statement": "The limitation remains provisional.",
+            "assessment": "The response omitted required per-claim fields.",
+            "findings": [
+                {
+                    "result_key": "first",
+                    "rationale": "The source evaluates uncertainty.",
+                    "supporting_passage": (
+                        "Evaluates an existing uncertainty method."
+                    ),
+                    "source_location": "Abstract",
+                }
+            ],
+        }
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-counter-analysis-repair": incomplete,
+            "research-counter-analysis": incomplete,
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    claims = [
+        _GapClaim(
+            claim_id="c1",
+            kind=GapClaimKind.UNRESOLVED_LIMITATION,
+            statement="The limitation remains unresolved.",
+            supporting_citation_keys=["source-1"],
+        )
+    ]
+
+    materials, _ = await service._counter_evidence_materials(records)
+    assessment, warnings = await service._assess_counter_evidence(
+        idea={},
+        provisional_statement="The limitation remains provisional.",
+        records=records,
+        materials=materials,
+        gap_claims=claims,
+    )
+
+    assert assessment.outcome is CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+    assert assessment.covered_result_keys == ["first", "second"]
+    assert [item.result_key for item in assessment.findings] == ["first", "second"]
+    assert all(
+        item.impact is CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+        for item in assessment.findings
+    )
+    assert all(
+        item.grounding_status is GroundingStatus.GROUNDED
+        for item in assessment.findings
+    )
+    assert len(assessment.claim_assessments) == 1
+    assert assessment.claim_assessments[0].claim_id == "c1"
+    assert assessment.claim_assessments[0].counter_evidence_result_keys == [
+        "first",
+        "second",
+    ]
+    assert warnings == []
+    assert len(llm.calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_inconclusive_counter_audit_uses_a_conservative_provisional_gap() -> None:
+    incomplete = json.dumps(
+        {
+            "outcome": "inconclusive",
+            "statement": "Raw private analysis should not be displayed.",
+        }
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-counter-analysis-repair": incomplete,
+            "research-counter-analysis": incomplete,
+            "research-counter-source-analysis": "{}",
+            "research-gap-synthesis": (
+                '{"statement":"Các phương pháp tối ưu prompt hiện tại có thể sử dụng '
+                'điểm tổng hoặc textual feedback. Chưa rõ việc tách output thành từng '
+                'claim, kiểm tra evidence độc lập và dùng lỗi claim-level làm feedback '
+                'có giúp giảm unsupported claims trong cùng ngân sách inference hay không."}'
+            ),
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(_relevant_counter_records()),
+        verifier=_RecordingVerifier(),
+        llm=llm,
+    )
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {
+                        "kind": "problem",
+                        "body": {"text": "Tuyên bố không được hỗ trợ"},
+                    }
+                ]
+            },
+            "research_inputs": {
+                "narrative": {"keywords": ["claim verification"]}
+            },
+            "related_work": {
+                "narrative": {
+                    "search_queries": ["claim verification"],
+                    "candidate_count": 1,
+                },
+                "projected": {
+                    "citations": [
+                        {
+                            "id": "citation-1",
+                            "citation_key": "smith-2025",
+                            "title": "Claim verification",
+                            "abstract": "Evaluates aggregate feedback.",
+                            "provider": "fixture",
+                            "verification_status": "verified",
+                        }
+                    ],
+                    "related_work": [
+                        {
+                            "citation_id": "citation-1",
+                            "what_was_done": "Evaluates aggregate feedback",
+                            "limitation": "Does not isolate claim-level errors",
+                            "evidence": {
+                                "limitation": {
+                                    "passage": "Does not isolate claim-level errors",
+                                    "location": "Abstract",
+                                }
+                            },
+                            "grounding_status": "grounded",
+                        }
+                    ],
+                },
+            },
+        },
+        "working_draft": {"narrative": {}},
+    }
+
+    narrative, warnings = await service._generate_gaps(context)
+
+    assert narrative["candidate"]["statement"] == (
+        "Các phương pháp tối ưu prompt hiện tại có thể sử dụng điểm tổng hoặc textual "
+        "feedback. Chưa rõ việc tách output thành từng claim, kiểm tra evidence độc lập "
+        "và dùng lỗi claim-level làm feedback có giúp giảm unsupported claims trong cùng "
+        "ngân sách inference hay không."
+    )
+    assert narrative["candidate"]["status"] == "insufficient_evidence"
+    audit = narrative["candidate"]["search_audit"]
+    assert audit["counter_evidence_outcome"] == "inconclusive"
+    assert audit["claim_assessments"]
+    assert any(
+        "research-gap-synthesis" in call["system"] for call in llm.calls
+    )
+    assert any("Excluded" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_without_source_content_remains_inconclusive() -> None:
+    record = ScholarlyRecord(
+        title="Metadata-only counter source",
+        provider="fixture",
+        provider_source_id="metadata-only",
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-counter-analysis": json.dumps(
+                {
+                    "outcome": "inconclusive",
+                    "statement": "The limitation remains testable.",
+                    "assessment": "No source content was available.",
+                    "covered_result_keys": ["metadata-only"],
+                    "findings": [
+                        {
+                            "result_key": "metadata-only",
+                            "claim_ids": [],
+                            "impact": "inconclusive",
+                            "rationale": "Metadata cannot establish content coverage.",
+                            "supporting_passage": "",
+                            "source_location": "Metadata only",
+                        }
+                    ],
+                    "claim_assessments": [],
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    materials, material_warnings = await service._counter_evidence_materials([record])
+    assessment, warnings = await service._assess_counter_evidence(
+        idea={},
+        provisional_statement="The limitation remains testable.",
+        records=[record],
+        materials=materials,
+    )
+
+    assert assessment.outcome is CounterEvidenceOutcome.INCONCLUSIVE
+    assert assessment.findings[0].grounding_status is GroundingStatus.REJECTED
+    assert any("content was unavailable" in item for item in material_warnings)
+    assert any("downgraded to inconclusive" in item for item in warnings)
 
 
 @pytest.mark.asyncio
@@ -671,8 +1849,8 @@ async def test_gap_generation_preserves_valid_analysis_when_synthesis_times_out(
 ):
     service = ResearchService(
         _UnusedDb(),  # type: ignore[arg-type]
-        source=FakeScholarlySourcePort(),
-        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(_relevant_counter_records()),
+        verifier=_RecordingVerifier(),
         llm=_GapSynthesisTimeoutLlm(),
     )
     context = {
@@ -703,6 +1881,12 @@ async def test_gap_generation_preserves_valid_analysis_when_synthesis_times_out(
                             "citation_id": "citation-1",
                             "what_was_done": "Optimizes prompts with aggregate scores",
                             "limitation": "Does not verify evidence per claim",
+                            "evidence": {
+                                "limitation": {
+                                    "passage": "Does not verify evidence per claim",
+                                    "location": "Abstract",
+                                }
+                            },
                             "grounding_status": "grounded",
                         }
                     ],
@@ -716,7 +1900,7 @@ async def test_gap_generation_preserves_valid_analysis_when_synthesis_times_out(
 
     statement = narrative["candidate"]["statement"]
     assert "Prior systems optimize outputs or prompts" in statement
-    assert "Localized feedback can make optimization more reliable" in statement
+    assert "It remains unclear whether" in statement
     assert narrative["candidate"]["supporting_citation_keys"] == ["smith-2025"]
     assert "validated source-grounded analysis" in warnings[0]
     assert "timed out" in warnings[0]
@@ -1095,8 +2279,9 @@ async def test_research_inputs_generate_english_keywords_for_a_vietnamese_idea()
     ]
     assert "Write every keyword in English" in llm.calls[0]["system"]
     assert "regardless of the input idea's language" in llm.calls[0]["system"]
-    assert "write every generated user-facing value in that same language" not in (
-        llm.calls[0]["system"]
+    assert (
+        "write every generated user-facing value in that same language"
+        not in (llm.calls[0]["system"])
     )
 
 
@@ -1166,7 +2351,7 @@ async def test_provider_query_plan_uses_one_multi_query_call_when_available() ->
 
     assert source.queries == ["claim verification", "fact checking"]
     assert failures == []
-    assert records[0].metadata["discovery_queries"] == source.queries
+    assert records[0].metadata["discovery_queries"] == []
 
 
 @pytest.mark.asyncio
@@ -1254,6 +2439,68 @@ async def test_listwise_reranker_reorders_candidates_and_preserves_heuristic_met
     assert second.metadata["heuristic_retrieval_score"] == 0.7
     assert second.metadata["reranker_rank"] == 1
     assert second.metadata["reranker_score"] == 0.95
+    assert second.metadata["portfolio_rank"] == 1
+    assert second.metadata["selection_rule"] == "quality_diversity_portfolio"
+
+
+def test_portfolio_order_prefers_new_coverage_over_a_near_duplicate() -> None:
+    relationship_query = "claim evidence verification"
+    calibration_query = "confidence calibration benchmark"
+    primary = ScholarlyRecord(
+        title="Claim evidence verification for scholarly summaries",
+        abstract=(
+            "Evaluates claim evidence verification for scholarly summaries with "
+            "claim-level factuality outcomes."
+        ),
+        provider="fixture",
+        provider_source_id="primary",
+        metadata={
+            "reranker_score": 0.95,
+            "discovery_queries": [relationship_query],
+            "publicationTypes": ["JournalArticle"],
+        },
+    )
+    duplicate = ScholarlyRecord(
+        title="Claim evidence verification for scholarly summaries extended",
+        abstract=(
+            "Evaluates claim evidence verification for scholarly summaries with "
+            "claim-level factuality outcomes."
+        ),
+        provider="fixture",
+        provider_source_id="duplicate",
+        metadata={
+            "reranker_score": 0.92,
+            "discovery_queries": [relationship_query],
+            "publicationTypes": ["JournalArticle"],
+        },
+    )
+    benchmark = ScholarlyRecord(
+        title="Confidence calibration benchmark for retrieval systems",
+        abstract=(
+            "Benchmarks confidence calibration and user decisions under conflicting "
+            "retrieved evidence."
+        ),
+        provider="fixture",
+        provider_source_id="benchmark",
+        metadata={
+            "reranker_score": 0.82,
+            "discovery_queries": [calibration_query],
+            "publicationTypes": ["Conference"],
+        },
+    )
+
+    ordered = _portfolio_order_records(
+        [primary, duplicate, benchmark],
+        queries=[relationship_query, calibration_query],
+    )
+
+    assert [record.provider_source_id for record in ordered] == [
+        "primary",
+        "benchmark",
+        "duplicate",
+    ]
+    assert benchmark.metadata["portfolio_query_indexes"] == [1]
+    assert duplicate.metadata["portfolio_redundancy"] > 0.8
 
 
 @pytest.mark.asyncio
@@ -1377,9 +2624,7 @@ async def test_counter_query_generation_accepts_json_after_reasoning_wrapper() -
 
 
 @pytest.mark.asyncio
-async def test_counter_evidence_search_analyzes_only_top_five_relevant_results() -> (
-    None
-):
+async def test_counter_evidence_search_selects_five_portfolio_results() -> None:
     records = [
         ScholarlyRecord(
             title=f"Claim evidence verification benchmark {index}",
@@ -1422,7 +2667,7 @@ async def test_counter_evidence_search_analyzes_only_top_five_relevant_results()
 
     assert result.complete is True
     assert len(result.queries) >= 3
-    assert result.candidate_count == 8
+    assert result.candidate_count == 7
     assert len(result.records) == 5
     assert len(result.selected_records) == 5
     assert len(verifier.records) == 5
@@ -1433,8 +2678,65 @@ async def test_counter_evidence_search_analyzes_only_top_five_relevant_results()
     assert all(
         "Claim evidence verification" in record.title for record in result.records
     )
-    scores = [float(record.metadata["retrieval_score"]) for record in result.records]
-    assert scores == sorted(scores, reverse=True)
+    assert [record.metadata["portfolio_rank"] for record in result.records] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_verification_backfills_a_rejected_top_source() -> None:
+    records = [
+        ScholarlyRecord(
+            title=f"Claim evidence verification approach {index}",
+            abstract=(
+                "Evaluates claim evidence verification and unsupported claim detection "
+                f"with distinct protocol {index}."
+            ),
+            provider="fixture",
+            provider_source_id=f"candidate-{index}",
+        )
+        for index in range(6)
+    ]
+
+    class RejectFirstVerifier:
+        def __init__(self) -> None:
+            self.records: list[ScholarlyRecord] = []
+
+        async def verify(self, *, citation: ScholarlyRecord) -> VerificationResult:
+            self.records.append(citation)
+            if citation.provider_source_id == "candidate-0":
+                return VerificationResult(status=VerificationStatus.REJECTED)
+            return VerificationResult(
+                status=VerificationStatus.VERIFIED,
+                record=citation,
+            )
+
+    verifier = RejectFirstVerifier()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(records),
+        verifier=verifier,  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+    )
+
+    result = await service._search_counter_evidence(
+        idea={"problems": ["Unsupported claims in scholarly summaries"]},
+        inputs=ResearchInputs(keywords=["claim evidence verification"]),
+        provisional_statement=(
+            "It remains unclear whether claim evidence verification reduces errors."
+        ),
+        related_work_queries=["claim evidence verification"],
+        preferences=SourcePreferences(),
+    )
+
+    assert len(result.records) == 5
+    assert "candidate-0" not in {record.provider_source_id for record in result.records}
+    assert len(verifier.records) == 6
+    assert any("Rejected and backfilled 1" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio
@@ -1569,10 +2871,257 @@ def test_related_work_ranking_uses_english_queries_for_vietnamese_idea() -> None
             '"evidence verification" AND "scientific paper summaries"',
             '"unsupported statements" AND "claim-level checklist"',
         ],
+        require_domain_match=True,
     )
 
-    assert [record.title for record in ranked] == [strong.title, weak.title]
-    assert discarded == 0
+    assert [record.title for record in ranked] == [strong.title]
+    assert discarded == 1
+
+
+def test_counter_queries_use_confirmed_citation_method_identifiers() -> None:
+    citations = [
+        {"title": "Cog-CoT: A Cognitive Chain-of-Thought Framework"},
+        {"title": "VisPath: Visual Reasoning with Verified Paths"},
+    ]
+
+    assert _citation_method_queries(citations) == ['"Cog-CoT"', '"VisPath"']
+
+
+def test_counter_queries_ignore_ambiguous_or_implementation_identifiers() -> None:
+    citations = [{"title": "CoT evaluation with MAX_RETRY in LLM pipelines"}]
+
+    assert _citation_method_queries(citations) == []
+
+
+def test_counter_ranking_rejects_ambiguous_cot_and_retry_domain_matches() -> None:
+    relevant = ScholarlyRecord(
+        title="External critics for chain-of-thought reasoning in language models",
+        abstract="Evaluates feedback that verifies intermediate LLM reasoning steps.",
+    )
+    cost_of_travelling = ScholarlyRecord(
+        title="Cost of Travelling and pavement maintenance",
+        abstract="Models road costs with retries in a transport simulation.",
+    )
+    cot_preh = ScholarlyRecord(
+        title="Cot preh utilization in agricultural soils",
+        abstract="Studies crop yield and irrigation treatments.",
+    )
+
+    ranked, discarded = _rank_relevant_records(
+        [cost_of_travelling, cot_preh, relevant],
+        inputs=ResearchInputs(keywords=["LLM reasoning verification"]),
+        idea={"problems": ["Unsupported chain-of-thought reasoning in LLMs"]},
+        queries=[
+            '"chain of thought" external critic language model',
+            'retry verification for LLM reasoning',
+        ],
+        require_domain_match=True,
+    )
+
+    assert [record.title for record in ranked] == [relevant.title]
+    assert discarded == 2
+
+
+@pytest.mark.asyncio
+async def test_counter_audit_backfills_a_source_without_grounded_content() -> None:
+    class RecordingDocumentTextSource:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def fetch_text(
+            self,
+            *,
+            record: ScholarlyRecord,
+        ) -> DocumentText | None:
+            result_key = str(record.provider_source_id)
+            self.calls.append(result_key)
+            await asyncio.sleep(0)
+            if result_key == "candidate-0":
+                return None
+            return DocumentText(
+                text=str(record.abstract or ""),
+                source_kind="full_text_html",
+            )
+
+    records = [
+        ScholarlyRecord(
+            title=f"Claim verification method {index}",
+            abstract=(
+                None
+                if index == 0
+                else f"Method {index} evaluates claim verification at each reasoning step."
+            ),
+            provider="fixture",
+            provider_source_id=f"candidate-{index}",
+        )
+        for index in range(6)
+    ]
+    verifier = _RecordingVerifier()
+    document_text_source = RecordingDocumentTextSource()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(records),
+        verifier=verifier,  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        document_text_source=document_text_source,
+    )
+    search = _CounterEvidenceSearch(
+        queries=["claim verification reasoning step"],
+        records=records[:5],
+        selected_records=records[:5],
+        candidate_records=records,
+        candidate_count=6,
+        complete=True,
+        warnings=[],
+    )
+    claims = [
+        _GapClaim(
+            claim_id="c1",
+            kind=GapClaimKind.UNRESOLVED_LIMITATION,
+            statement="The step-level limitation remains unresolved.",
+            supporting_citation_keys=["source-1"],
+        )
+    ]
+
+    selected, materials, assessment, warnings = (
+        await service._audit_counter_evidence_with_backfill(
+            idea={},
+            provisional_statement="The limitation remains unresolved.",
+            gap_claims=claims,
+            counter_search=search,
+            session_id=None,
+        )
+    )
+
+    selected_ids = {record.provider_source_id for record in selected}
+    assert "candidate-0" not in selected_ids
+    assert "candidate-5" in selected_ids
+    assert len(materials) == 5
+    assert assessment.outcome is CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE
+    assert any("Backfilled 1" in warning for warning in warnings)
+    assert set(document_text_source.calls) == {
+        f"candidate-{index}" for index in range(6)
+    }
+    assert all(
+        document_text_source.calls.count(f"candidate-{index}") == 1
+        for index in range(6)
+    )
+
+
+@pytest.mark.asyncio
+async def test_counter_audit_stops_after_one_backfill_round() -> None:
+    records = [
+        ScholarlyRecord(
+            title=f"Claim verification method {index}",
+            abstract=(
+                None
+                if index in {0, 5}
+                else f"Method {index} evaluates claim verification evidence."
+            ),
+            provider="fixture",
+            provider_source_id=f"candidate-{index}",
+        )
+        for index in range(7)
+    ]
+    verifier = _RecordingVerifier()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(records),
+        verifier=verifier,  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+    )
+    search = _CounterEvidenceSearch(
+        queries=["claim verification evidence"],
+        records=records[:5],
+        selected_records=records[:5],
+        candidate_records=records,
+        candidate_count=len(records),
+        complete=True,
+        warnings=[],
+    )
+    claims = [
+        _GapClaim(
+            claim_id="c1",
+            kind=GapClaimKind.UNRESOLVED_LIMITATION,
+            statement="The claim-verification limitation remains unresolved.",
+            supporting_citation_keys=["source-1"],
+        )
+    ]
+
+    selected, _materials, _assessment, warnings = (
+        await service._audit_counter_evidence_with_backfill(
+            idea={},
+            provisional_statement=claims[0].statement,
+            gap_claims=claims,
+            counter_search=search,
+            session_id=None,
+        )
+    )
+
+    assert [record.provider_source_id for record in verifier.records] == [
+        "candidate-5"
+    ]
+    assert {record.provider_source_id for record in selected} == {
+        f"candidate-{index}" for index in range(1, 5)
+    }
+    assert any("Backfilled 1" in warning for warning in warnings)
+    assert any("Excluded 1" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_counter_audit_excludes_grounded_but_irrelevant_sources() -> None:
+    irrelevant = ScholarlyRecord(
+        title="Cost of Travelling with pavement retries",
+        abstract="This transport study estimates road costs and pavement maintenance.",
+        provider="fixture",
+        provider_source_id="transport",
+    )
+    relevant = ScholarlyRecord(
+        title="External critics for language-model reasoning",
+        abstract="This study verifies intermediate LLM reasoning with external feedback.",
+        provider="fixture",
+        provider_source_id="llm-reasoning",
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort([irrelevant, relevant]),
+        verifier=_RecordingVerifier(),
+        llm=_DomainAwareCounterLlm(),
+    )
+    search = _CounterEvidenceSearch(
+        queries=['"chain of thought" external critic language model'],
+        records=[irrelevant, relevant],
+        selected_records=[irrelevant, relevant],
+        candidate_records=[irrelevant, relevant],
+        candidate_count=2,
+        complete=True,
+        warnings=[],
+    )
+    claims = [
+        _GapClaim(
+            claim_id="c1",
+            kind=GapClaimKind.UNRESOLVED_LIMITATION,
+            statement="External verification of intermediate LLM reasoning is unresolved.",
+            supporting_citation_keys=["source-1"],
+        )
+    ]
+
+    selected, _materials, assessment, warnings = (
+        await service._audit_counter_evidence_with_backfill(
+            idea={"problems": ["Unsupported LLM reasoning"]},
+            provisional_statement=claims[0].statement,
+            gap_claims=claims,
+            counter_search=search,
+            session_id=None,
+        )
+    )
+
+    assert [record.provider_source_id for record in selected] == ["llm-reasoning"]
+    assert all(
+        finding.relevance_status is CounterEvidenceRelevance.RELEVANT
+        for finding in assessment.findings
+    )
+    assert any("Excluded 1" in warning for warning in warnings)
 
 
 def test_related_work_generation_is_capped_at_five_results() -> None:
@@ -1581,8 +3130,228 @@ def test_related_work_generation_is_capped_at_five_results() -> None:
         ResearchGenerateRequest(expected_version=1, max_results=6)
 
 
+@pytest.mark.asyncio
+async def test_counter_evidence_source_text_is_persisted_to_object_storage() -> None:
+    storage = MemoryObjectStorage()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        object_storage=storage,
+    )
+    session_id = uuid4()
+    record = ScholarlyRecord(
+        title="Counter source",
+        abstract="This source evaluates an existing competing method.",
+        provider="fixture",
+        provider_source_id="counter-1",
+    )
+
+    materials, warnings = await service._counter_evidence_materials(
+        [record],
+        session_id=session_id,
+    )
+
+    assert warnings == []
+    assert len(materials) == 1
+    object_key = materials[0].source_object_key
+    assert object_key is not None
+    assert object_key.startswith(f"research/{session_id}/gap/counter-evidence/")
+    assert (await storage.get_bytes(key=object_key)).decode() == record.abstract
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_full_text_is_loaded_concurrently() -> None:
+    class ConcurrentDocumentTextSource:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def fetch_text(self, *, record: ScholarlyRecord) -> DocumentText:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0)
+            self.active -= 1
+            return DocumentText(
+                text=f"Full text for {record.provider_source_id}",
+                source_kind="full_text_html",
+            )
+
+    document_text_source = ConcurrentDocumentTextSource()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        document_text_source=document_text_source,
+    )
+    records = [
+        ScholarlyRecord(
+            title=f"Counter source {index}",
+            provider="fixture",
+            provider_source_id=f"counter-{index}",
+        )
+        for index in range(3)
+    ]
+
+    materials, warnings = await service._counter_evidence_materials(records)
+
+    assert warnings == []
+    assert document_text_source.max_active == len(records)
+    assert [material.record for material in materials] == records
+    assert [material.source_text for material in materials] == [
+        f"Full text for counter-{index}" for index in range(3)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_does_not_continue_with_ram_only_text() -> None:
+    class FailingStorage(MemoryObjectStorage):
+        async def put_bytes(
+            self,
+            *,
+            key: str,
+            data: bytes,
+            content_type: str,
+        ) -> str:
+            raise OSError("storage unavailable")
+
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        object_storage=FailingStorage(),
+    )
+    record = ScholarlyRecord(
+        title="Counter source",
+        abstract="This source evaluates an existing competing method.",
+        provider="fixture",
+        provider_source_id="counter-1",
+    )
+
+    with pytest.raises(ResearchGenerationError, match="could not be persisted"):
+        await service._counter_evidence_materials(
+            [record],
+            session_id=uuid4(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_deleting_related_work_removes_only_unreferenced_source_text() -> None:
+    storage = MemoryObjectStorage()
+    orphaned_key = "research/session/citations/orphaned.txt"
+    revision_key = "research/session/citations/revision.txt"
+    for key in (orphaned_key, revision_key):
+        await storage.put_bytes(key=key, data=b"passage", content_type="text/plain")
+    db = _CleanupDb(
+        scalar_results=[
+            [orphaned_key, revision_key],
+            [revision_key],
+        ]
+    )
+    service = ResearchService(
+        db,  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        object_storage=storage,
+    )
+
+    await service._delete_working_related_work(uuid4())
+
+    assert orphaned_key not in storage.objects
+    assert revision_key in storage.objects
+    assert len(db.executed) == 2
+
+
+@pytest.mark.asyncio
+async def test_deleting_gap_removes_only_unreferenced_counter_evidence_text() -> None:
+    storage = MemoryObjectStorage()
+    orphaned_key = "research/session/gap/counter-evidence/orphaned.txt"
+    revision_key = "research/session/gap/counter-evidence/revision.txt"
+    for key in (orphaned_key, revision_key):
+        await storage.put_bytes(key=key, data=b"passage", content_type="text/plain")
+    working_gap = _gap_narrative_with_object_keys(orphaned_key, revision_key)
+    revision_gap = _gap_narrative_with_object_keys(revision_key)
+    db = _CleanupDb(
+        scalar_value={"gap": working_gap},
+        scalar_results=[[revision_gap]],
+    )
+    service = ResearchService(
+        db,  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        object_storage=storage,
+    )
+
+    await service._delete_working_gap(uuid4())
+
+    assert orphaned_key not in storage.objects
+    assert revision_key in storage.objects
+    assert len(db.executed) == 1
+
+
+def _gap_narrative_with_object_keys(*keys: str) -> dict[str, Any]:
+    return {
+        "candidate": {
+            "search_audit": {
+                "counter_evidence_results": [
+                    {"source_object_key": key} for key in keys
+                ]
+            }
+        }
+    }
+
+
+class _ScalarResults:
+    def __init__(self, values: list[Any]) -> None:
+        self._values = values
+
+    def all(self) -> list[Any]:
+        return self._values
+
+
+class _CleanupDb:
+    def __init__(
+        self,
+        *,
+        scalar_value: Any = None,
+        scalar_results: list[list[Any]] | None = None,
+    ) -> None:
+        self.scalar_value = scalar_value
+        self.scalar_results = list(scalar_results or [])
+        self.executed: list[Any] = []
+
+    async def scalar(self, _statement: Any) -> Any:
+        return self.scalar_value
+
+    async def scalars(self, _statement: Any) -> _ScalarResults:
+        return _ScalarResults(self.scalar_results.pop(0))
+
+    async def execute(self, statement: Any) -> None:
+        self.executed.append(statement)
+
+
 class _UnusedDb:
     pass
+
+
+def _relevant_counter_records(count: int = 2) -> list[ScholarlyRecord]:
+    return [
+        ScholarlyRecord(
+            title=f"Claim verification at each reasoning step {index}",
+            abstract=(
+                "Evaluates claim verification and evidence feedback for each "
+                f"reasoning step under protocol {index}."
+            ),
+            provider="fixture",
+            provider_source_id=f"counter-{index}",
+        )
+        for index in range(count)
+    ]
 
 
 class _UnusedVerifier:
@@ -1628,3 +3397,27 @@ class _GapSynthesisTimeoutLlm(FakeLlmPort):
                 code="timeout",
             )
         return await super().complete(system=system, prompt=prompt, model=model)
+
+
+class _DomainAwareCounterLlm(FakeLlmPort):
+    async def complete(
+        self,
+        *,
+        system: str,
+        prompt: str,
+        model: str | None = None,
+    ) -> str:
+        response = await super().complete(system=system, prompt=prompt, model=model)
+        if "research-counter-analysis" not in system:
+            return response
+        payload = json.loads(prompt)
+        irrelevant_keys = {
+            item["result_key"]
+            for item in payload.get("counter_evidence_results", [])
+            if "transport" in str(item.get("source_text") or "").casefold()
+        }
+        parsed = json.loads(response)
+        for finding in parsed.get("findings", []):
+            if finding.get("result_key") in irrelevant_keys:
+                finding["relevance_status"] = "irrelevant"
+        return json.dumps(parsed)

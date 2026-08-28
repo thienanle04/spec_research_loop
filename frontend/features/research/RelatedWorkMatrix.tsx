@@ -38,7 +38,7 @@ function EvidenceSupport({ evidence }: { evidence: SourceEvidence }) {
   return (
     <details className="mt-3 rounded-md border bg-muted/40 p-2 text-xs">
       <summary className="cursor-pointer font-medium">Evidence · {evidence.location}</summary>
-      <blockquote className="mt-2 border-l-2 pl-2 leading-5 text-muted-foreground">
+      <blockquote className="mt-2 whitespace-pre-line break-words border-l-2 pl-2 leading-5 text-muted-foreground">
         “{evidence.passage}”
       </blockquote>
     </details>

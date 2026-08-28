@@ -25,6 +25,9 @@ _PAPER_FIELDS = (
 _MIN_REQUEST_INTERVAL_SECONDS = 1.25
 _MAX_RATE_LIMIT_RETRIES = 3
 _RATE_LIMIT_BACKOFF_SECONDS = (5.0, 15.0, 30.0)
+_MAX_SERVER_ERROR_RETRIES = 2
+_SERVER_ERROR_BACKOFF_SECONDS = (1.0, 3.0)
+_RETRYABLE_SERVER_ERRORS = {500, 502, 503, 504}
 
 
 class _SharedIntervalRateLimiter:
@@ -138,7 +141,10 @@ class SemanticScholarSource:
                 for query in normalized
                 if _query_match_score(record, query) > (0, 0)
             ]
-            record.metadata["discovery_queries"] = matches or normalized
+            # An unmatched result can still be returned by Semantic Scholar's broad
+            # bulk search, but it must not receive synthetic coverage for every query.
+            # Downstream relevance gates use this field as evidence of discovery.
+            record.metadata["discovery_queries"] = matches
             record.metadata["provider_query_plan"] = provider_queries
         records.sort(
             key=lambda row: (
@@ -252,7 +258,8 @@ class SemanticScholarSource:
     ) -> Any:
         use_public_pool = not bool(self._api_key)
         response: httpx.Response | None = None
-        attempt = 0
+        rate_limit_attempt = 0
+        server_error_attempt = 0
         while True:
             headers = (
                 {} if use_public_pool else {"x-api-key": self._api_key or ""}
@@ -275,6 +282,21 @@ class SemanticScholarSource:
                 raise ScholarlyProviderError(
                     "Could not connect to Semantic Scholar."
                 ) from exc
+            if response.status_code in _RETRYABLE_SERVER_ERRORS:
+                if server_error_attempt == _MAX_SERVER_ERROR_RETRIES:
+                    break
+                delay = _SERVER_ERROR_BACKOFF_SECONDS[
+                    min(
+                        server_error_attempt,
+                        len(_SERVER_ERROR_BACKOFF_SECONDS) - 1,
+                    )
+                ]
+                defer = getattr(self._rate_limiter, "defer", None)
+                if callable(defer):
+                    defer(delay)
+                await self._retry_sleeper(delay)
+                server_error_attempt += 1
+                continue
             if response.status_code != 429:
                 break
             if (
@@ -287,16 +309,16 @@ class SemanticScholarSource:
                 # keeps this provider usable without falling back to OpenAlex.
                 use_public_pool = True
                 continue
-            if attempt == _MAX_RATE_LIMIT_RETRIES:
+            if rate_limit_attempt == _MAX_RATE_LIMIT_RETRIES:
                 break
-            delay = _retry_delay(response, attempt)
+            delay = _retry_delay(response, rate_limit_attempt)
             defer = getattr(self._rate_limiter, "defer", None)
             if callable(defer):
                 defer(delay)
             else:
                 # Compatibility for custom/test limiters implementing only wait().
                 await self._retry_sleeper(delay)
-            attempt += 1
+            rate_limit_attempt += 1
 
         if response is None:  # pragma: no cover - loop always performs one request
             raise ScholarlyProviderError("Semantic Scholar returned no response.")
@@ -327,7 +349,9 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
 def _combined_query(queries: list[str]) -> str:
     if len(queries) == 1:
         return queries[0]
-    return " OR ".join(f"({query})" for query in queries)
+    # Semantic Scholar's bulk-search parser accepts `term|term` but currently
+    # returns HTTP 500 for parenthesized groups or whitespace around `|`.
+    return "|".join(queries)
 
 
 def _provider_query_plan(queries: list[str]) -> list[str]:
@@ -374,6 +398,8 @@ def _bulk_query(value: str) -> str:
         segment = re.sub(r"\bAND\b", "+", segments[index], flags=re.IGNORECASE)
         segment = re.sub(r"\bOR\b", "|", segment, flags=re.IGNORECASE)
         segment = re.sub(r"\bNOT\s+", "-", segment, flags=re.IGNORECASE)
+        segment = segment.replace("(", " ").replace(")", " ")
+        segment = re.sub(r"\s*([+|])\s*", r"\1", segment)
         segments[index] = segment
     return re.sub(r"\s+", " ", "".join(segments)).strip()
 
