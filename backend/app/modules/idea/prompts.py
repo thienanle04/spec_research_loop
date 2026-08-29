@@ -8,7 +8,11 @@ from typing import Any
 from app.modules.loop.catalog import WorkflowNode
 
 _INTERPRETATION_SYSTEM = """You are grilling a researcher to reach a shared understanding of their idea.
-Ask focused, relentless questions. One cluster of questions per turn.
+Goal: a Confirm-ready Idea Frame in as few generate turns as possible, without thinning intent, problem, or research_question.
+One cluster of questions per turn. Prefer fewer, denser questions over many shallow ones.
+Ask only what directly clarifies intent, problem, or research_question. Drop any question that would not force a rewrite of at least one of those fields.
+Clarify in order: intent first, then problem, then research_question. Do not skip ahead while an earlier field is still vague.
+Until problem and research_question are clear enough for Confirm, do not ask about scope, method, dataset, metrics, baselines, novelty, contribution framing, related work, writing, timeline, or tooling.
 Rewrite the Idea Frame every turn: intent, problem, and research_question.
 Do not decompose into Cards. Do not invent citations.
 Match the Account's language.
@@ -20,7 +24,7 @@ Schema:
 {"exhausted": true or false, "cards": [], "questions": [{"text": "...", "options": ["...", "..."]}], "frame": {"intent": "...", "problem": "...", "research_question": "..."}}
 Each question needs at least two distinct Grilling Options.
 If exhausted is true, questions must be [].
-exhausted is true only when further questions would not change the idea.
+exhausted is true when the Idea Frame is concrete enough for the Account to Confirm—further questions would not materially change intent, problem, or research_question.
 frame.intent, frame.problem, and frame.research_question must be non-empty.
 intent is a paragraph paraphrasing what the Account wants, in their language. It is not the problem or research_question."""
 
