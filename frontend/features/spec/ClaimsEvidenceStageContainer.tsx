@@ -13,9 +13,11 @@ import {
   CardKind,
   type ClaimEvidenceCard,
   type LoopSessionResponse,
+  WorkflowNode,
 } from "@/lib/api/generated/model";
+import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
-import { MessageSquareQuote, CheckCircle2, Target, Activity, FileSearch, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
+import { CheckCircle2, Target, Activity, FileSearch, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
 
 export function ClaimsEvidenceStageContainer({
   sessionId,
@@ -43,6 +45,10 @@ export function ClaimsEvidenceStageContainer({
   const generatedCards = (narrative?.cards || []) as ClaimEvidenceCard[];
   const isSaved = narrative?.saved === true;
   const confirmedClaimCards = session.cards.filter(c => c.kind === CardKind.claim);
+  const isEvidenceNode = session.working_draft_node === WorkflowNode.evidence;
+  const panelTitle = isEvidenceNode
+    ? WORKFLOW_NODE_LABELS[WorkflowNode.evidence]
+    : WORKFLOW_NODE_LABELS[WorkflowNode.claims];
   
   const running = generateClaims.isPending || saving;
 
@@ -152,11 +158,13 @@ export function ClaimsEvidenceStageContainer({
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="space-y-1">
-            <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <MessageSquareQuote className="w-5 h-5 text-indigo-600" /> Claims & Evidence
+            <CardTitle className="text-xl font-serif text-navy">
+              {panelTitle}
             </CardTitle>
             <CardDescription>
-              Generate claims and expected evidence to support your contribution.
+              {isEvidenceNode
+                ? "State the evidence that would support the confirmed claims."
+                : "Generate claims and expected evidence to support your contribution."}
             </CardDescription>
           </div>
           <Button

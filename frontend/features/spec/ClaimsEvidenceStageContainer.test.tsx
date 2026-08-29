@@ -71,7 +71,9 @@ const newClaims: ClaimEvidenceCard[] = [
 ];
 
 function claimSession(
-  overrides: Partial<Pick<LoopSessionResponse, "working_draft_narrative" | "cards" | "version">> = {},
+  overrides: Partial<
+    Pick<LoopSessionResponse, "working_draft_narrative" | "cards" | "version" | "working_draft_node">
+  > = {},
 ): LoopSessionResponse {
   return {
     id: "session-1",
@@ -119,6 +121,30 @@ function savedClaimTexts(cards: LoopSessionResponse["cards"]): string[] {
 }
 
 describe("ClaimsEvidenceStageContainer", () => {
+  it("titles the panel Claims on the claims Workflow Node", () => {
+    const queryClient = new QueryClient();
+    const session = claimSession();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ClaimsEvidenceStageContainer sessionId={session.id} session={session} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Claims")).toBeInTheDocument();
+    expect(screen.queryByText("Claims & Evidence")).not.toBeInTheDocument();
+  });
+
+  it("titles the panel Evidence on the evidence Workflow Node", () => {
+    const queryClient = new QueryClient();
+    const session = claimSession({ working_draft_node: WorkflowNode.evidence });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ClaimsEvidenceStageContainer sessionId={session.id} session={session} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Evidence")).toBeInTheDocument();
+    expect(screen.queryByText("Claims & Evidence")).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     let nextVersion = 11;

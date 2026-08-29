@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Activity, Beaker, CheckCircle2, ChevronRight, FlaskConical, Lightbulb, Target, FileText } from "lucide-react";
+import { AlertTriangle, Activity, Beaker, CheckCircle2, ChevronRight, Lightbulb, Target, FileText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +16,7 @@ import {
   type LoopSessionResponse,
   WorkflowNode,
 } from "@/lib/api/generated/model";
+import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
 
 function FormattedText({ text }: { text: string }) {
@@ -189,11 +190,15 @@ export function ExperimentPlanningStageContainer({
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="space-y-1">
-            <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <FlaskConical className="w-5 h-5 text-indigo-600" /> Experiment Planning & Feasibility
+            <CardTitle className="text-xl font-serif text-navy">
+              {isFeasibilityNode
+                ? WORKFLOW_NODE_LABELS[WorkflowNode.feasibility]
+                : WORKFLOW_NODE_LABELS[WorkflowNode.experiment_plan]}
             </CardTitle>
             <CardDescription>
-              Plan your experiments and verify their feasibility.
+              {isFeasibilityNode
+                ? "Verify whether the experiment plan is feasible."
+                : "Plan tests that could confirm or refute the claims."}
             </CardDescription>
           </div>
           <div className="flex gap-2">
@@ -249,20 +254,20 @@ export function ExperimentPlanningStageContainer({
                     </div>
                   </div>
                   
-                  <div className="grid md:grid-cols-2 gap-6">
-                    <div>
+                  <div className="grid md:grid-cols-2 gap-6 items-stretch">
+                    <div className="flex min-h-0 flex-col">
                       <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
                         <Activity className="w-4 h-4 text-emerald-500" /> Objective (Mục tiêu)
                       </h5>
-                      <div className="text-sm text-slate-800 bg-emerald-50/40 p-4 rounded-md border border-emerald-100/60 h-full shadow-sm">
+                      <div className="flex-1 text-sm text-slate-800 bg-emerald-50/40 p-4 rounded-md border border-emerald-100/60 shadow-sm">
                         <FormattedText text={exp.objective} />
                       </div>
                     </div>
-                    <div>
+                    <div className="flex min-h-0 flex-col">
                       <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
                         <Lightbulb className="w-4 h-4 text-amber-500" /> Significance (Ý nghĩa)
                       </h5>
-                      <div className="text-sm text-slate-800 bg-amber-50/40 p-4 rounded-md border border-amber-100/60 h-full shadow-sm">
+                      <div className="flex-1 text-sm text-slate-800 bg-amber-50/40 p-4 rounded-md border border-amber-100/60 shadow-sm">
                         <FormattedText text={exp.significance} />
                       </div>
                     </div>
