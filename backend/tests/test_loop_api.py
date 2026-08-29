@@ -6,8 +6,8 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient, Response
 
-from app.adapters.llm import FakeLlm, bind_llm_ports
-from app.modules.loop.catalog import WORKFLOW_NODES
+from app.adapters.llm import FakeLlm, bind_llm_ports, get_llm_port
+from app.modules.loop.catalog import WORKFLOW_NODES, WorkflowNode
 
 CATALOG = [
     "idea_interpretation",
@@ -104,12 +104,11 @@ async def _generate_idea(
     idea: str = "GPU kernel latency",
     response_text: str | None = None,
 ) -> int:
-    bind_llm_ports(
-        {
-            node.value: FakeLlm(response=response_text or _interpretation_done())
-            for node in WORKFLOW_NODES
-        }
-    )
+    fake = FakeLlm(response=response_text or _interpretation_done())
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    ports[WorkflowNode.IDEA_INTERPRETATION.value] = fake
+    ports[WorkflowNode.IDEA_DECOMPOSITION.value] = fake
+    bind_llm_ports(ports)
     response = await client.post(
         f"/api/idea/sessions/{session_id}/generate",
         json={"expected_version": expected_version, "message": idea},

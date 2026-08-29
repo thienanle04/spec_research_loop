@@ -7,17 +7,17 @@ import time
 from collections.abc import AsyncIterator, Mapping
 
 from app.core.config import get_settings
-from app.ports.llm import LlmCompleteError, LlmPort
+from app.ports.llm import LlmCompleteError, LlmPort, LlmProviderError
 
 logger = logging.getLogger("app.adapters.llm")
 
 
 def configure_llm_trace_logger() -> None:
-    """Attach a stderr handler so traces show under uvicorn (root may be WARNING)."""
+    """Attach a stderr handler so traces/vendor failures show under uvicorn."""
     logger.setLevel(logging.INFO)
     if not logger.handlers:
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(message)s"))
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
         logger.addHandler(handler)
     logger.propagate = False
 
@@ -26,8 +26,17 @@ def traced_ports(ports: Mapping[str, LlmPort]) -> dict[str, LlmPort]:
     return {node: TracingLlm(inner, node=node) for node, inner in ports.items()}
 
 
-def _resolved_model(model: str | None) -> str:
-    return model or get_settings().llm_default_model
+def _resolved_model(model: str | None, inner: LlmPort | None = None) -> str:
+    if model:
+        return model
+    if inner is not None:
+        default = getattr(inner, "default_model", None)
+        if isinstance(default, str) and default:
+            return default
+        nested = getattr(inner, "_default_model", None)
+        if isinstance(nested, str) and nested:
+            return nested
+    return get_settings().llm_default_model
 
 
 def _format_trace(
@@ -70,7 +79,7 @@ class TracingLlm:
             async for token in self._inner.stream(system=system, prompt=prompt, model=model):
                 parts.append(token)
                 yield token
-        except LlmCompleteError:
+        except (LlmCompleteError, LlmProviderError):
             outcome = "error"
             raise
         else:
@@ -80,7 +89,7 @@ class TracingLlm:
             logger.info(
                 _format_trace(
                     node=self._node,
-                    model=_resolved_model(model),
+                    model=_resolved_model(model, self._inner),
                     latency_ms=latency_ms,
                     outcome=outcome,
                     system=system,
@@ -111,7 +120,7 @@ class TracingLlm:
             logger.info(
                 _format_trace(
                     node=self._node,
-                    model=_resolved_model(model),
+                    model=_resolved_model(model, self._inner),
                     latency_ms=latency_ms,
                     outcome=outcome,
                     system=system,

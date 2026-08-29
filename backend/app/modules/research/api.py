@@ -16,7 +16,8 @@ from app.modules.identity.models import Account
 from app.modules.research.deps import (
     get_citation_verifier,
     get_document_text_source,
-    get_research_llm,
+    get_research_bound_llm,
+    get_research_node_llm,
     get_research_object_storage,
     get_scholarly_source,
 )
@@ -72,7 +73,7 @@ async def list_citations(
     db: Annotated[AsyncSession, Depends(get_db)],
     source: Annotated[ScholarlySourcePort, Depends(get_scholarly_source)],
     verifier: Annotated[CitationVerifier, Depends(get_citation_verifier)],
-    llm: Annotated[LlmPort, Depends(get_research_llm)],
+    llm: Annotated[LlmPort, Depends(get_research_bound_llm)],
     document_text_source: Annotated[
         DocumentTextPort, Depends(get_document_text_source)
     ],
@@ -100,7 +101,7 @@ async def update_citation_selection(
     db: Annotated[AsyncSession, Depends(get_db)],
     source: Annotated[ScholarlySourcePort, Depends(get_scholarly_source)],
     verifier: Annotated[CitationVerifier, Depends(get_citation_verifier)],
-    llm: Annotated[LlmPort, Depends(get_research_llm)],
+    llm: Annotated[LlmPort, Depends(get_research_bound_llm)],
     document_text_source: Annotated[
         DocumentTextPort, Depends(get_document_text_source)
     ],
@@ -128,7 +129,7 @@ async def list_findings(
     db: Annotated[AsyncSession, Depends(get_db)],
     source: Annotated[ScholarlySourcePort, Depends(get_scholarly_source)],
     verifier: Annotated[CitationVerifier, Depends(get_citation_verifier)],
-    llm: Annotated[LlmPort, Depends(get_research_llm)],
+    llm: Annotated[LlmPort, Depends(get_research_bound_llm)],
     document_text_source: Annotated[
         DocumentTextPort, Depends(get_document_text_source)
     ],
@@ -156,7 +157,7 @@ async def generate(
     db: Annotated[AsyncSession, Depends(get_db)],
     source: Annotated[ScholarlySourcePort, Depends(get_scholarly_source)],
     verifier: Annotated[CitationVerifier, Depends(get_citation_verifier)],
-    llm: Annotated[LlmPort, Depends(get_research_llm)],
+    llm: Annotated[LlmPort, Depends(get_research_node_llm)],
     document_text_source: Annotated[
         DocumentTextPort, Depends(get_document_text_source)
     ],

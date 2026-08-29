@@ -4,13 +4,13 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from app.adapters.llm import FitWebUiLlmPort
+from app.adapters.llm import get_llm_port
 from app.adapters.storage import MemoryObjectStorage, get_object_storage
 from app.core.config import get_settings
+from app.modules.loop.catalog import WorkflowNode
 from app.modules.research.adapters import (
     CompositeScholarlySource,
     FakeCitationVerifier,
-    FakeLlmPort,
     FakeScholarlySourcePort,
     HttpDocumentTextSource,
     OpenAlexSource,
@@ -22,6 +22,7 @@ from app.modules.research.ports import (
     DocumentTextPort,
     ScholarlySourcePort,
 )
+from app.modules.research.schemas import ResearchNode
 from app.ports.llm import LlmPort
 from app.ports.storage import ObjectStoragePort
 
@@ -83,24 +84,13 @@ def get_research_object_storage() -> ObjectStoragePort | None:
     raise RuntimeError(f"Unsupported research text storage: {provider}")
 
 
-def get_research_llm() -> LlmPort:
-    settings = get_settings()
-    provider = settings.research_llm_provider.casefold()
-    if provider == "fake":
-        return FakeLlmPort()
-    if provider == "fit_webui":
-        if not settings.fit_webui_api_key:
-            raise RuntimeError(
-                "FIT_WEBUI_API_KEY is required when RESEARCH_LLM_PROVIDER=fit_webui"
-            )
-        return FitWebUiLlmPort(
-            api_key=settings.fit_webui_api_key,
-            default_model=settings.research_llm_model,
-            base_url=settings.fit_webui_base_url,
-            timeout_seconds=settings.fit_webui_timeout_seconds,
-            max_tokens=settings.fit_webui_max_tokens,
-        )
-    raise RuntimeError(f"Unsupported research LLM provider: {provider}")
+def get_research_bound_llm() -> LlmPort:
+    """LLM bound for research Workflow Nodes (list routes that need a port)."""
+    return get_llm_port(WorkflowNode.RESEARCH_INPUTS.value)
+
+
+def get_research_node_llm(node: ResearchNode) -> LlmPort:
+    return get_llm_port(node.value)
 
 
 def get_citation_verifier(

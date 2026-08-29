@@ -5,12 +5,14 @@ from collections.abc import AsyncIterator
 
 from pydantic import TypeAdapter
 
-from app.adapters.llm import FitWebUiLlmPort
-from app.core.config import get_settings
+from app.adapters.llm import get_llm_port
+from app.modules.loop.catalog import WorkflowNode
 from app.ports.llm import LlmPort
 
 
 class FakeSpecLlmPort:
+    """Domain fake for tests; not selected by runtime profiles (ADR 0034)."""
+
     async def stream(
         self,
         *,
@@ -71,30 +73,38 @@ class FakeSpecLlmPort:
             "GenerateExperimentResponse": {
                 "version": 1,
                 "plan": {
-                    "baselines": ["Aggregate-score feedback"],
-                    "metrics": ["Unsupported claim rate"],
-                    "evaluation_protocol": "Compare methods on held-out sources.",
-                    "ablation_study": ["Remove claim-level verification"],
-                    "generalization": ["Evaluate across research domains"],
+                    "experiments": [
+                        {
+                            "claim": "Claim-level verification reduces unsupported claims.",
+                            "action": "Compare claim-level feedback against aggregate scores.",
+                            "objective": "Measure unsupported-claim rate on held-out sources.",
+                            "significance": "Shows whether localized feedback improves reliability.",
+                        }
+                    ]
                 },
             },
             "FeasibilityReport": {
-                "estimated_vram": "24 GB",
-                "estimated_time": "8 hours",
                 "is_feasible": True,
-                "suggestions": ["Start with a smaller held-out evaluation set"],
+                "conclusion": "The plan is feasible on a single GPU workstation.",
+                "required_resources": ["24 GB VRAM", "8 hours compute"],
+                "potential_bottlenecks": ["Full-text download rate limits"],
+                "mitigation_strategies": ["Start with a smaller held-out evaluation set"],
             },
         }
         return TypeAdapter(schema).validate_python(payloads.get(schema.__name__, {}))
 
 
-from app.modules.loop.catalog import WorkflowNode
-from app.adapters.llm import get_llm_port
+def get_contribution_llm() -> LlmPort:
+    return get_llm_port(WorkflowNode.CONTRIBUTION.value)
 
-def get_spec_llm() -> LlmPort:
-    settings = get_settings()
-    provider = settings.research_llm_provider.casefold()
-    if provider == "fake":
-        return FakeSpecLlmPort()
-    # Always use the standard LangChain LLM port so complete_structured works
+
+def get_claims_llm() -> LlmPort:
     return get_llm_port(WorkflowNode.CLAIMS.value)
+
+
+def get_experiment_llm() -> LlmPort:
+    return get_llm_port(WorkflowNode.EXPERIMENT_PLAN.value)
+
+
+def get_feasibility_llm() -> LlmPort:
+    return get_llm_port(WorkflowNode.FEASIBILITY.value)

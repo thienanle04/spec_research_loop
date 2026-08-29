@@ -34,7 +34,7 @@ from app.modules.loop.interpretation_turns import (
 )
 from app.modules.loop.schemas import LoopSessionResponse
 from app.modules.loop.service import LoopService
-from app.ports.llm import LlmCompleteError
+from app.ports.llm import LlmCompleteError, LlmProviderError
 
 _GRILLING = {WorkflowNode.IDEA_INTERPRETATION, WorkflowNode.IDEA_DECOMPOSITION}
 
@@ -281,6 +281,10 @@ class IdeaService:
             )
         except LlmCompleteError as exc:
             yield _sse({"type": "error", "code": "llm_complete_error", "detail": str(exc)})
+            return
+        except LlmProviderError as exc:
+            code = "llm_rate_limited" if exc.status_code == 429 else "llm_provider_error"
+            yield _sse({"type": "error", "code": code, "detail": str(exc)})
             return
         except TrailerParseError as exc:
             yield _sse({"type": "error", "code": "generate_parse_error", "detail": str(exc)})

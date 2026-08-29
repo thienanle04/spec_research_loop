@@ -16,7 +16,7 @@ from app.adapters.llm import (
 )
 from app.core.config import get_settings
 from app.modules.loop.catalog import WORKFLOW_NODES
-from app.ports.llm import LlmCompleteError
+from app.ports.llm import LlmCompleteError, LlmProviderError
 
 
 @pytest.fixture(autouse=True)
@@ -69,23 +69,121 @@ def test_get_llm_port_unbound_fails_loudly() -> None:
 
 
 @pytest.mark.asyncio
-async def test_langchain_complete_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    get_settings.cache_clear()
-    monkeypatch.setattr(get_settings(), "llm_api_key", None)
-    adapter = LangChainChatAdapter()
+async def test_langchain_complete_requires_api_key() -> None:
+    adapter = LangChainChatAdapter(api_key=None, default_model="gpt-test")
     with pytest.raises(LlmCompleteError, match="LLM_API_KEY"):
         await adapter.complete(system="sys", prompt="go")
-    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_langchain_structured_uses_json_path_when_base_url_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import BaseModel
+
+    class Out(BaseModel):
+        value: str
+
+    def boom(**_kwargs: object) -> object:
+        raise AssertionError("ChatOpenAI should not be constructed for structured via JSON")
+
+    async def fake_complete(
+        self: LangChainChatAdapter,
+        *,
+        system: str,
+        prompt: str,
+        model: str | None = None,
+    ) -> str:
+        del self, prompt, model
+        assert "JSON Schema" in system
+        return '{"value":"via-base-url"}'
+
+    monkeypatch.setattr("app.adapters.llm.langchain_chat.ChatOpenAI", boom)
+    monkeypatch.setattr(LangChainChatAdapter, "complete", fake_complete)
+    adapter = LangChainChatAdapter(
+        api_key="sk-test",
+        base_url="https://ai-fit.hcmus.edu.vn/openai",
+        default_model="Qwen3.6-27B",
+    )
+    result = await adapter.complete_structured(system="sys", prompt="go", schema=Out)
+    assert result == Out(value="via-base-url")
+
+
+@pytest.mark.asyncio
+async def test_langchain_structured_falls_back_when_json_mode_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import BaseModel
+
+    class Out(BaseModel):
+        value: str
+
+    class BadRequest(Exception):
+        status_code = 400
+
+    class FakeChat:
+        def with_structured_output(self, _schema: object, **_kwargs: object):
+            async def _raise(_messages: object) -> object:
+                raise BadRequest()
+
+            return RunnableLambda(_raise)
+
+    async def fake_complete(
+        self: LangChainChatAdapter,
+        *,
+        system: str,
+        prompt: str,
+        model: str | None = None,
+    ) -> str:
+        del self, prompt, model
+        assert "JSON Schema" in system
+        return '{"value":"ok"}'
+
+    monkeypatch.setattr(
+        "app.adapters.llm.langchain_chat.ChatOpenAI",
+        lambda **_kwargs: FakeChat(),
+    )
+    monkeypatch.setattr(LangChainChatAdapter, "complete", fake_complete)
+    adapter = LangChainChatAdapter(api_key="sk-test", default_model="gpt-test")
+    result = await adapter.complete_structured(system="sys", prompt="go", schema=Out)
+    assert result == Out(value="ok")
+
+
+@pytest.mark.asyncio
+async def test_langchain_maps_rate_limit_to_safe_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RateLimited(Exception):
+        status_code = 429
+        code = "429"
+
+        def __str__(self) -> str:
+            return "Error code: 429 - secret email leak"
+
+    class FakeChat:
+        def with_structured_output(
+            self, _schema: object, **_kwargs: object
+        ) -> RunnableLambda:
+            async def _raise(_messages: object) -> object:
+                raise RateLimited()
+
+            return RunnableLambda(_raise)
+
+    monkeypatch.setattr(
+        "app.adapters.llm.langchain_chat.ChatOpenAI",
+        lambda **_kwargs: FakeChat(),
+    )
+    adapter = LangChainChatAdapter(api_key="sk-test", default_model="gpt-test")
+    with pytest.raises(LlmProviderError, match="rate limit") as caught:
+        await adapter.complete_structured(system="s", prompt="p", schema=dict)
+    assert caught.value.status_code == 429
+    assert "secret email" not in str(caught.value)
 
 
 @pytest.mark.asyncio
 async def test_langchain_complete_invokes_lcel_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("LLM_DEFAULT_MODEL", "gpt-test")
-    get_settings.cache_clear()
-
     captured: dict[str, object] = {}
 
     def fake_chat(**kwargs: object) -> RunnableLambda:
@@ -98,26 +196,40 @@ async def test_langchain_complete_invokes_lcel_chain(
         return RunnableLambda(_reply)
 
     monkeypatch.setattr("app.adapters.llm.langchain_chat.ChatOpenAI", fake_chat)
-    adapter = LangChainChatAdapter()
+    adapter = LangChainChatAdapter(
+        api_key="test-key",
+        default_model="gpt-test",
+    )
     text = await adapter.complete(system="sys", prompt="go {braces}")
     assert text == "done"
     assert captured["kwargs"]["model"] == "gpt-test"
     assert captured["kwargs"]["api_key"] == "test-key"
-    get_settings.cache_clear()
 
 
-def test_create_app_binds_one_langchain_adapter_for_every_node(
+def test_create_app_binds_ports_by_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.main import create_app
 
     monkeypatch.setenv("LLM_TRACE", "false")
+    monkeypatch.setenv("LLM_PROVIDERS", "")
+    monkeypatch.setenv("LLM_PROFILES", "")
+    monkeypatch.setenv("LLM_NODE_PROFILE_OVERRIDES", "")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
     get_settings.cache_clear()
     create_app()
-    first = get_llm_port("idea_interpretation")
-    assert isinstance(first, LangChainChatAdapter)
-    for node in WORKFLOW_NODES:
-        assert get_llm_port(node.value) is first
+    creative = get_llm_port("idea_interpretation")
+    research = get_llm_port("research_inputs")
+    structured = get_llm_port("claims")
+    judge = get_llm_port("gap_judge")
+    assert isinstance(creative, LangChainChatAdapter)
+    assert research is creative
+    assert structured is creative
+    assert judge is creative
+    assert get_llm_port("idea_decomposition") is creative
+    assert get_llm_port("related_work") is research
+    assert get_llm_port("gap") is research
+    assert creative.default_model == "Qwen3.6-27B"
     get_settings.cache_clear()
 
 
@@ -127,16 +239,22 @@ def test_create_app_wraps_each_node_when_llm_trace_enabled(
     from app.main import create_app
 
     monkeypatch.setenv("LLM_TRACE", "true")
+    monkeypatch.setenv("LLM_PROVIDERS", "")
+    monkeypatch.setenv("LLM_PROFILES", "")
+    monkeypatch.setenv("LLM_NODE_PROFILE_OVERRIDES", "")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
     get_settings.cache_clear()
     try:
         create_app()
         ports = [get_llm_port(node.value) for node in WORKFLOW_NODES]
         assert all(isinstance(port, TracingLlm) for port in ports)
         wrappers = [port for port in ports if isinstance(port, TracingLlm)]
-        inners = [port._inner for port in wrappers]
-        assert all(inner is inners[0] for inner in inners)
-        assert isinstance(inners[0], LangChainChatAdapter)
         assert {port._node for port in wrappers} == {node.value for node in WORKFLOW_NODES}
+        assert isinstance(get_llm_port("idea_interpretation")._inner, LangChainChatAdapter)
+        assert isinstance(get_llm_port("research_inputs")._inner, LangChainChatAdapter)
+        assert get_llm_port("idea_interpretation")._inner is get_llm_port(
+            "research_inputs"
+        )._inner
     finally:
         log = logging.getLogger("app.adapters.llm")
         log.handlers.clear()
@@ -186,11 +304,21 @@ async def test_tracing_llm_uses_default_model_when_omitted(
 ) -> None:
     monkeypatch.setenv("LLM_DEFAULT_MODEL", "gpt-from-settings")
     get_settings.cache_clear()
-    wrapped = TracingLlm(FakeLlm(response="x"), node="gap_judge")
+    wrapped = TracingLlm(FakeLlm(response="x", default_model=""), node="gap_judge")
     with caplog.at_level(logging.INFO, logger="app.adapters.llm"):
         await wrapped.complete(system="s", prompt="p")
     assert "model=gpt-from-settings" in caplog.records[0].getMessage()
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_tracing_llm_prefers_inner_default_model(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    wrapped = TracingLlm(FakeLlm(response="x", default_model="profile-model"), node="gap")
+    with caplog.at_level(logging.INFO, logger="app.adapters.llm"):
+        await wrapped.complete(system="s", prompt="p")
+    assert "model=profile-model" in caplog.records[0].getMessage()
 
 
 @pytest.mark.asyncio

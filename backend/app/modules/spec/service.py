@@ -24,7 +24,30 @@ from app.modules.spec.schemas import (
     GenerateExperimentResponse,
     ExperimentPlan,
 )
-from app.ports.llm import LlmPort
+from app.ports.llm import LlmCompleteError, LlmPort, LlmProviderError
+
+
+def _raise_llm_operational(exc: Exception) -> None:
+    if isinstance(exc, LlmProviderError):
+        status_code = exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE
+        if status_code == 429:
+            raise OperationalErrorException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                code="llm_rate_limited",
+                detail=str(exc),
+            ) from exc
+        raise OperationalErrorException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="llm_provider_error",
+            detail=str(exc),
+        ) from exc
+    if isinstance(exc, LlmCompleteError):
+        raise OperationalErrorException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="llm_complete_error",
+            detail=str(exc),
+        ) from exc
+    raise exc
 
 
 class _GeneratedDirection(BaseModel):
@@ -257,9 +280,12 @@ class SpecService:
         Hãy sinh ra các luận điểm (Claims) chứng minh cho các đóng góp (Contribution) đã chọn.
         Mỗi Claim đi kèm Baseline, Metric cần đo, Bằng chứng kỳ vọng (evidence), và Điều kiện bác bỏ (rejection_condition).
         """
-        response_data = await self._llm.complete_structured(
-            system=system, prompt=prompt, schema=GenerateClaimsResponse
-        )
+        try:
+            response_data = await self._llm.complete_structured(
+                system=system, prompt=prompt, schema=GenerateClaimsResponse
+            )
+        except (LlmCompleteError, LlmProviderError) as exc:
+            _raise_llm_operational(exc)
 
         narrative = {
             "cards": [card.model_dump(mode="json") for card in response_data.cards]
@@ -296,11 +322,14 @@ class SpecService:
         3. objective: Mục tiêu của thí nghiệm này
         4. significance: Ý nghĩa của thí nghiệm đối với claim
         """
-        response_data = await self._llm.complete_structured(
-            system=system,
-            prompt=prompt,
-            schema=ExperimentPlan
-        )
+        try:
+            response_data = await self._llm.complete_structured(
+                system=system,
+                prompt=prompt,
+                schema=ExperimentPlan
+            )
+        except (LlmCompleteError, LlmProviderError) as exc:
+            _raise_llm_operational(exc)
         
         narrative = {
             "plan": response_data.model_dump(mode="json")
@@ -342,9 +371,12 @@ class SpecService:
         - potential_bottlenecks: Danh sách các nút thắt hoặc vấn đề tiềm ẩn có thể xảy ra
         - mitigation_strategies: Danh sách các phương án giải quyết/giảm thiểu rủi ro
         """
-        report = await self._llm.complete_structured(
-            system=system, prompt=prompt, schema=FeasibilityReport
-        )
+        try:
+            report = await self._llm.complete_structured(
+                system=system, prompt=prompt, schema=FeasibilityReport
+            )
+        except (LlmCompleteError, LlmProviderError) as exc:
+            _raise_llm_operational(exc)
 
         narrative = {"feasibility_report": report.model_dump(mode="json")}
         new_version = await self._update_narrative(
