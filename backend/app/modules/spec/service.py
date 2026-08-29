@@ -77,15 +77,10 @@ _VIETNAMESE_ASCII_WORDS = frozenset(
 )
 
 
-def _confirmed_gap_statement(context: dict[str, Any]) -> str:
-    gap_context = context.get("upstream", {}).get(WorkflowNode.GAP.value, {})
-    for item in gap_context.get("card_snapshot", []):
-        if item.get("kind") != "gap":
-            continue
-        body = item.get("body", {})
-        statement = body.get("statement") or body.get("text")
-        if isinstance(statement, str) and statement.strip():
-            return statement.strip()
+def _confirmed_gap_statement(view: dict[str, Any]) -> str:
+    statement = view.get("gap_statement")
+    if isinstance(statement, str) and statement.strip():
+        return statement.strip()
     return ""
 
 
@@ -192,17 +187,17 @@ class SpecService:
             session_id, account_id, expected_version, WorkflowNode.CONTRIBUTION
         )
 
-        context = await LoopService(self._db).project_context(
+        view = await LoopService(self._db).project_prompt_view(
             session_id=session_id,
             account_id=account_id,
             node=WorkflowNode.CONTRIBUTION,
         )
         output_language = (
             "Vietnamese"
-            if _is_vietnamese(_confirmed_gap_statement(context))
+            if _is_vietnamese(_confirmed_gap_statement(view))
             else "English"
         )
-        proposed = await self._propose_directions(context, output_language)
+        proposed = await self._propose_directions(view, output_language)
         directions = [
             ContributionDirection(
                 id=f"direction-{chr(97 + index)}",
@@ -266,7 +261,7 @@ class SpecService:
         session = await self._ensure_node_ready(
             session_id, account_id, expected_version, WorkflowNode.CLAIMS
         )
-        context = await LoopService(self._db).project_context(
+        view = await LoopService(self._db).project_prompt_view(
             session_id=session_id,
             account_id=account_id,
             node=WorkflowNode.CLAIMS,
@@ -274,8 +269,8 @@ class SpecService:
 
         system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
         prompt = f"""
-        Dựa vào context của dự án:
-        {json.dumps(context, default=str, ensure_ascii=False)}
+        Dựa vào Prompt View của dự án:
+        {json.dumps(view, default=str, ensure_ascii=False)}
         
         Hãy sinh ra các luận điểm (Claims) chứng minh cho các đóng góp (Contribution) đã chọn.
         Mỗi Claim đi kèm Baseline, Metric cần đo, Bằng chứng kỳ vọng (evidence), và Điều kiện bác bỏ (rejection_condition).
@@ -305,7 +300,7 @@ class SpecService:
         session = await self._ensure_node_ready(
             session_id, account_id, expected_version, WorkflowNode.EXPERIMENT_PLAN
         )
-        context = await LoopService(self._db).project_context(
+        view = await LoopService(self._db).project_prompt_view(
             session_id=session_id,
             account_id=account_id,
             node=WorkflowNode.EXPERIMENT_PLAN,
@@ -313,8 +308,8 @@ class SpecService:
 
         system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
         prompt = f"""
-        Dựa vào context sau của dự án (đặc biệt là các Claim đã chọn):
-        {json.dumps(context, default=str, ensure_ascii=False)}
+        Dựa vào Prompt View sau của dự án (đặc biệt là các Claim đã chọn):
+        {json.dumps(view, default=str, ensure_ascii=False)}
         
         Hãy lên kế hoạch thí nghiệm chi tiết. VỚI MỖI CLAIM, hãy tạo một thí nghiệm bao gồm:
         1. claim: Nội dung của claim
@@ -348,7 +343,7 @@ class SpecService:
         session = await self._ensure_node_ready(
             session_id, account_id, expected_version, WorkflowNode.FEASIBILITY
         )
-        context = await LoopService(self._db).project_context(
+        view = await LoopService(self._db).project_prompt_view(
             session_id=session_id,
             account_id=account_id,
             node=WorkflowNode.FEASIBILITY,
@@ -357,12 +352,13 @@ class SpecService:
         system = (
             "Bạn là một AI đánh giá tài nguyên và tính khả thi cho Đặc tả Nghiên cứu."
         )
+        plan_payload = plan if plan else view.get("experiment_plan", {})
         prompt = f"""
         Kế hoạch thử nghiệm: 
-        {json.dumps(plan) if plan else "Dựa vào context experiment plan trong dữ liệu: " + json.dumps(context.get("experiment_plan", {}))}
+        {json.dumps(plan_payload, default=str, ensure_ascii=False)}
         
-        Context hiện tại của dự án:
-        {json.dumps(context, default=str, ensure_ascii=False)}
+        Prompt View hiện tại của dự án:
+        {json.dumps(view, default=str, ensure_ascii=False)}
         
         Hãy đánh giá tính khả thi (Feasibility) của kế hoạch thử nghiệm này. Trả về các thông tin sau:
         - is_feasible: Kết luận chung có khả thi không
@@ -385,9 +381,8 @@ class SpecService:
         return CheckFeasibilityResponse(version=new_version, report=report)
 
     async def _propose_directions(
-        self, context: dict[str, Any], output_language: str
+        self, view: dict[str, Any], output_language: str
     ) -> list[_GeneratedDirection]:
-        gap_statement = _confirmed_gap_statement(context)
         try:
             raw = await self._llm.complete(
                 system=(
@@ -402,8 +397,7 @@ class SpecService:
                 prompt=json.dumps(
                     {
                         "required_output_language": output_language,
-                        "confirmed_gap_statement": gap_statement,
-                        "context": context,
+                        "prompt_view": view,
                     },
                     default=str,
                     ensure_ascii=False,

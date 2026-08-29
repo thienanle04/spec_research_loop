@@ -33,6 +33,7 @@ from app.modules.loop.interpretation_turns import (
     apply_account_reply_patch,
     interpretation_confirmable,
 )
+from app.modules.loop.prompt_view import prompt_view
 from app.modules.loop.models import (
     Card,
     Decision,
@@ -715,6 +716,14 @@ class LoopService:
                 "node": session.working_draft_node,
             },
         }
+
+    async def project_prompt_view(
+        self, *, session_id: UUID, account_id: UUID, node: WorkflowNode
+    ) -> dict[str, Any]:
+        projection = await self.project_context(
+            session_id=session_id, account_id=account_id, node=node
+        )
+        return prompt_view(node, projection)
 
     def _assert_card_owner(self, session: LoopSession, kind: CardKind) -> None:
         owner = CARD_KIND_OWNER[kind]

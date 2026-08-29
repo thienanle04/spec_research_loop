@@ -102,4 +102,8 @@ _Avoid_: deleted, invalid, outdated (when you mean this state)
 
 **Context Projection**:
 The payload assembled for a generate or Judge run from valid upstream Stage Revisions plus the Working Draft of the node being run.
-_Avoid_: context (alone), prompt, RAG dump
+_Avoid_: context (alone), prompt, Prompt View (when you mean the full assembly), RAG dump
+
+**Prompt View**:
+A Workflow-Node-scoped, prompt-ready slice derived from a Context Projection for an LLM generate or Judge call. It does not replace Context Projection.
+_Avoid_: context (alone), prompt context, Prompt Projection, RAG dump

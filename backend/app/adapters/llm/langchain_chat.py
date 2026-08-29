@@ -6,11 +6,12 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator
+from typing import NoReturn
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from pydantic import TypeAdapter
+from pydantic import SecretStr, TypeAdapter
 
 from app.ports.llm import LlmCompleteError, LlmProviderError
 
@@ -94,7 +95,7 @@ def _log_vendor_failure(exc: Exception, *, where: str) -> None:
     )
 
 
-def _reraise_llm_failure(exc: Exception, *, where: str) -> None:
+def _reraise_llm_failure(exc: Exception, *, where: str) -> NoReturn:
     """Map vendor failures to safe port errors (no response body / account leakage)."""
     if isinstance(exc, (LlmCompleteError, LlmProviderError)):
         raise exc
@@ -162,7 +163,7 @@ class LangChainChatAdapter:
         try:
             chat = ChatOpenAI(
                 model=resolved,
-                api_key=self._api_key,
+                api_key=SecretStr(self._api_key),
                 base_url=self._base_url or None,
                 streaming=True,
             )
@@ -192,9 +193,14 @@ class LangChainChatAdapter:
             parts.append(token)
         return "".join(parts)
 
-    async def complete_structured(
-        self, *, system: str, prompt: str, schema: type, model: str | None = None
-    ):
+    async def complete_structured[T](
+        self,
+        *,
+        system: str,
+        prompt: str,
+        schema: type[T],
+        model: str | None = None,
+    ) -> T:
         if not self._api_key:
             raise LlmCompleteError(f"{self._api_key_env} is not set")
         resolved = model or self.default_model
@@ -210,7 +216,7 @@ class LangChainChatAdapter:
         try:
             chat = ChatOpenAI(
                 model=resolved,
-                api_key=self._api_key,
+                api_key=SecretStr(self._api_key),
                 base_url=None,
             )
             try:
@@ -218,12 +224,13 @@ class LangChainChatAdapter:
                     schema, method="json_mode"
                 )
                 chain = _PROMPT | structured_chat
-                return await chain.ainvoke(
+                raw = await chain.ainvoke(
                     {
                         "system": _escape_template(system),
                         "prompt": _escape_template(prompt),
                     }
                 )
+                return TypeAdapter(schema).validate_python(raw)
             except Exception as structured_exc:
                 if _http_status(structured_exc) not in {400, 404, 422}:
                     raise
@@ -235,15 +242,16 @@ class LangChainChatAdapter:
             raise
         except Exception as exc:
             _reraise_llm_failure(exc, where="complete_structured")
+            raise  # pragma: no cover — NoReturn for type checkers
 
-    async def _complete_structured_via_json(
+    async def _complete_structured_via_json[T](
         self,
         *,
         system: str,
         prompt: str,
-        schema: type,
+        schema: type[T],
         model: str | None,
-    ):
+    ) -> T:
         schema_hint = json.dumps(
             TypeAdapter(schema).json_schema(), ensure_ascii=False
         )
