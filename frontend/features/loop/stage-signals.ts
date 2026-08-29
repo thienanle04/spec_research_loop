@@ -60,6 +60,39 @@ export function deriveStageActions({
   };
 }
 
+export function shouldAutoPrepare({
+  stage,
+  selectedNode,
+  workingDraftNode,
+  nodeHeads,
+}: {
+  stage: LoopStage;
+  selectedNode: WorkflowNode | undefined;
+  workingDraftNode: WorkflowNode;
+  nodeHeads: NodeHeadResponse[];
+}): boolean {
+  if (!selectedNode) {
+    return false;
+  }
+  if (incompleteUpstreamNodes({ stage, nodeHeads }).length > 0) {
+    return false;
+  }
+  const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
+  const viewedStatus = statusByNode.get(selectedNode) ?? NodeHeadStatus.empty;
+  if (viewedStatus !== NodeHeadStatus.empty && viewedStatus !== NodeHeadStatus.stale) {
+    return false;
+  }
+  if (selectedNode === workingDraftNode) {
+    return false;
+  }
+  const wdStatus = statusByNode.get(workingDraftNode) ?? NodeHeadStatus.empty;
+  if (wdStatus !== NodeHeadStatus.current) {
+    return false;
+  }
+  const stageNodes = catalogStage(stage).nodes as readonly WorkflowNode[];
+  return !stageNodes.includes(workingDraftNode);
+}
+
 export function deriveStageSignals({
   stage,
   nodeHeads,

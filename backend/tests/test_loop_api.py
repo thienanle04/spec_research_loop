@@ -240,14 +240,14 @@ async def test_list_and_get_and_patch_title(client: AsyncClient) -> None:
     assert listed.json()[0]["updated_at"] == created["updated_at"]
     patched = await client.patch(
         f"/api/loop/sessions/{session_id}",
-        json={"title": "GPU budget", "expected_version": 1},
+        json={"title": "GPU budget"},
     )
     assert patched.status_code == 200
     assert patched.json()["title"] == "GPU budget"
-    assert patched.json()["version"] == 2
+    assert patched.json()["version"] == 1
     fetched = await client.get(f"/api/loop/sessions/{session_id}")
     assert fetched.json()["title"] == "GPU budget"
-    assert fetched.json()["version"] == 2
+    assert fetched.json()["version"] == 1
 
 
 @pytest.mark.asyncio
@@ -258,7 +258,7 @@ async def test_list_sessions_orders_by_recent_activity(client: AsyncClient) -> N
 
     renamed = await client.patch(
         f"/api/loop/sessions/{first['id']}",
-        json={"title": "Most recent", "expected_version": first["version"]},
+        json={"title": "Most recent"},
     )
     assert renamed.status_code == 200
 
@@ -270,43 +270,49 @@ async def test_list_sessions_orders_by_recent_activity(client: AsyncClient) -> N
 
 
 @pytest.mark.asyncio
-async def test_patch_title_requires_expected_version(client: AsyncClient) -> None:
+async def test_patch_title_last_write_wins_without_bumping_version(client: AsyncClient) -> None:
     await _auth_client(client)
-    created = await _create_session(client)
-
-    response = await client.patch(
+    created = await _create_session(client, title="Original")
+    first = await client.patch(
         f"/api/loop/sessions/{created['id']}",
-        json={"title": "Missing version"},
+        json={"title": "Accepted"},
     )
+    assert first.status_code == 200
+    assert first.json()["version"] == created["version"]
 
-    assert response.status_code == 422
+    second = await client.patch(
+        f"/api/loop/sessions/{created['id']}",
+        json={"title": "Stale overwrite"},
+    )
+    assert second.status_code == 200
+    assert second.json()["title"] == "Stale overwrite"
+    assert second.json()["version"] == created["version"]
+    fetched = await client.get(f"/api/loop/sessions/{created['id']}")
+    assert fetched.json()["title"] == "Stale overwrite"
+    assert fetched.json()["version"] == created["version"]
 
 
 @pytest.mark.asyncio
-async def test_stale_title_patch_preserves_server_value(client: AsyncClient) -> None:
+async def test_patch_title_does_not_change_working_draft_version(client: AsyncClient) -> None:
     await _auth_client(client)
-    created = await _create_session(client, title="Original")
-    accepted = await client.patch(
-        f"/api/loop/sessions/{created['id']}",
-        json={"title": "Accepted", "expected_version": created["version"]},
+    created = await _create_session(client)
+    draft = await _patch_working_draft(
+        client,
+        created["id"],
+        expected_version=created["version"],
+        narrative={"text": "GPU kernels"},
     )
-    assert accepted.status_code == 200
-    assert accepted.json()["version"] == 2
+    assert draft.status_code == 200
+    assert draft.json()["version"] == 2
 
-    stale = await client.patch(
+    patched = await client.patch(
         f"/api/loop/sessions/{created['id']}",
-        json={"title": "Stale overwrite", "expected_version": created["version"]},
+        json={"title": "GPU budget"},
     )
-
-    assert stale.status_code == 409
-    assert stale.json() == {
-        "code": "version_conflict",
-        "detail": "Loop Session was changed by another request",
-        "current_version": 2,
-    }
-    fetched = await client.get(f"/api/loop/sessions/{created['id']}")
-    assert fetched.json()["title"] == "Accepted"
-    assert fetched.json()["version"] == 2
+    assert patched.status_code == 200
+    assert patched.json()["title"] == "GPU budget"
+    assert patched.json()["version"] == 2
+    assert patched.json()["working_draft_narrative"] == draft.json()["working_draft_narrative"]
 
 
 @pytest.mark.asyncio
@@ -631,7 +637,9 @@ async def test_confirm_interpretation_moves_working_draft(client: AsyncClient) -
     assert payload["working_draft_node"] == "idea_decomposition"
     assert _head(payload, "idea_interpretation")["status"] == "current"
     assert _head(payload, "idea_interpretation")["stage_revision_id"] is not None
+    assert _head(payload, "idea_interpretation")["head_revision"]["narrative"]["frame"]["intent"]
     assert _head(payload, "idea_decomposition")["status"] == "empty"
+    assert _head(payload, "idea_decomposition")["head_revision"] is None
     decisions = await client.get(f"/api/loop/sessions/{session_id}/decisions")
     assert decisions.status_code == 200
     rows = decisions.json()
@@ -659,12 +667,14 @@ async def test_confirm_increments_version_in_the_freeze_transaction(client: Asyn
 async def test_stale_confirm_creates_no_revision_decision_or_handoff(client: AsyncClient) -> None:
     await _auth_client(client)
     created = await _create_session(client)
-    accepted = await client.patch(
-        f"/api/loop/sessions/{created['id']}",
-        json={"title": "Accepted", "expected_version": created["version"]},
+    bumped = await _patch_working_draft(
+        client,
+        created["id"],
+        expected_version=created["version"],
+        narrative={"text": "Accepted idea"},
     )
-    assert accepted.status_code == 200
-    assert accepted.json()["version"] == 2
+    assert bumped.status_code == 200
+    assert bumped.json()["version"] == 2
 
     stale = await client.post(
         f"/api/loop/sessions/{created['id']}/confirm",
@@ -678,8 +688,8 @@ async def test_stale_confirm_creates_no_revision_decision_or_handoff(client: Asy
     }
     fetched = await client.get(f"/api/loop/sessions/{created['id']}")
     payload = fetched.json()
-    assert payload["title"] == "Accepted"
     assert payload["version"] == 2
+    assert payload["working_draft_narrative"]["text"] == "Accepted idea"
     assert payload["working_draft_node"] == "idea_interpretation"
     assert payload["produced_spec_version"] is None
     assert payload["valid_spec_version_id"] is None
@@ -687,6 +697,7 @@ async def test_stale_confirm_creates_no_revision_decision_or_handoff(client: Asy
         "node": "idea_interpretation",
         "status": "empty",
         "stage_revision_id": None,
+        "head_revision": None,
     }
     decisions = await client.get(f"/api/loop/sessions/{created['id']}/decisions")
     assert decisions.json() == []
@@ -922,12 +933,14 @@ async def test_prepare_increments_version_and_returns_session(client: AsyncClien
 async def test_stale_prepare_is_version_conflict(client: AsyncClient) -> None:
     await _auth_client(client)
     created = await _create_session(client)
-    accepted = await client.patch(
-        f"/api/loop/sessions/{created['id']}",
-        json={"title": "Accepted", "expected_version": created["version"]},
+    bumped = await _patch_working_draft(
+        client,
+        created["id"],
+        expected_version=created["version"],
+        narrative={"text": "Accepted idea"},
     )
-    assert accepted.status_code == 200
-    assert accepted.json()["version"] == 2
+    assert bumped.status_code == 200
+    assert bumped.json()["version"] == 2
 
     stale = await client.post(
         f"/api/loop/sessions/{created['id']}/recompute-prepare",
@@ -940,7 +953,7 @@ async def test_stale_prepare_is_version_conflict(client: AsyncClient) -> None:
         "current_version": 2,
     }
     fetched = await client.get(f"/api/loop/sessions/{created['id']}")
-    assert fetched.json()["title"] == "Accepted"
+    assert fetched.json()["working_draft_narrative"]["text"] == "Accepted idea"
     assert fetched.json()["version"] == 2
     assert fetched.json()["working_draft_node"] == "idea_interpretation"
 

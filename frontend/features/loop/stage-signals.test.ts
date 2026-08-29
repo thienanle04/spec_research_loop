@@ -8,6 +8,7 @@ import {
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
+  shouldAutoPrepare,
   staleInvalidationStages,
 } from "./stage-signals";
 
@@ -18,6 +19,7 @@ function heads(
     node,
     status: overrides[node] ?? NodeHeadStatus.empty,
     stage_revision_id: null,
+    head_revision: null,
   }));
 }
 
@@ -306,6 +308,141 @@ describe("Loop Stage actions", () => {
       canRecompute: false,
       editableNodes: [WorkflowNode.research_inputs, WorkflowNode.related_work],
     });
+  });
+});
+
+describe("shouldAutoPrepare", () => {
+  const grillingCurrent = {
+    [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+    [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+  };
+
+  it("prepares an empty node when the Working Draft is current in another Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.research_inputs,
+        workingDraftNode: WorkflowNode.idea_decomposition,
+        nodeHeads: heads(grillingCurrent),
+      }),
+    ).toBe(true);
+  });
+
+  it("prepares a Stale node when the Working Draft is current in another Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.related_work,
+        workingDraftNode: WorkflowNode.contribution,
+        nodeHeads: heads({
+          ...grillingCurrent,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.stale,
+          [WorkflowNode.gap]: NodeHeadStatus.current,
+          [WorkflowNode.contribution]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toBe(true);
+  });
+
+  it("does not prepare a current Node Head in a mixed Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.research_inputs,
+        workingDraftNode: WorkflowNode.contribution,
+        nodeHeads: heads({
+          ...grillingCurrent,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.stale,
+          [WorkflowNode.gap]: NodeHeadStatus.current,
+          [WorkflowNode.contribution]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare Spec Draft or a missing Workflow Node", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.spec_draft,
+        selectedNode: undefined,
+        workingDraftNode: WorkflowNode.feasibility,
+        nodeHeads: heads(grillingCurrent),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare an unavailable Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.research_inputs,
+        workingDraftNode: WorkflowNode.idea_interpretation,
+        nodeHeads: heads(),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare the Working Draft already on that empty or Stale node", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.research_inputs,
+        workingDraftNode: WorkflowNode.research_inputs,
+        nodeHeads: heads({
+          ...grillingCurrent,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.empty,
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        workingDraftNode: WorkflowNode.idea_decomposition,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+        }),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare when the Working Draft is not current", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        workingDraftNode: WorkflowNode.idea_interpretation,
+        nodeHeads: heads(),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare while the Working Draft is a current node in the same Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        workingDraftNode: WorkflowNode.idea_interpretation,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.empty,
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        workingDraftNode: WorkflowNode.idea_interpretation,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+        }),
+      }),
+    ).toBe(false);
   });
 });
 

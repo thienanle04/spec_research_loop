@@ -12,23 +12,17 @@ import {
   useGetSessionApiLoopSessionsSessionIdGet,
   usePatchSessionApiLoopSessionsSessionIdPatch,
 } from "@/lib/api/generated/endpoints";
+import type { LoopSessionResponse } from "@/lib/api/generated/model";
 
-import { useLoopSessionSave } from "./loop-session-save";
-import { type SaveStatus } from "./mutation-queue";
-import { isVersionConflict, operationalError } from "./operational-error";
+type TitleSaveStatus = "idle" | "saving" | "saved" | "failed";
 
-type Conflict = {
-  localTitle: string;
-  serverTitle: string | null;
-  serverVersion: number;
-};
+const TITLE_SAVED_MS = 2000;
 
-const STATUS_LABEL: Record<SaveStatus, string | null> = {
+const STATUS_LABEL: Record<TitleSaveStatus, string | null> = {
   idle: null,
   saving: "Saving…",
   saved: "Saved",
   failed: "Save failed",
-  conflict: "Resolve conflict",
 };
 
 function displayTitle(title: string | null | undefined): string {
@@ -39,127 +33,99 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
   const queryClient = useQueryClient();
   const sessionQuery = useGetSessionApiLoopSessionsSessionIdGet(sessionId);
   const patchTitle = usePatchSessionApiLoopSessionsSessionIdPatch();
-  const { queue, status, setStatus } = useLoopSessionSave();
   const inputRef = useRef<HTMLInputElement>(null);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [title, setTitle] = useState("");
   const [dirty, setDirty] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [conflict, setConflict] = useState<Conflict | null>(null);
+  const [status, setStatus] = useState<TitleSaveStatus>("idle");
 
   const session = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
-  const showEditor = editing || conflict != null;
 
   useEffect(() => {
-    if (session && !dirty && !conflict) {
+    if (session && !dirty) {
       setTitle(session.title ?? "");
     }
-  }, [conflict, dirty, session]);
+  }, [dirty, session]);
 
   useEffect(() => {
-    if (showEditor && !conflict) {
+    if (editing) {
       inputRef.current?.focus();
       inputRef.current?.select();
     }
-  }, [conflict, showEditor]);
+  }, [editing]);
+
+  useEffect(() => {
+    return () => {
+      if (savedTimer.current) {
+        clearTimeout(savedTimer.current);
+      }
+    };
+  }, []);
+
+  function markSaved() {
+    setStatus("saved");
+    if (savedTimer.current) {
+      clearTimeout(savedTimer.current);
+    }
+    savedTimer.current = setTimeout(() => setStatus("idle"), TITLE_SAVED_MS);
+  }
 
   function enterEdit() {
     setEditing(true);
   }
 
   function cancelEdit() {
-    if (status === "saving" || conflict) return;
+    if (status === "saving") return;
     setTitle(session?.title ?? "");
     setDirty(false);
     setEditing(false);
   }
 
-  async function saveTitle(localTitle: string, expectedVersion: number) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || status === "saving") return;
+    const localTitle = title;
+    setStatus("saving");
     try {
-      const response = await queue.enqueue(() =>
-        patchTitle.mutateAsync({
-          sessionId,
-          data: {
-            title: localTitle.trim() ? localTitle : null,
-            expected_version: expectedVersion,
-          },
-        }),
-      );
+      const response = await patchTitle.mutateAsync({
+        sessionId,
+        data: { title: localTitle.trim() ? localTitle : null },
+      });
       if (response.status === 200) {
         setTitle(response.data.title ?? "");
         queryClient.setQueryData(
           getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId),
-          response,
+          (
+            current:
+              | { status: number; data: LoopSessionResponse }
+              | undefined,
+          ) => {
+            if (current?.status === 200) {
+              return {
+                ...current,
+                data: {
+                  ...current.data,
+                  title: response.data.title,
+                  updated_at: response.data.updated_at,
+                },
+              };
+            }
+            return response;
+          },
         );
         await queryClient.invalidateQueries({
           queryKey: getListSessionsApiLoopSessionsGetQueryKey(),
         });
         setDirty(false);
         setEditing(false);
-      }
-    } catch (error) {
-      if (!isVersionConflict(error)) {
+        markSaved();
         return;
       }
-      const typedError = operationalError(error);
-      try {
-        const refreshed = await sessionQuery.refetch();
-        if (refreshed.data?.status === 200) {
-          setConflict({
-            localTitle,
-            serverTitle: refreshed.data.data.title ?? "",
-            serverVersion: refreshed.data.data.version,
-          });
-          return;
-        }
-      } catch {
-        // Resolution remains suspended until the Account retries this read.
-      }
-      setConflict({
-        localTitle,
-        serverTitle: null,
-        serverVersion: typedError?.current_version ?? expectedVersion,
-      });
-    }
-  }
-
-  async function retryConflictLoad() {
-    if (!conflict) return;
-    try {
-      const refreshed = await sessionQuery.refetch();
-      if (refreshed.data?.status === 200) {
-        setConflict({
-          localTitle: conflict.localTitle,
-          serverTitle: refreshed.data.data.title ?? "",
-          serverVersion: refreshed.data.data.version,
-        });
-      }
+      setStatus("failed");
     } catch {
-      setStatus("conflict");
+      setStatus("failed");
     }
-  }
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!session || conflict) return;
-    await saveTitle(title, session.version);
-  }
-
-  async function keepLocalTitle() {
-    if (!conflict || conflict.serverTitle === null) return;
-    const resolution = conflict;
-    setConflict(null);
-    queue.resumeAfterConflict();
-    await saveTitle(resolution.localTitle, resolution.serverVersion);
-  }
-
-  function useServerTitle() {
-    if (!conflict || conflict.serverTitle === null) return;
-    setTitle(conflict.serverTitle);
-    setDirty(false);
-    setConflict(null);
-    setEditing(false);
-    queue.resumeAfterConflict();
-    setStatus("saved");
   }
 
   function statusMessage() {
@@ -190,7 +156,7 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="min-w-0">
-      {showEditor ? (
+      {editing ? (
         <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={submit}>
           <label className="grid min-w-0 flex-1 gap-1 text-sm font-medium">
             <span className="sr-only">Loop Session title</span>
@@ -198,7 +164,7 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
               ref={inputRef}
               aria-label="Loop Session title"
               className="h-9 font-serif text-base"
-              disabled={status === "saving" || status === "conflict"}
+              disabled={status === "saving"}
               maxLength={200}
               placeholder="Untitled Loop Session"
               value={title}
@@ -208,25 +174,19 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
               }}
             />
           </label>
-          <Button
-            type="submit"
-            size="sm"
-            disabled={!dirty || status === "saving" || status === "conflict"}
-          >
-            Save title
+          <Button type="submit" size="sm" disabled={!dirty || status === "saving"}>
+            Save
           </Button>
-          {conflict ? null : (
-            <Button
+          <Button
             type="button"
             size="sm"
             variant="outline"
             disabled={status === "saving"}
             onClick={cancelEdit}
-            >
-              Cancel
-            </Button>
-          )}
-          {statusMessage()}
+          >
+            Cancel
+          </Button>
+          {status === "saving" || status === "failed" ? statusMessage() : null}
         </form>
       ) : (
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -245,47 +205,6 @@ export function LoopSessionTitleEditor({ sessionId }: { sessionId: string }) {
       )}
       {status === "failed" && patchTitle.error ? (
         <p className="mt-1 text-sm text-destructive">{getApiErrorMessage(patchTitle.error)}</p>
-      ) : null}
-
-      {conflict ? (
-        <div className="mt-3 rounded-md border border-pending bg-card p-3" role="alert">
-          <p className="text-sm font-medium">Title conflict</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Another request changed this Loop Session. Choose which title to keep.
-          </p>
-          <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div>
-              <dt className="text-sm font-medium">Your title</dt>
-              <dd className="mt-1 break-words">{conflict.localTitle || "Untitled Loop Session"}</dd>
-            </div>
-            <div>
-              <dt className="text-sm font-medium">Current server title</dt>
-              <dd className="mt-1 break-words">
-                {conflict.serverTitle === null
-                  ? "Could not load the current server title."
-                  : conflict.serverTitle || "Untitled Loop Session"}
-              </dd>
-            </div>
-          </dl>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {conflict.serverTitle === null ? (
-              <Button variant="outline" size="sm" onClick={retryConflictLoad}>
-                Retry loading server title
-              </Button>
-            ) : null}
-            <Button disabled={conflict.serverTitle === null} size="sm" onClick={keepLocalTitle}>
-              Keep my title
-            </Button>
-            <Button
-              disabled={conflict.serverTitle === null}
-              variant="outline"
-              size="sm"
-              onClick={useServerTitle}
-            >
-              Use server title
-            </Button>
-          </div>
-        </div>
       ) : null}
     </div>
   );

@@ -46,6 +46,7 @@ from app.modules.loop.schemas import (
     CardMutationResponse,
     CardResponse,
     DecisionResponse,
+    HeadRevisionResponse,
     LoopSessionResponse,
     LoopSessionSummary,
     NodeHeadResponse,
@@ -71,6 +72,20 @@ def _card_snapshot(cards: list[Card]) -> list[dict[str, Any]]:
         {"body": card.body, "id": str(card.id), "kind": card.kind} for card in cards
     ]
     return sorted(items, key=lambda item: item["id"])
+
+
+def _head_revision(
+    head: NodeHead, revisions: dict[UUID, StageRevision]
+) -> HeadRevisionResponse | None:
+    if head.stage_revision_id is None:
+        return None
+    revision = revisions.get(head.stage_revision_id)
+    if revision is None:
+        return None
+    return HeadRevisionResponse(
+        narrative=dict(revision.narrative),
+        card_snapshot=list(revision.card_snapshot),
+    )
 
 
 class LoopService:
@@ -123,39 +138,26 @@ class LoopService:
         session_id: UUID,
         account_id: UUID,
         title: str | None,
-        expected_version: int,
     ) -> LoopSessionResponse:
-        session = await self._load_session(session_id, account_id)
         updated = await self._db.execute(
             update(LoopSession)
             .where(
                 LoopSession.id == session_id,
                 LoopSession.account_id == account_id,
-                LoopSession.version == expected_version,
             )
             .values(
                 title=title,
-                version=LoopSession.version + 1,
                 updated_at=func.now(),
             )
-            .returning(LoopSession.version, LoopSession.updated_at)
+            .returning(LoopSession.id)
             .execution_options(synchronize_session=False)
         )
-        updated_row = updated.one_or_none()
-        if updated_row is None:
-            await self._db.refresh(session, attribute_names=["version"])
-            raise OperationalErrorException(
-                status_code=status.HTTP_409_CONFLICT,
-                code="version_conflict",
-                detail="Loop Session was changed by another request",
-                current_version=session.version,
+        if updated.one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Loop Session not found"
             )
-        attributes.set_committed_value(session, "title", title)
-        attributes.set_committed_value(session, "version", updated_row.version)
-        attributes.set_committed_value(session, "updated_at", updated_row.updated_at)
-        response = await self._to_response(session)
         await self._db.commit()
-        return response
+        return await self.get_session(session_id=session_id, account_id=account_id)
 
     async def patch_working_draft(
         self,
@@ -799,6 +801,7 @@ class LoopService:
         heads = sorted(
             session.node_heads, key=lambda head: WORKFLOW_NODES.index(head.node_enum())
         )
+        revisions = {rev.id: rev for rev in session.stage_revisions}
         return LoopSessionResponse(
             id=session.id,
             title=session.title,
@@ -810,6 +813,7 @@ class LoopService:
                     node=head.node_enum(),
                     status=head.status_enum(),
                     stage_revision_id=head.stage_revision_id,
+                    head_revision=_head_revision(head, revisions),
                 )
                 for head in heads
             ],

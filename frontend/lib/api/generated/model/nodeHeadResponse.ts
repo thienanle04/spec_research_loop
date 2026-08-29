@@ -4,6 +4,7 @@
  * SpecResearch Loop
  * OpenAPI spec version: 0.1.0
  */
+import type { HeadRevisionResponse } from './headRevisionResponse';
 import type { NodeHeadStatus } from './nodeHeadStatus';
 import type { WorkflowNode } from './workflowNode';
 
@@ -11,4 +12,5 @@ export interface NodeHeadResponse {
   node: WorkflowNode;
   status: NodeHeadStatus;
   stage_revision_id: string | null;
+  head_revision: HeadRevisionResponse | null;
 }

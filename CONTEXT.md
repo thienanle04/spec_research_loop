@@ -13,7 +13,7 @@ The product and end-to-end workflow that moves an idea through research and judg
 _Avoid_: pipeline (alone), agent swarm, autopilot research
 
 **Loop Session**:
-An Account's project: one research idea being clarified into a Research Spec; the durable unit they open, save, and resume. Canonical term is Loop Session; project means the same thing.
+An Account's project: one research idea being clarified into a Research Spec; the durable unit they open, save, and resume. Canonical term is Loop Session; project means the same thing. It has an Account-editable title used as the list and header label; the title is not part of the Research Spec and is not a Stage Revision.
 _Avoid_: session (alone), chat, conversation, thread
 
 **Account**:
@@ -49,7 +49,7 @@ The session's current editing Workflow Node plus narrative JSONB. In-progress ty
 _Avoid_: temp, cache, unsaved changes
 
 **Loop Stage**:
-A user-facing group of Workflow Nodes the Account recomputes together via `recompute-prepare`: Grilling (interpretation, decomposition), Related work (research inputs, related work), Gap, Contribution, Claims/evidence, Experiment planning, Spec Draft, Independent judges, Readiness. Spec Draft and Readiness have no Workflow Nodes. Confirm is per Workflow Node.
+A user-facing group of Workflow Nodes the Account recomputes together by opening empty or Stale Workflow Nodes in that group: Grilling (interpretation, decomposition), Related work (research inputs, related work), Gap, Contribution, Claims/evidence, Experiment planning, Spec Draft, Independent judges, Readiness. Spec Draft and Readiness have no Workflow Nodes. Confirm is per Workflow Node.
 _Avoid_: step, bước, pipeline stage (when you mean this UI unit), Nav Unit
 
 **Spec Draft**:

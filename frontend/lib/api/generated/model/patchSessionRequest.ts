@@ -7,6 +7,4 @@
 
 export interface PatchSessionRequest {
   title?: string | null;
-  /** @minimum 1 */
-  expected_version: number;
 }

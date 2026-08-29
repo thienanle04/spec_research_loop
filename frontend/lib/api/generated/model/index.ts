@@ -36,6 +36,7 @@ export * from './generateExperimentRequest';
 export * from './generateExperimentResponse';
 export * from './generateRequest';
 export * from './groundingStatus';
+export * from './headRevisionResponse';
 export * from './healthApiIdeaHealthGet200';
 export * from './healthApiIdentityHealthGet200';
 export * from './healthApiJudgementHealthGet200';

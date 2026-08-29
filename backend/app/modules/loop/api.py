@@ -69,7 +69,6 @@ async def get_session(
 @router.patch(
     "/sessions/{session_id}",
     response_model=LoopSessionResponse,
-    responses={409: {"model": OperationalError}},
 )
 async def patch_session(
     session_id: UUID,
@@ -81,7 +80,6 @@ async def patch_session(
         session_id=session_id,
         account_id=account.id,
         title=body.title,
-        expected_version=body.expected_version,
     )
 
 

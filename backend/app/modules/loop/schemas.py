@@ -15,7 +15,6 @@ class CreateSessionRequest(BaseModel):
 
 class PatchSessionRequest(BaseModel):
     title: str | None = Field(default=None, max_length=200)
-    expected_version: int = Field(ge=1)
 
 
 class WorkingDraftPatchRequest(BaseModel):
@@ -51,10 +50,16 @@ class ReplaceCardsRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class HeadRevisionResponse(BaseModel):
+    narrative: dict[str, Any]
+    card_snapshot: list[dict[str, Any]]
+
+
 class NodeHeadResponse(BaseModel):
     node: WorkflowNode
     status: NodeHeadStatus
     stage_revision_id: UUID | None
+    head_revision: HeadRevisionResponse | None = None
 
     model_config = {"from_attributes": True}
 

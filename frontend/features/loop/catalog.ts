@@ -197,6 +197,69 @@ export function resolveSelectedStage(
   return stageForWorkflowNode(workingDraftNode);
 }
 
+export function isWorkflowNode(value: string | null): value is WorkflowNode {
+  return Object.values(WorkflowNode).some((node) => node === value);
+}
+
+export type NavStop = {
+  stage: LoopStage;
+  node?: WorkflowNode;
+};
+
+export function navStops(): NavStop[] {
+  return LOOP_STAGE_CATALOG.flatMap((stage) =>
+    stage.nodes.length === 0
+      ? [{ stage: stage.id }]
+      : [...stage.nodes].map((node) => ({ stage: stage.id, node })),
+  );
+}
+
+export function sessionHref(sessionId: string, stop: NavStop): string {
+  const params = new URLSearchParams({ stage: stop.stage });
+  if (stop.node) {
+    params.set("node", stop.node);
+  }
+  return `/sessions/${sessionId}?${params.toString()}`;
+}
+
+export function railStop(stage: LoopStage): NavStop {
+  const nodes = catalogStage(stage).nodes as readonly WorkflowNode[];
+  return nodes[0] ? { stage, node: nodes[0] } : { stage };
+}
+
+export function resolveSelectedNode(
+  stage: LoopStage,
+  nodeQuery: string | null,
+  workingDraftNode: WorkflowNode,
+): WorkflowNode | undefined {
+  const nodes = catalogStage(stage).nodes as readonly WorkflowNode[];
+  if (nodes.length === 0) {
+    return undefined;
+  }
+  if (isWorkflowNode(nodeQuery) && nodes.includes(nodeQuery)) {
+    return nodeQuery;
+  }
+  if (!nodeQuery && nodes.includes(workingDraftNode)) {
+    return workingDraftNode;
+  }
+  return nodes[0];
+}
+
+export function adjacentStop(current: NavStop, delta: -1 | 1): NavStop | null {
+  const stops = navStops();
+  const index = stops.findIndex(
+    (stop) => stop.stage === current.stage && stop.node === current.node,
+  );
+  if (index < 0) {
+    return null;
+  }
+  return stops[index + delta] ?? null;
+}
+
+export function workingDraftStop(node: WorkflowNode): NavStop {
+  return { stage: stageForWorkflowNode(node), node };
+}
+
 export function ancestors(node: WorkflowNode): Set<WorkflowNode> {
   const found = new Set<WorkflowNode>();
   const stack = Object.entries(INVALIDATION_CHILDREN)
