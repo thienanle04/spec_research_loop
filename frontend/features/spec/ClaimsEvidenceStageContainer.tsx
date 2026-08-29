@@ -6,8 +6,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
-  useCreateCardApiLoopSessionsSessionIdCardsPost,
   useGenerateClaimsApiSpecSessionsSessionIdClaimsGeneratePost,
+  useReplaceCardsApiLoopSessionsSessionIdCardsPut,
 } from "@/lib/api/generated/endpoints";
 import {
   CardKind,
@@ -30,7 +30,7 @@ export function ClaimsEvidenceStageContainer({
 }) {
   const queryClient = useQueryClient();
   const generateClaims = useGenerateClaimsApiSpecSessionsSessionIdClaimsGeneratePost();
-  const createCard = useCreateCardApiLoopSessionsSessionIdCardsPost();
+  const replaceCards = useReplaceCardsApiLoopSessionsSessionIdCardsPut();
   const { queue, status } = useLoopSessionSave();
   const saving = status === "saving";
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
@@ -91,35 +91,28 @@ export function ClaimsEvidenceStageContainer({
   async function saveSelection() {
     setError(null);
     try {
-      const existingCardsStr = new Set(confirmedClaimCards.map(c => JSON.stringify(c.body?.metadata)));
-      let latestVersion = currentSession().version;
-      const newCards: any[] = [];
-
-      for (const card of generatedCards) {
-        if (existingCardsStr.has(JSON.stringify(card))) continue;
-        const bodyText = `Claim: ${card.claim}\nBaseline: ${card.baseline}\nMetric: ${card.metric}\nEvidence: ${card.evidence}\nRejection Condition: ${card.rejection_condition}`;
-        const response = await queue.enqueue(() =>
-          createCard.mutateAsync({
-            sessionId,
-            data: {
-              kind: CardKind.claim,
-              body: { text: bodyText, metadata: card },
-              expected_version: latestVersion,
-            },
-          })
-        );
-        if (response.status !== 201) throw new Error("Could not save the Claim Card");
-        latestVersion = response.data.version;
-        newCards.push(response.data);
-      }
-      
+      const bodies = generatedCards.map((card) => ({
+        text: `Claim: ${card.claim}\nBaseline: ${card.baseline}\nMetric: ${card.metric}\nEvidence: ${card.evidence}\nRejection Condition: ${card.rejection_condition}`,
+        metadata: card,
+      }));
+      const response = await queue.enqueue(() =>
+        replaceCards.mutateAsync({
+          sessionId,
+          data: {
+            kind: CardKind.claim,
+            bodies,
+            expected_version: currentSession().version,
+          },
+        }),
+      );
+      if (response.status !== 200) throw new Error("Could not save the Claim Cards");
       updateSession((current) => ({
         ...current,
-        version: latestVersion,
+        version: response.data.version,
         working_draft_narrative: { ...current.working_draft_narrative as object, saved: true },
         cards: [
-          ...current.cards,
-          ...newCards,
+          ...current.cards.filter((card) => card.kind !== CardKind.claim),
+          ...response.data.cards,
         ],
       }));
     } catch (caught) {
