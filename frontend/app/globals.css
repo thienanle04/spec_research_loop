@@ -64,7 +64,7 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: var(--font-atkinson), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-be-vietnam), "Noto Sans", ui-sans-serif, system-ui, sans-serif;
   --font-serif: var(--font-crimson), ui-serif, Georgia, serif;
   --font-display: var(--font-garamond), ui-serif, Georgia, serif;
   --color-background: var(--background);
