@@ -6,9 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CardKind,
   ContributionDirectionKind,
+  NodeHeadStatus,
   WorkflowNode,
   type LoopSessionResponse,
 } from "@/lib/api/generated/model";
+
+import { needsStaleReaccept } from "@/features/loop/stage-signals";
 
 import { ContributionStageContainer } from "./ContributionStageContainer";
 
@@ -64,15 +67,28 @@ const directions = [
 ];
 
 function contributionSession(
-  overrides: Partial<Pick<LoopSessionResponse, "working_draft_narrative" | "cards">> = {},
+  overrides: Partial<
+    Pick<LoopSessionResponse, "working_draft_narrative" | "cards" | "node_heads" | "version">
+  > = {},
 ): LoopSessionResponse {
   return {
     id: "session-1",
     title: "Contribution test",
-    version: 10,
+    version: overrides.version ?? 10,
     working_draft_node: WorkflowNode.contribution,
     working_draft_narrative: overrides.working_draft_narrative ?? { directions },
-    node_heads: [],
+    node_heads:
+      overrides.node_heads ??
+      Object.values(WorkflowNode).map((node) => ({
+        node,
+        status:
+          node === WorkflowNode.contribution
+            ? NodeHeadStatus.stale
+            : NodeHeadStatus.current,
+        stage_revision_id: null,
+        generated_since_prepare: false,
+        head_revision: null,
+      })),
     cards: overrides.cards ?? [],
     produced_spec_version: null,
     valid_spec_version_id: null,
@@ -267,5 +283,46 @@ describe("ContributionStageContainer", () => {
     await waitFor(() => expect(screen.getByLabelText(/Focus on verification/)).toBeChecked());
     expect(screen.getByLabelText(/Focus on the optimization method/)).not.toBeChecked();
     expect(screen.getByText("Saved 1 Contribution Card. Confirm when ready.")).toBeInTheDocument();
+  });
+
+  it("marks generated_since_prepare after regenerate so Confirm skips Stale re-accept", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient();
+    const session = contributionSession({ working_draft_narrative: {} });
+    queryClient.setQueryData(["/api/loop/sessions", session.id], {
+      status: 200,
+      data: session,
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ContributionStageContainer sessionId={session.id} session={session} />
+      </QueryClientProvider>,
+    );
+
+    expect(
+      needsStaleReaccept(
+        session.node_heads.find((head) => head.node === WorkflowNode.contribution),
+      ),
+    ).toBe(true);
+
+    await user.click(
+      screen.getByRole("button", { name: "Generate contribution directions" }),
+    );
+    await waitFor(() => expect(mocks.generate).toHaveBeenCalled());
+
+    await user.click(screen.getByLabelText(/Focus on verification/));
+    await user.click(screen.getByRole("button", { name: "Save contribution direction" }));
+    await waitFor(() => expect(mocks.replaceCards).toHaveBeenCalledTimes(1));
+
+    const cached = queryClient.getQueryData(["/api/loop/sessions", session.id]) as {
+      status: number;
+      data: LoopSessionResponse;
+    };
+    const contributionHead = cached.data.node_heads.find(
+      (head) => head.node === WorkflowNode.contribution,
+    );
+    expect(contributionHead?.generated_since_prepare).toBe(true);
+    expect(needsStaleReaccept(contributionHead)).toBe(false);
   });
 });

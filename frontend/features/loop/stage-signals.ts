@@ -149,6 +149,19 @@ export function needsStaleReaccept(head: NodeHeadResponse | undefined | null): b
   );
 }
 
+/** Mirror server mark after a successful node generate so Confirm/dimming update without refetch. */
+export function withGeneratedSincePrepare(
+  session: LoopSessionResponse,
+  node: WorkflowNode = session.working_draft_node,
+): LoopSessionResponse {
+  return {
+    ...session,
+    node_heads: session.node_heads.map((head) =>
+      head.node === node ? { ...head, generated_since_prepare: true } : head,
+    ),
+  };
+}
+
 /**
  * Dim Stale revision/draft while the invalidation banner is showing and
  * Stale re-accept is still needed (ADR 0036). Dismiss hides the banner and undims.

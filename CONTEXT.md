@@ -53,7 +53,7 @@ A user-facing group of Workflow Nodes the Account recomputes together by opening
 _Avoid_: step, bước, pipeline stage (when you mean this UI unit), Nav Unit
 
 **Spec Draft**:
-The Loop Stage whose UI shows the Produced Spec Version (and whether it is Valid or Stale). It is not a Workflow Node and has no Working Draft; confirming feasibility mints the Spec Version the Account reads here. Product copy may say Spec Draft; glossary terms for the document remain Spec Version / Produced / Valid.
+The Loop Stage whose UI shows the Produced Spec Version (and whether it is Valid or Stale). It is not a Workflow Node and has no Working Draft; confirming feasibility mints the Spec Version the Account reads here. For idea interpretation, Spec Draft shows the Idea Frame only—not the turn list (Node Head browse still shows turns). Product copy may say Spec Draft; glossary terms for the document remain Spec Version / Produced / Valid.
 _Avoid_: Working Draft, Spec Version (as the stage name), spec construction stage
 
 **Workflow Node**:

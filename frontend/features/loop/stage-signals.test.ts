@@ -14,6 +14,7 @@ import {
   shouldDimStaleContent,
   specInvalidationInView,
   staleInvalidationStages,
+  withGeneratedSincePrepare,
 } from "./stage-signals";
 
 function heads(
@@ -550,7 +551,32 @@ describe("Confirm signals", () => {
   });
 });
 
-describe("Stale invalidation banner visibility", () => {
+describe("Stale re-accept flag", () => {
+  it("clears needsStaleReaccept after withGeneratedSincePrepare", () => {
+    const nodeHeads = heads({
+      [WorkflowNode.contribution]: NodeHeadStatus.stale,
+    });
+    const head = nodeHeads.find((item) => item.node === WorkflowNode.contribution);
+    expect(needsStaleReaccept(head)).toBe(true);
+
+    const updated = withGeneratedSincePrepare({
+      id: "session-1",
+      title: "t",
+      version: 1,
+      working_draft_node: WorkflowNode.contribution,
+      working_draft_narrative: {},
+      node_heads: nodeHeads,
+      cards: [],
+      produced_spec_version: null,
+      valid_spec_version_id: null,
+      created_at: "2026-08-15T10:00:00Z",
+      updated_at: "2026-08-15T10:00:00Z",
+    });
+    const marked = updated.node_heads.find((item) => item.node === WorkflowNode.contribution);
+    expect(marked?.generated_since_prepare).toBe(true);
+    expect(needsStaleReaccept(marked)).toBe(false);
+  });
+
   it("dims only when re-accept is needed and the invalidation banner is visible", () => {
     const stale = heads({ [WorkflowNode.contribution]: NodeHeadStatus.stale }).find(
       (item) => item.node === WorkflowNode.contribution,
@@ -558,7 +584,6 @@ describe("Stale invalidation banner visibility", () => {
     expect(shouldDimStaleContent(stale, true)).toBe(true);
     expect(shouldDimStaleContent(stale, false)).toBe(false);
     expect(shouldDimStaleContent({ ...stale!, generated_since_prepare: true }, true)).toBe(false);
-    expect(needsStaleReaccept(stale)).toBe(true);
   });
 
   it("tracks Spec Draft invalidation in view and per-subject dismiss against the wave key", () => {
@@ -598,7 +623,9 @@ describe("Stale invalidation banner visibility", () => {
         [WorkflowNode.idea_decomposition]: wave,
       }),
     ).toBe(false);
-    expect(isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: wave })).toBe(true);
+    expect(
+      isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: wave }),
+    ).toBe(true);
     expect(
       isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: "other-wave" }),
     ).toBe(false);

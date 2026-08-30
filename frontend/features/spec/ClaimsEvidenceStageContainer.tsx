@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,6 +17,7 @@ import {
 } from "@/lib/api/generated/model";
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
+import { withGeneratedSincePrepare } from "../loop/stage-signals";
 import { CheckCircle2, Target, Activity, FileSearch, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
 
 export function ClaimsEvidenceStageContainer({
@@ -42,6 +43,7 @@ export function ClaimsEvidenceStageContainer({
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editCards, setEditCards] = useState<ClaimEvidenceCard[]>([]);
+  const seenGenerateRequestIdRef = useRef(generateRequestId);
   
   const narrative = session.working_draft_narrative as any;
   const generatedCards = (narrative?.cards || []) as ClaimEvidenceCard[];
@@ -86,18 +88,22 @@ export function ClaimsEvidenceStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not generate claims");
-      updateSession((current) => ({
-        ...current,
-        version: response.data.version,
-        working_draft_narrative: { cards: response.data.cards, saved: false },
-      }));
+      updateSession((current) =>
+        withGeneratedSincePrepare({
+          ...current,
+          version: response.data.version,
+          working_draft_narrative: { cards: response.data.cards, saved: false },
+        }),
+      );
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }
   }
 
   useEffect(() => {
-    if (generateRequestId < 1) return;
+    const previous = seenGenerateRequestIdRef.current;
+    seenGenerateRequestIdRef.current = generateRequestId;
+    if (generateRequestId < 1 || generateRequestId <= previous) return;
     void loadClaims();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
   }, [generateRequestId]);

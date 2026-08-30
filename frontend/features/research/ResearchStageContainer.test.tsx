@@ -205,6 +205,51 @@ describe("ResearchStageContainer", () => {
     );
   });
 
+  it("does not auto-generate when remounted with a prior stale-dialog generateRequestId", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const { rerender, unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <ResearchStageContainer
+          sessionId="session-1"
+          session={session(4, {}, WorkflowNode.related_work)}
+          generateRequestId={0}
+        />
+      </QueryClientProvider>,
+    );
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <ResearchStageContainer
+          sessionId="session-1"
+          session={session(4, {}, WorkflowNode.related_work)}
+          generateRequestId={1}
+        />
+      </QueryClientProvider>,
+    );
+    await vi.waitFor(() => expect(mocks.streamStart).toHaveBeenCalledTimes(1));
+    mocks.streamStart.mockClear();
+    unmount();
+
+    // Same generateRequestId after entering the next Workflow Node (new mount).
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ResearchStageContainer
+          sessionId="session-1"
+          session={session(5, {}, WorkflowNode.gap)}
+          generateRequestId={1}
+        />
+      </QueryClientProvider>,
+    );
+
+    // Flush effects/microtasks so a buggy remount auto-generate would have fired.
+    await vi.waitFor(() => expect(document.body).toBeTruthy());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.streamStart).not.toHaveBeenCalled();
+  });
+
   it("clears the saved Gap and its audit as soon as regeneration starts", async () => {
     const user = userEvent.setup();
     const queryClient = new QueryClient({

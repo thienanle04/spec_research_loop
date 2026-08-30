@@ -14,6 +14,8 @@ export function HeadRevisionView({
   upstreamNames,
   dimmed = false,
   onEdit,
+  sessionId,
+  stageRevisionId,
 }: {
   node: WorkflowNode;
   status: NodeHeadStatus;
@@ -22,6 +24,8 @@ export function HeadRevisionView({
   upstreamNames: string[];
   dimmed?: boolean;
   onEdit?: () => void;
+  sessionId: string;
+  stageRevisionId?: string | null;
 }) {
   const title = WORKFLOW_NODE_LABELS[node];
   return (
@@ -52,6 +56,8 @@ export function HeadRevisionView({
                 node={node}
                 payload={{ narrative: revision.narrative, card_snapshot: revision.card_snapshot }}
                 showNodeLabel={false}
+                sessionId={sessionId}
+                stageRevisionId={stageRevisionId ?? null}
               />
             </div>
           )}

@@ -200,6 +200,19 @@ function workingDraftMoveError(
   return null;
 }
 
+/** After Confirm with nowhere to advance, park Working Draft on another current node so the confirmed node can show as HeadRevisionView. */
+function parkWorkingDraftAfterConfirm(
+  session: LoopSessionResponse,
+  confirmedNode: WorkflowNode,
+): WorkflowNode | null {
+  const order = LOOP_STAGE_CATALOG.flatMap((stage) => [...stage.nodes]);
+  const candidates = order.filter(
+    (node) =>
+      node !== confirmedNode && workingDraftMoveError(node, session.node_heads) == null,
+  );
+  return candidates.length > 0 ? candidates[candidates.length - 1]! : null;
+}
+
 function formatStageList(names: string[]): string {
   if (names.length === 1) {
     return names[0];
@@ -239,6 +252,8 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const [grillDirty, setGrillDirty] = useState(false);
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const [generateRequestId, setGenerateRequestId] = useState(0);
+  const [generateRequestNode, setGenerateRequestNode] = useState<WorkflowNode | null>(null);
+  /** subject → waveKey dismissed for; cleared implicitly when waveKey changes. */
   const [dismissedBySubject, setDismissedBySubject] = useState<Record<string, string>>({});
 
   const queriedSession = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
@@ -448,6 +463,8 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     showInvalidationBanner,
   );
   const confirmNeedsReaccept = needsStaleReaccept(workingDraftHead);
+  const stagedGenerateRequestId =
+    generateRequestNode === workingDraftNode ? generateRequestId : 0;
   const canEditSelected =
     selectedNode != null &&
     selectedNode !== workingDraftNode &&
@@ -519,19 +536,24 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       }),
     ).then((next) => {
       if (!next) return;
-      const autoDecompose =
-        workingDraftNode === WorkflowNode.idea_interpretation &&
-        next.working_draft_node === WorkflowNode.idea_decomposition &&
-        next.node_heads.find((head) => head.node === WorkflowNode.idea_decomposition)
-          ?.status === NodeHeadStatus.empty;
-      if (autoDecompose) {
-        router.replace(hrefForSession(next), { scroll: false });
-        void runGenerate(next);
-        return;
-      }
       const target = continueTargetAfterConfirm(next, workingDraftNode);
       if (target) {
         continueWork(target, next.version);
+        return;
+      }
+      const parkAt = parkWorkingDraftAfterConfirm(next, workingDraftNode);
+      if (parkAt) {
+        const confirmedStop = workingDraftStop(workingDraftNode);
+        void applyTransition(() =>
+          patchWorkingDraft.mutateAsync({
+            sessionId,
+            data: { node: parkAt, expected_version: next.version },
+          }),
+        ).then((patched) => {
+          if (patched) {
+            router.replace(sessionHref(sessionId, confirmedStop), { scroll: false });
+          }
+        });
         return;
       }
       router.replace(hrefForSession(next), { scroll: false });
@@ -541,6 +563,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   function confirmDialogGenerate() {
     setConfirmDialogOpen(false);
     if (!isGrillingNode(workingDraftNode)) {
+      setGenerateRequestNode(workingDraftNode);
       setGenerateRequestId((current) => current + 1);
       return;
     }
@@ -713,9 +736,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 }
                 session={session}
                 sessionId={sessionId}
-                showGenerateCards={
-                  workingDraftNode === WorkflowNode.idea_decomposition && session.cards.length === 0
-                }
+                showGenerateCards={workingDraftNode === WorkflowNode.idea_decomposition}
                 onEditState={({ editing, dirty }) => {
                   setGrillEditing(editing);
                   setGrillDirty(dirty);
@@ -727,7 +748,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
-                generateRequestId={generateRequestId}
+                generateRequestId={stagedGenerateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
@@ -735,7 +756,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               <ContributionStageContainer
                 sessionId={sessionId}
                 session={session}
-                generateRequestId={generateRequestId}
+                generateRequestId={stagedGenerateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
@@ -744,7 +765,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
-                generateRequestId={generateRequestId}
+                generateRequestId={stagedGenerateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
@@ -753,7 +774,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
-                generateRequestId={generateRequestId}
+                generateRequestId={stagedGenerateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
@@ -776,12 +797,15 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               nodeHeads: session.node_heads,
             }).map((node) => WORKFLOW_NODE_LABELS[node])}
             onEdit={canEditSelected ? () => editConfirmedWork(selectedNode) : undefined}
+            sessionId={sessionId}
+            stageRevisionId={viewedHead?.stage_revision_id ?? null}
           />
         ) : null}
         {selectedStage === LoopStage.spec_draft && session.produced_spec_version ? (
           <ProducedSpecVersionView
             produced={session.produced_spec_version}
             validSpecVersionId={session.valid_spec_version_id}
+            sessionId={sessionId}
           />
         ) : null}
         {showConfirm || availableContinueTarget ? (

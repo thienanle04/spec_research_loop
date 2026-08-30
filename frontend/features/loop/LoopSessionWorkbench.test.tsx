@@ -69,20 +69,31 @@ vi.mock("./WorkingDraftCardCanvas", () => ({
   ),
 }));
 
+const researchGenerateFromRequestId = vi.fn();
+
 vi.mock("@/features/research", () => ({
   ResearchStageContainer: ({
     sessionId,
+    generateRequestId = 0,
     onRunningChange,
     onConfirmabilityChange,
   }: {
     sessionId: string;
+    generateRequestId?: number;
     onRunningChange?: (running: boolean) => void;
     onConfirmabilityChange?: (confirmable: boolean) => void;
   }) => {
+    const seenGenerateRequestIdRef = React.useRef(generateRequestId);
     React.useEffect(() => {
       onRunningChange?.(false);
       onConfirmabilityChange?.(true);
     }, [onConfirmabilityChange, onRunningChange]);
+    React.useEffect(() => {
+      const previous = seenGenerateRequestIdRef.current;
+      seenGenerateRequestIdRef.current = generateRequestId;
+      if (generateRequestId < 1 || generateRequestId <= previous) return;
+      researchGenerateFromRequestId(generateRequestId);
+    }, [generateRequestId]);
     return <p>Working Draft narrative editor for {sessionId}</p>;
   },
   ContributionStageContainer: ({
@@ -219,6 +230,7 @@ describe("LoopSessionWorkbench", () => {
     vi.mocked(readSseStream).mockImplementation(async (_path, onEvent) => {
       onEvent({ type: "done", version: 5 });
     });
+    researchGenerateFromRequestId.mockClear();
     getHook.mockReturnValue({
       data: { status: 200, data: session() },
       isLoading: false,
@@ -831,6 +843,92 @@ describe("LoopSessionWorkbench", () => {
     );
   });
 
+  it("collapses to Stage Revision view after Confirm when there is nowhere to advance", async () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 20,
+          working_draft_node: WorkflowNode.idea_decomposition,
+          working_draft_narrative: {},
+          cards: [
+            {
+              id: "card-1",
+              kind: CardKind.problem,
+              body: { text: "Frozen problem" },
+              created_at: "2026-01-01T00:00:00Z",
+              updated_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+          }).map((head) =>
+            head.node === WorkflowNode.idea_decomposition
+              ? {
+                  ...head,
+                  head_revision: {
+                    narrative: {},
+                    card_snapshot: [
+                      {
+                        id: "card-1",
+                        kind: CardKind.problem,
+                        body: { text: "Frozen problem" },
+                      },
+                    ],
+                  },
+                }
+              : head,
+          ),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 21,
+      working_draft_node: WorkflowNode.idea_decomposition,
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+        [WorkflowNode.related_work]: NodeHeadStatus.current,
+      }),
+    });
+    const parked = session({
+      version: 22,
+      working_draft_node: WorkflowNode.related_work,
+      node_heads: confirmed.node_heads,
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    const patchMutate = vi.fn().mockResolvedValue({ status: 200, data: parked });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+    patchHook.mockReturnValue({ mutateAsync: patchMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => {
+      expect(patchMutate).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        data: {
+          node: WorkflowNode.related_work,
+          expected_version: 21,
+        },
+      });
+    });
+    expect(replace).toHaveBeenCalledWith(
+      path(LoopStage.grilling, WorkflowNode.idea_decomposition),
+      { scroll: false },
+    );
+  });
+
   it("prepares empty Related work when the Account selects it", async () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     getHook.mockReturnValue({
@@ -1432,8 +1530,18 @@ describe("LoopSessionWorkbench", () => {
         [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
       }),
     });
+    const prepared = session({
+      version: 5,
+      working_draft_node: WorkflowNode.idea_decomposition,
+      working_draft_narrative: {},
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      }),
+    });
     const mutateAsync = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    const prepareMutate = vi.fn().mockResolvedValue({ status: 200, data: prepared });
     confirmHook.mockReturnValue({ mutateAsync, error: null });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
     expect(screen.queryByText("may become Stale")).not.toBeInTheDocument();
@@ -1447,21 +1555,58 @@ describe("LoopSessionWorkbench", () => {
         expected_version: 3,
       },
     });
+    expect(prepareMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { stage: LoopStage.grilling, expected_version: 4 },
+    });
+    expect(readSseStream).not.toHaveBeenCalled();
+    expect(replace).toHaveBeenCalledWith(
+      path(LoopStage.grilling, WorkflowNode.idea_decomposition),
+      { scroll: false },
+    );
     expect(screen.getByRole("tab", { name: /Idea decomposition/ })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    await waitFor(() => expect(readSseStream).toHaveBeenCalled());
-    expect(readSseStream).toHaveBeenCalledWith(
-      "/api/idea/sessions/session-1/generate",
-      expect.any(Function),
-      undefined,
-      {
-        method: "POST",
-        body: JSON.stringify({ expected_version: 4 }),
-      },
-    );
+    expect(screen.getByRole("button", { name: "Generate Cards" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+    expect(screen.getByText("Working Draft Card canvas for session-1")).toBeInTheDocument();
+  });
+
+  it("shows Regenerate Cards on idea_decomposition when Cards already exist", () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.idea_decomposition,
+          working_draft_narrative: {},
+          cards: [
+            {
+              id: "card-1",
+              kind: CardKind.problem,
+              body: { text: "Memory bandwidth" },
+              created_at: "2026-08-15T10:00:00Z",
+              updated_at: "2026-08-15T10:00:00Z",
+            },
+          ],
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+
+    expect(screen.getByRole("button", { name: "Regenerate Cards" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Generate Cards" })).not.toBeInTheDocument();
     expect(screen.getByText("Working Draft Card canvas for session-1")).toBeInTheDocument();
   });
 
@@ -1937,6 +2082,110 @@ describe("LoopSessionWorkbench", () => {
       path(LoopStage.related_work, WorkflowNode.related_work),
       { scroll: false },
     );
+    expect(researchGenerateFromRequestId).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-generate the next Stale node after Stale-dialog Generate then Confirm", async () => {
+    const staleHeads = heads({
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.stale,
+      [WorkflowNode.gap]: NodeHeadStatus.stale,
+    }).map((head) =>
+      head.node === WorkflowNode.related_work
+        ? { ...head, generated_since_prepare: false }
+        : head,
+    );
+    search = new URLSearchParams(
+      `stage=${LoopStage.related_work}&node=${WorkflowNode.related_work}`,
+    );
+    const initial = session({
+      version: 8,
+      working_draft_node: WorkflowNode.related_work,
+      working_draft_narrative: { text: "stale related work" },
+      node_heads: staleHeads,
+    });
+    getHook.mockReturnValue({
+      data: { status: 200, data: initial },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const afterGenerateHeads = staleHeads.map((head) =>
+      head.node === WorkflowNode.related_work
+        ? { ...head, generated_since_prepare: true }
+        : head,
+    );
+    const afterGenerate = session({
+      version: 9,
+      working_draft_node: WorkflowNode.related_work,
+      working_draft_narrative: { text: "regenerated related work" },
+      node_heads: afterGenerateHeads,
+    });
+    const confirmed = session({
+      version: 10,
+      working_draft_node: WorkflowNode.related_work,
+      working_draft_narrative: { text: "regenerated related work" },
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+        [WorkflowNode.related_work]: NodeHeadStatus.current,
+        [WorkflowNode.gap]: NodeHeadStatus.stale,
+      }),
+    });
+    const prepared = session({
+      version: 11,
+      working_draft_node: WorkflowNode.gap,
+      working_draft_narrative: { text: "restored gap" },
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+        [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+        [WorkflowNode.related_work]: NodeHeadStatus.current,
+        [WorkflowNode.gap]: NodeHeadStatus.stale,
+      }),
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    const prepareMutate = vi.fn().mockResolvedValue({ status: 200, data: prepared });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
+
+    const { rerender } = render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await userEvent.click(screen.getByRole("button", { name: "Generate" }));
+    expect(researchGenerateFromRequestId).toHaveBeenCalledTimes(1);
+
+    getHook.mockReturnValue({
+      data: { status: 200, data: afterGenerate },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    rerender(<LoopSessionWorkbench sessionId="session-1" />);
+    researchGenerateFromRequestId.mockClear();
+
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => {
+      expect(prepareMutate).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        data: { stage: LoopStage.gap, expected_version: 10 },
+      });
+    });
+    // SPA navigates to the prepared Working Draft; generateRequestId must not replay.
+    search = new URLSearchParams(`stage=${LoopStage.gap}&node=${WorkflowNode.gap}`);
+    getHook.mockReturnValue({
+      data: { status: 200, data: prepared },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    researchGenerateFromRequestId.mockClear();
+    rerender(<LoopSessionWorkbench sessionId="session-1" />);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(researchGenerateFromRequestId).not.toHaveBeenCalled();
   });
 
   it("continues from reconfirmed Research Inputs to current Related Work", async () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Activity, Beaker, CheckCircle2, ChevronRight, Lightbulb, Target, FileText } from "lucide-react";
 
@@ -18,6 +18,7 @@ import {
 } from "@/lib/api/generated/model";
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
+import { withGeneratedSincePrepare } from "../loop/stage-signals";
 
 function FormattedText({ text }: { text: string }) {
   if (!text) return null;
@@ -104,6 +105,7 @@ export function ExperimentPlanningStageContainer({
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const [error, setError] = useState<string | null>(null);
+  const seenGenerateRequestIdRef = useRef(generateRequestId);
   
   const expHead = session.node_heads.find(h => h.node === "experiment_plan");
   const expRev = expHead?.stage_revision_id ? (session as any).stage_revisions?.find((r: any) => r.id === expHead.stage_revision_id) : null;
@@ -157,18 +159,22 @@ export function ExperimentPlanningStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not generate experiment plan");
-      updateSession((current) => ({
-        ...current,
-        version: response.data.version,
-        working_draft_narrative: { ...current.working_draft_narrative as object, plan: response.data.plan },
-      }));
+      updateSession((current) =>
+        withGeneratedSincePrepare({
+          ...current,
+          version: response.data.version,
+          working_draft_narrative: { ...current.working_draft_narrative as object, plan: response.data.plan },
+        }),
+      );
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }
   }
 
   useEffect(() => {
-    if (generateRequestId < 1) return;
+    const previous = seenGenerateRequestIdRef.current;
+    seenGenerateRequestIdRef.current = generateRequestId;
+    if (generateRequestId < 1 || generateRequestId <= previous) return;
     if (isFeasibilityNode) {
       void runFeasibilityCheck();
     } else {
@@ -187,11 +193,13 @@ export function ExperimentPlanningStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not check feasibility");
-      updateSession((current) => ({
-        ...current,
-        version: response.data.version,
-        working_draft_narrative: { ...current.working_draft_narrative as object, feasibility_report: response.data.report },
-      }));
+      updateSession((current) =>
+        withGeneratedSincePrepare({
+          ...current,
+          version: response.data.version,
+          working_draft_narrative: { ...current.working_draft_narrative as object, feasibility_report: response.data.report },
+        }),
+      );
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }

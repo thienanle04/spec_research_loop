@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import {
 } from "@/lib/api/generated/model";
 
 import { useLoopSessionSave } from "../loop/loop-session-save";
+import { withGeneratedSincePrepare } from "../loop/stage-signals";
 
 type SessionQueryData = { status: number; data: LoopSessionResponse; headers?: Headers };
 
@@ -99,6 +100,7 @@ export function ContributionStageContainer({
   const [secondaryIds, setSecondaryIds] = useState<string[]>(restored.secondaryIds);
   const [otherText, setOtherText] = useState(restored.otherText);
   const [error, setError] = useState<string | null>(null);
+  const seenGenerateRequestIdRef = useRef(generateRequestId);
 
   const proposed = directions.filter(
     (item) => (item.kind ?? ContributionDirectionKind.proposed) === ContributionDirectionKind.proposed,
@@ -158,18 +160,22 @@ export function ContributionStageContainer({
       setPrimaryId(null);
       setSecondaryIds([]);
       setOtherText("");
-      updateSession((current) => ({
-        ...current,
-        version: response.data.version,
-        working_draft_narrative: { directions: response.data.directions },
-      }));
+      updateSession((current) =>
+        withGeneratedSincePrepare({
+          ...current,
+          version: response.data.version,
+          working_draft_narrative: { directions: response.data.directions },
+        }),
+      );
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }
   }
 
   useEffect(() => {
-    if (generateRequestId < 1) return;
+    const previous = seenGenerateRequestIdRef.current;
+    seenGenerateRequestIdRef.current = generateRequestId;
+    if (generateRequestId < 1 || generateRequestId <= previous) return;
     void loadDirections();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
   }, [generateRequestId]);
