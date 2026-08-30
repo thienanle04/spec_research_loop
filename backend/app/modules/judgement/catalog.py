@@ -14,6 +14,7 @@ GENERATABLE_JUDGE_NODES: frozenset[WorkflowNode] = frozenset(
         WorkflowNode.CONTRIBUTION_JUDGE,
         WorkflowNode.EVIDENCE_JUDGE,
         WorkflowNode.EXPERIMENT_JUDGE,
+        WorkflowNode.CONFERENCE_JUDGE,
     }
 )
 

@@ -13,8 +13,9 @@ import { customFetch } from "@/lib/api/mutator";
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
 import { withGeneratedSincePrepare } from "../loop/stage-signals";
+import { ConferenceScoreList } from "./ConferenceScoreList";
 import { JudgeIssueList } from "./JudgeIssueList";
-import type { JudgeIssue, JudgeNode, JudgeRun } from "./types";
+import type { ConferenceScores, JudgeIssue, JudgeNode, JudgeRun } from "./types";
 import { useJudgementStream } from "./useJudgementStream";
 
 const GENERATABLE_JUDGE_NODES = new Set<string>([
@@ -22,6 +23,7 @@ const GENERATABLE_JUDGE_NODES = new Set<string>([
   WorkflowNode.contribution_judge,
   WorkflowNode.evidence_judge,
   WorkflowNode.experiment_judge,
+  WorkflowNode.conference_judge,
 ]);
 
 type Props = {
@@ -48,9 +50,12 @@ export function JudgementStageContainer({
   const stream = useJudgementStream();
   const seenGenerateRequestIdRef = useRef(generateRequestId);
   const [issues, setIssues] = useState<JudgeIssue[]>([]);
+  const [scores, setScores] = useState<ConferenceScores | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const node = session.working_draft_node as JudgeNode;
+  const isConference = node === WorkflowNode.conference_judge;
   const canGenerate = GENERATABLE_JUDGE_NODES.has(node);
+  const hasOutput = isConference ? scores != null : issues.length > 0;
   const workingHead = session.node_heads.find((head) => head.node === session.working_draft_node);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;
@@ -70,6 +75,9 @@ export function JudgementStageContainer({
   useEffect(() => {
     if (runQuery.data?.issues) {
       setIssues(runQuery.data.issues);
+    }
+    if (runQuery.data) {
+      setScores(runQuery.data.scores ?? null);
     }
   }, [runQuery.data]);
 
@@ -107,6 +115,7 @@ export function JudgementStageContainer({
         onEvent: (event) => {
           if (event.type === "draft_patch") {
             setIssues(event.issues);
+            setScores(event.scores ?? null);
           } else if (event.type === "done") {
             updateSession(
               withGeneratedSincePrepare(
@@ -135,7 +144,7 @@ export function JudgementStageContainer({
   }, [generateRequestId]);
 
   const title = WORKFLOW_NODE_LABELS[session.working_draft_node];
-  const error = stream.error ?? saveError ?? (runQuery.isError ? "Could not load Judge Issues." : null);
+  const error = stream.error ?? saveError ?? (runQuery.isError ? "Could not load Judge Run." : null);
 
   return (
     <Card>
@@ -147,7 +156,7 @@ export function JudgementStageContainer({
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <JudgeIssueList issues={issues} />
+        {isConference ? <ConferenceScoreList scores={scores} /> : <JudgeIssueList issues={issues} />}
         {stream.running ? (
           <div className="flex flex-wrap items-center gap-3">
             <Button type="button" variant="outline" onClick={stream.abort}>
@@ -159,7 +168,7 @@ export function JudgementStageContainer({
           </div>
         ) : canGenerate ? (
           <Button type="button" variant="outline" className="justify-self-start" onClick={() => void generate()}>
-            {issues.length > 0 ? `Regenerate ${title}` : `Generate ${title}`}
+            {hasOutput ? `Regenerate ${title}` : `Generate ${title}`}
           </Button>
         ) : null}
         {error ? (
@@ -197,10 +206,13 @@ export function JudgeRunRevisionView({
     return <p className="text-sm text-muted-foreground">No Stage Revision yet.</p>;
   }
   if (runQuery.isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading Judge Issues…</p>;
+    return <p className="text-sm text-muted-foreground">Loading Judge Run…</p>;
   }
   if (runQuery.isError || !runQuery.data) {
-    return <p className="text-sm text-destructive">Could not load frozen Judge Issues.</p>;
+    return <p className="text-sm text-destructive">Could not load frozen Judge Run.</p>;
+  }
+  if (node === WorkflowNode.conference_judge) {
+    return <ConferenceScoreList scores={runQuery.data.scores ?? null} />;
   }
   return <JudgeIssueList issues={runQuery.data.issues} />;
 }

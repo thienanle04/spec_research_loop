@@ -252,6 +252,135 @@ def test_contribution_and_experiment_judge_prompt_views_drop_peer_judge_runs() -
         assert "evidence_judge" not in blob
 
 
+def test_conference_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_runs() -> None:
+    projection = _fat_projection(with_plan=True)
+    projection["valid_spec_version"] = {
+        "id": "spec-1",
+        "document": {
+            "nodes": {
+                WorkflowNode.GAP.value: {
+                    "card_snapshot": [
+                        {
+                            "id": "gap-1",
+                            "kind": "gap",
+                            "body": {"statement": "Confirmed gap statement"},
+                        }
+                    ],
+                    "narrative": {},
+                },
+                WorkflowNode.CONTRIBUTION.value: {
+                    "card_snapshot": [
+                        {
+                            "id": "contrib-1",
+                            "kind": "contribution",
+                            "body": {"text": "Primary contribution"},
+                        }
+                    ],
+                    "narrative": {},
+                },
+                WorkflowNode.CLAIMS.value: {
+                    "card_snapshot": [
+                        {
+                            "id": "claim-1",
+                            "kind": "claim",
+                            "body": {"statement": "The method improves nitrogen fixation."},
+                        }
+                    ],
+                    "narrative": {},
+                },
+                WorkflowNode.EVIDENCE.value: {
+                    "card_snapshot": [
+                        {
+                            "id": "ev-1",
+                            "kind": "evidence",
+                            "body": {"text": "Cited passage supports the claim."},
+                        }
+                    ],
+                    "narrative": {},
+                },
+                WorkflowNode.EXPERIMENT_PLAN.value: {
+                    "card_snapshot": [],
+                    "narrative": {
+                        "plan": {
+                            "experiments": [
+                                {
+                                    "claim": "c",
+                                    "action": "a",
+                                    "objective": "o",
+                                    "significance": "s",
+                                }
+                            ]
+                        }
+                    },
+                },
+            }
+        },
+    }
+    projection["upstream"][WorkflowNode.CLAIMS.value] = {
+        "card_snapshot": [
+            {
+                "id": "claim-1",
+                "kind": "claim",
+                "body": {"statement": "The method improves nitrogen fixation."},
+            }
+        ],
+        "narrative": {},
+        "projected": {},
+    }
+    projection["upstream"][WorkflowNode.EVIDENCE.value] = {
+        "card_snapshot": [
+            {
+                "id": "ev-1",
+                "kind": "evidence",
+                "body": {"text": "Cited passage supports the claim."},
+            }
+        ],
+        "narrative": {},
+        "projected": {},
+    }
+    projection["upstream"][WorkflowNode.GAP_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {
+            "issues": [
+                {
+                    "finding_kind": "gap_unsupported_by_sources",
+                    "severity": "CRITICAL",
+                    "reason": "peer judge must not appear",
+                }
+            ]
+        },
+    }
+    projection["upstream"][WorkflowNode.CONTRIBUTION_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {
+            "issues": [
+                {
+                    "finding_kind": "contribution_not_novel",
+                    "severity": "MAJOR",
+                    "reason": "contribution peer must not appear",
+                }
+            ]
+        },
+    }
+    view = prompt_view(WorkflowNode.CONFERENCE_JUDGE, projection)
+    assert view["node"] == "conference_judge"
+    assert view["valid_spec_version"]["id"] == "spec-1"
+    assert view["gap_statement"] == "Confirmed gap statement"
+    assert view["experiment_plan"]["experiments"][0]["claim"] == "c"
+    kinds = {card["kind"] for card in view["cards"]}
+    assert kinds >= {"gap", "contribution", "claim", "evidence"}
+    blob = str(view)
+    assert "peer judge must not appear" not in blob
+    assert "contribution peer must not appear" not in blob
+    assert "gap_unsupported_by_sources" not in blob
+    assert "contribution_not_novel" not in blob
+    assert "gap_judge" not in blob
+    assert "contribution_judge" not in blob
+    assert "evidence_judge" not in blob
+    assert "experiment_judge" not in blob
+
 
 def test_evidence_judge_prompt_view_includes_claim_citation_passage_triples() -> None:
     projection = _fat_projection()

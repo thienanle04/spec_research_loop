@@ -9,14 +9,23 @@ export type JudgeIssue = {
   target_card_id: string | null;
 };
 
+export type ConferenceScores = {
+  originality: number;
+  significance: number;
+  soundness: number;
+  clarity: number;
+  reproducibility: number;
+};
+
 export type JudgeRun = {
   node: string;
   issues: JudgeIssue[];
+  scores?: ConferenceScores | null;
 };
 
 export type JudgementStreamEvent =
   | { type: "progress"; node: string; message: string; pct: number }
-  | { type: "draft_patch"; node: string; issues: JudgeIssue[] }
+  | { type: "draft_patch"; node: string; issues: JudgeIssue[]; scores?: ConferenceScores | null }
   | { type: "done"; node: string; version: number }
   | { type: "error"; node: string; code: string; message: string };
 

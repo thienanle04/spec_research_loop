@@ -290,4 +290,54 @@ describe("JudgementStageContainer", () => {
       }),
     );
   });
+
+  it("shows Conference Judge criterion scores instead of Judge Issues", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "conference_judge",
+        issues: [],
+        scores: {
+          originality: 7,
+          significance: 8,
+          soundness: 6,
+          clarity: 9,
+          reproducibility: 5,
+        },
+      },
+    });
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.conference_judge)}
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Originality")).toBeInTheDocument();
+    expect(screen.getByText("7/10")).toBeInTheDocument();
+    expect(screen.getByText("Significance")).toBeInTheDocument();
+    expect(screen.getByText("8/10")).toBeInTheDocument();
+    expect(screen.getByText("Soundness")).toBeInTheDocument();
+    expect(screen.getByText("6/10")).toBeInTheDocument();
+    expect(screen.getByText("Clarity")).toBeInTheDocument();
+    expect(screen.getByText("9/10")).toBeInTheDocument();
+    expect(screen.getByText("Reproducibility")).toBeInTheDocument();
+    expect(screen.getByText("5/10")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Judge Issues")).not.toBeInTheDocument();
+    expect(screen.queryByText("No Judge Issues on this Judge Run.")).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Regenerate Conference Judge" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        node: "conference_judge",
+        expectedVersion: 4,
+        staleReaccept: false,
+      }),
+    );
+  });
 });

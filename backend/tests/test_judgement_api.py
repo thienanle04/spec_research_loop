@@ -936,18 +936,180 @@ async def test_contribution_judge_generate_payload_excludes_peer_judge_runs(
     assert "gap_judge" not in prompt
 
 
+CONFERENCE_SCORES = {
+    "originality": 7,
+    "significance": 8,
+    "soundness": 6,
+    "clarity": 7,
+    "reproducibility": 5,
+}
+
+
+def _bind_conference_judge_llm(payload: dict) -> FakeLlm:
+    fake = FakeLlm(response=json.dumps(payload))
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    ports[WorkflowNode.CONFERENCE_JUDGE.value] = fake
+    bind_llm_ports(ports)
+    return fake
+
+
+async def _generate_conference_judge(
+    client: AsyncClient, session_id: str, expected_version: int, **extra: object
+) -> list[dict]:
+    body: dict = {"expected_version": expected_version, **extra}
+    response = await client.post(
+        f"/api/judgement/sessions/{session_id}/nodes/conference_judge/generate",
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    events = _events(response.text)
+    assert events[-1]["type"] == "done"
+    return events
+
+
+async def _prepare_conference_judge(client: AsyncClient) -> dict:
+    draft = await _prepare_experiment_judge(client)
+    session = await _confirm(
+        client, draft["id"], "experiment_judge", draft["version"]
+    )
+    session = await _prepare(
+        client, draft["id"], "independent_judges", session["version"]
+    )
+    assert session["working_draft_node"] == "conference_judge"
+    return session
+
+
 @pytest.mark.asyncio
-async def test_conference_judge_generate_remains_unavailable(
+async def test_conference_judge_generate_requires_valid_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    response = await client.post(
+        f"/api/judgement/sessions/{created['id']}/nodes/conference_judge/generate",
+        json={"expected_version": created["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "valid_spec_version_required"
+
+
+@pytest.mark.asyncio
+async def test_conference_judge_generate_runs_with_valid_spec_version(
     client: AsyncClient,
 ) -> None:
     await _auth_client(client)
     draft = await _prepare_gap_judge(client)
-    response = await client.post(
-        f"/api/judgement/sessions/{draft['id']}/nodes/conference_judge/generate",
-        json={"expected_version": draft["version"]},
+    _bind_conference_judge_llm({"scores": CONFERENCE_SCORES})
+    events = await _generate_conference_judge(
+        client, draft["id"], draft["version"]
     )
-    assert response.status_code == 409
-    assert response.json()["code"] == "judge_generate_unavailable"
+    assert events[0]["type"] == "progress"
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    assert patch["issues"] == []
+    assert patch["scores"] == CONFERENCE_SCORES
+    listed = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/conference_judge"
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["node"] == "conference_judge"
+    assert listed.json()["issues"] == []
+    assert listed.json()["scores"] == CONFERENCE_SCORES
 
+
+@pytest.mark.asyncio
+async def test_conference_judge_drops_llm_finding_kinds(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    _bind_conference_judge_llm(
+        {
+            "scores": CONFERENCE_SCORES,
+            "issues": [
+                {
+                    "finding_kind": "gap_unsupported_by_sources",
+                    "severity": "CRITICAL",
+                    "reason": "Conference Judge must not emit Judge Issues.",
+                    "suggestion": "Drop this.",
+                },
+                {
+                    "finding_kind": "unsupported_citation",
+                    "severity": "CRITICAL",
+                    "reason": "Also dropped.",
+                    "suggestion": "",
+                },
+            ],
+        }
+    )
+    events = await _generate_conference_judge(
+        client, draft["id"], draft["version"]
+    )
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    assert patch["issues"] == []
+    assert patch["scores"] == CONFERENCE_SCORES
+    listed = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/conference_judge"
+    )
+    assert listed.json()["issues"] == []
+    assert listed.json()["scores"] == CONFERENCE_SCORES
+
+
+@pytest.mark.asyncio
+async def test_conference_judge_generate_payload_excludes_peer_judge_runs(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
+    events = await _generate_gap_judge(client, draft["id"], draft["version"])
+    confirmed = await _confirm(
+        client, draft["id"], "gap_judge", events[-1]["version"]
+    )
+    prepared = await _prepare(
+        client, draft["id"], "independent_judges", confirmed["version"]
+    )
+    fake = _bind_conference_judge_llm({"scores": CONFERENCE_SCORES})
+    await _generate_conference_judge(client, draft["id"], prepared["version"])
+    assert fake.calls
+    prompt = fake.calls[0].prompt
+    view = json.loads(prompt)
+    assert view["node"] == "conference_judge"
+    assert view["valid_spec_version"]["id"]
+    assert "gap_unsupported_by_sources" not in prompt
+    assert "gap_judge" not in prompt
+    nodes = view["valid_spec_version"]["document"]["nodes"]
+    assert "gap" in nodes
+    assert "contribution" in nodes
+    assert "claims" in nodes
+    assert "evidence" in nodes
+    assert "experiment_plan" in nodes
+    assert view["gap_statement"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_conference_judge_freezes_scores_without_unminting(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_conference_judge(client)
+    produced_id = draft["produced_spec_version"]["id"]
+    valid_id = draft["valid_spec_version_id"]
+    _bind_conference_judge_llm({"scores": CONFERENCE_SCORES})
+    events = await _generate_conference_judge(
+        client, draft["id"], draft["version"]
+    )
+    confirmed = await _confirm(
+        client, draft["id"], "conference_judge", events[-1]["version"]
+    )
+    assert _head(confirmed, "conference_judge")["status"] == "current"
+    assert confirmed["valid_spec_version_id"] == valid_id
+    assert confirmed["produced_spec_version"]["id"] == produced_id
+    revision_id = _head(confirmed, "conference_judge")["stage_revision_id"]
+    frozen = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/conference_judge",
+        params={"stage_revision_id": revision_id},
+    )
+    assert frozen.status_code == 200, frozen.text
+    assert frozen.json()["issues"] == []
+    assert frozen.json()["scores"] == CONFERENCE_SCORES
 
 

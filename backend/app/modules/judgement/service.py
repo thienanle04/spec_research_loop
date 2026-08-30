@@ -19,8 +19,10 @@ from app.modules.judgement.catalog import (
     JUDGE_NODES,
 )
 from app.modules.judgement.issues import merge_issues, normalize_llm_issues
-from app.modules.judgement.models import JudgeIssue
+from app.modules.judgement.models import ConferenceScore, JudgeIssue
 from app.modules.judgement.schemas import (
+    ConferenceLlmResponse,
+    ConferenceScores,
     DoneEvent,
     DraftPatchEvent,
     ErrorEvent,
@@ -72,6 +74,7 @@ class JudgementService:
             node=node.value,
             revision_id=stage_revision_id,
         )
+        raw_scores = payload.get("scores")
         return JudgeRunResponse(
             node=node,
             issues=[
@@ -89,6 +92,11 @@ class JudgementService:
                 )
                 for item in payload.get("issues", [])
             ],
+            scores=(
+                ConferenceScores.model_validate(raw_scores)
+                if raw_scores is not None
+                else None
+            ),
         )
 
     async def begin_generation(
@@ -153,17 +161,30 @@ class JudgementService:
                 message=f"Starting {label}",
                 pct=0,
             ).model_dump(mode="json")
-            parsed = await self._llm.complete_structured(
-                system=_judge_system(run.node),
-                prompt=_prompt_payload(run.view),
-                schema=JudgeLlmResponse,
-            )
-            llm_issues = normalize_llm_issues(parsed.issues)
-            verifier_issues = _verifier_issues(run.node, run.view)
-            issues = merge_issues(llm_issues, verifier_issues)
-            await self._replace_working_issues(
-                session_id=run.session_id, node=run.node, issues=issues
-            )
+            if run.node is WorkflowNode.CONFERENCE_JUDGE:
+                parsed = await self._llm.complete_structured(
+                    system=_judge_system(run.node),
+                    prompt=_prompt_payload(run.view),
+                    schema=ConferenceLlmResponse,
+                )
+                await self._replace_working_issues(
+                    session_id=run.session_id, node=run.node, issues=[]
+                )
+                await self._replace_working_scores(
+                    session_id=run.session_id, scores=parsed.scores
+                )
+            else:
+                parsed = await self._llm.complete_structured(
+                    system=_judge_system(run.node),
+                    prompt=_prompt_payload(run.view),
+                    schema=JudgeLlmResponse,
+                )
+                llm_issues = normalize_llm_issues(parsed.issues)
+                verifier_issues = _verifier_issues(run.node, run.view)
+                issues = merge_issues(llm_issues, verifier_issues)
+                await self._replace_working_issues(
+                    session_id=run.session_id, node=run.node, issues=issues
+                )
             await self._mark_generated_since_prepare(run.session_id, run.node.value)
             await self._db.commit()
             stored = await self.get_run(
@@ -174,6 +195,7 @@ class JudgementService:
             yield DraftPatchEvent(
                 node=JudgementNode(run.node.value),
                 issues=stored.issues,
+                scores=stored.scores,
             ).model_dump(mode="json")
             yield ProgressEvent(
                 node=JudgementNode(run.node.value),
@@ -220,6 +242,27 @@ class JudgementService:
                 )
                 for index, item in enumerate(issues)
             ]
+        )
+        await self._db.flush()
+
+    async def _replace_working_scores(
+        self, *, session_id: UUID, scores: ConferenceScores
+    ) -> None:
+        await self._db.execute(
+            delete(ConferenceScore).where(
+                ConferenceScore.session_id == session_id,
+                ConferenceScore.stage_revision_id.is_(None),
+            )
+        )
+        self._db.add(
+            ConferenceScore(
+                session_id=session_id,
+                originality=scores.originality,
+                significance=scores.significance,
+                soundness=scores.soundness,
+                clarity=scores.clarity,
+                reproducibility=scores.reproducibility,
+            )
         )
         await self._db.flush()
 
@@ -336,6 +379,8 @@ def _judge_system(node: WorkflowNode) -> str:
         return "judge-contribution"
     if node is WorkflowNode.EXPERIMENT_JUDGE:
         return "judge-experiment"
+    if node is WorkflowNode.CONFERENCE_JUDGE:
+        return "judge-conference"
     return "judge-gap"
 
 

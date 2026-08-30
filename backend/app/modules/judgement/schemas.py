@@ -34,6 +34,18 @@ class JudgeLlmResponse(BaseModel):
     issues: list[JudgeIssueDraft] = Field(default_factory=list)
 
 
+class ConferenceScores(BaseModel):
+    originality: int = Field(ge=1, le=10)
+    significance: int = Field(ge=1, le=10)
+    soundness: int = Field(ge=1, le=10)
+    clarity: int = Field(ge=1, le=10)
+    reproducibility: int = Field(ge=1, le=10)
+
+
+class ConferenceLlmResponse(BaseModel):
+    scores: ConferenceScores
+
+
 class JudgeIssueResponse(BaseModel):
     id: UUID
     finding_kind: str
@@ -48,6 +60,7 @@ class JudgeIssueResponse(BaseModel):
 class JudgeRunResponse(BaseModel):
     node: JudgementNode
     issues: list[JudgeIssueResponse]
+    scores: ConferenceScores | None = None
 
 
 class ProgressEvent(BaseModel):
@@ -61,6 +74,7 @@ class DraftPatchEvent(BaseModel):
     type: str = "draft_patch"
     node: JudgementNode
     issues: list[JudgeIssueResponse]
+    scores: ConferenceScores | None = None
 
 
 class DoneEvent(BaseModel):
