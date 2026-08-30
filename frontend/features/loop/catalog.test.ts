@@ -121,7 +121,7 @@ describe("Loop Stage catalog", () => {
     expect(ownedCardKinds(WorkflowNode.gap)).toEqual([CardKind.gap]);
     expect(ownedCardKinds(WorkflowNode.contribution)).toEqual([CardKind.contribution]);
     expect(ownedCardKinds(WorkflowNode.claims)).toEqual([CardKind.claim]);
-    expect(ownedCardKinds(WorkflowNode.evidence)).toEqual([CardKind.evidence]);
+    expect(ownedCardKinds(WorkflowNode.evidence)).toEqual([CardKind.claim, CardKind.evidence]);
     expect(ownedCardKinds(WorkflowNode.experiment_plan)).toEqual([]);
   });
 });

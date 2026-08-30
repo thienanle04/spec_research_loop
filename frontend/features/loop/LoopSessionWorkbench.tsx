@@ -32,8 +32,10 @@ import {
   ContributionStageContainer,
   ResearchStageContainer,
 } from "@/features/research";
-import { ClaimsEvidenceStageContainer } from "@/features/spec/ClaimsEvidenceStageContainer";
-import { ExperimentPlanningStageContainer } from "@/features/spec/ExperimentPlanningStageContainer";
+import { ClaimsStageContainer } from "@/features/spec/ClaimsStageContainer";
+import { EvidenceStageContainer } from "@/features/spec/EvidenceStageContainer";
+import { ExperimentPlanStageContainer } from "@/features/spec/ExperimentPlanStageContainer";
+import { FeasibilityStageContainer } from "@/features/spec/FeasibilityStageContainer";
 
 import {
   LOOP_STAGE_CATALOG,
@@ -297,10 +299,14 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const editingContributionDraft =
     editingWorkingDraft && workingDraftNode === WorkflowNode.contribution;
   const editingClaimsDraft =
-    editingWorkingDraft && (workingDraftNode === WorkflowNode.claims || workingDraftNode === WorkflowNode.evidence);
-  const editingExperimentDraft =
-    editingWorkingDraft && (workingDraftNode === WorkflowNode.experiment_plan || workingDraftNode === WorkflowNode.feasibility);
-  const editingStructuredDraft = editingResearchDraft || editingContributionDraft || editingClaimsDraft || editingExperimentDraft;
+    editingWorkingDraft && workingDraftNode === WorkflowNode.claims;
+  const editingEvidenceDraft =
+    editingWorkingDraft && workingDraftNode === WorkflowNode.evidence;
+  const editingExperimentPlanDraft =
+    editingWorkingDraft && workingDraftNode === WorkflowNode.experiment_plan;
+  const editingFeasibilityDraft =
+    editingWorkingDraft && workingDraftNode === WorkflowNode.feasibility;
+  const editingStructuredDraft = editingResearchDraft || editingContributionDraft || editingClaimsDraft || editingEvidenceDraft || editingExperimentPlanDraft || editingFeasibilityDraft;
   const decisions =
     decisionsQuery.data?.status === 200 ? decisionsQuery.data.data : [];
   const latestDecision = decisions[decisions.length - 1];
@@ -623,16 +629,28 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 onConfirmabilityChange={setResearchConfirmable}
               />
             ) : editingClaimsDraft ? (
-              <ClaimsEvidenceStageContainer
-                key={workingDraftNode}
+              <ClaimsStageContainer
                 sessionId={sessionId}
                 session={session}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
-            ) : editingExperimentDraft ? (
-              <ExperimentPlanningStageContainer
-                key={workingDraftNode}
+            ) : editingEvidenceDraft ? (
+              <EvidenceStageContainer
+                sessionId={sessionId}
+                session={session}
+                onRunningChange={setResearchRunning}
+                onConfirmabilityChange={setResearchConfirmable}
+              />
+            ) : editingExperimentPlanDraft ? (
+              <ExperimentPlanStageContainer
+                sessionId={sessionId}
+                session={session}
+                onRunningChange={setResearchRunning}
+                onConfirmabilityChange={setResearchConfirmable}
+              />
+            ) : editingFeasibilityDraft ? (
+              <FeasibilityStageContainer
                 sessionId={sessionId}
                 session={session}
                 onRunningChange={setResearchRunning}
