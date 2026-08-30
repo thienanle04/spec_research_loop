@@ -339,6 +339,83 @@ async def test_gap_claim_support_rejects_a_semantically_unrelated_passage() -> N
 
 
 @pytest.mark.asyncio
+async def test_gap_claim_support_narrows_an_overbroad_related_work_limitation() -> None:
+    passage = (
+        "Additionally, the reliance on binary YES/NO questions, while simplifying "
+        "evaluation, may oversimplify very open-ended tasks requiring more nuanced "
+        "judgements."
+    )
+    candidate = _GapClaim(
+        claim_id="c1",
+        kind=GapClaimKind.UNRESOLVED_LIMITATION,
+        statement=(
+            "Checklist quality depends on the base LLM, and binary questions may "
+            "oversimplify open-ended tasks."
+        ),
+        supporting_citation_keys=["check-your-work-2026"],
+        supporting_evidence=[
+            GapClaimEvidence(
+                citation_key="check-your-work-2026",
+                passage=passage,
+                location="Limitations",
+            )
+        ],
+    )
+    narrowed_statement = (
+        "Binary YES/NO questions may oversimplify open-ended tasks that require "
+        "more nuanced judgements."
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-gap-claim-support-check": json.dumps(
+                {
+                    "assessments": [
+                        {"claim_id": "c1", "support_status": "uncertain"}
+                    ]
+                }
+            ),
+            "research-gap-claim-narrowing": json.dumps(
+                {
+                    "claim_id": "c1",
+                    "can_narrow": True,
+                    "statement": narrowed_statement,
+                    "evidence_span": passage,
+                }
+            ),
+            "research-gap-claim-support-confirmation": json.dumps(
+                {
+                    "assessments": [
+                        {
+                            "claim_id": "c1",
+                            "support_status": "supported",
+                            "atomicity_status": "atomic",
+                            "evidence_span": passage,
+                            "unsupported_fragments": [],
+                        }
+                    ]
+                }
+            ),
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    supported, warnings = await service._validate_gap_claim_support(
+        idea={"problems": ["Unsupported LLM outputs"]},
+        claim_candidates=[candidate],
+    )
+
+    assert [claim.statement for claim in supported] == [narrowed_statement]
+    assert any("Narrowed 1 Related Work limitation" in item for item in warnings)
+    assert not any("Excluded 1 atomic Gap claim" in item for item in warnings)
+    assert len(llm.calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_gap_claim_support_normalizes_wrapped_alias_fields() -> None:
     candidate = _GapClaim(
         claim_id="c1",
@@ -452,7 +529,7 @@ async def test_gap_claim_support_recovers_independently_per_claim() -> None:
     assert len(llm.calls) == 4
 
 
-def test_gap_claim_preparation_splits_composites_and_rejects_nonmention() -> None:
+def test_gap_claim_preparation_splits_composites_and_flags_nonmention() -> None:
     related_work = [
         {
             "citation_key": "multi-kb-2026",
@@ -497,6 +574,10 @@ def test_gap_claim_preparation_splits_composites_and_rejects_nonmention() -> Non
     assert [claim.statement for claim in claims] == [
         "Cơ chế hiện tại tập trung vào nguồn văn bản và chưa được mở rộng sang xác thực đa phương tiện",
         "Khuôn khổ hiện chỉ được tối ưu hóa cho một cơ sở dữ liệu kiến thức duy nhất.",
+        (
+            "Hệ thống dùng Dynamic KG nhưng không đề cập đến việc tự động khởi động "
+            "lại suy luận hoặc sử dụng External Critic."
+        ),
     ]
     assert any("Split 1 composite" in warning for warning in warnings)
     assert any("source non-mention" in warning for warning in warnings)
@@ -633,7 +714,7 @@ async def test_gap_claim_support_accepts_the_grounded_ultrasound_limitation() ->
 
 
 @pytest.mark.asyncio
-async def test_gap_claim_support_rejects_nonmention_without_confirmation() -> None:
+async def test_gap_claim_support_rejects_nonmention_when_narrowing_fails() -> None:
     candidate = _GapClaim(
         claim_id="c1",
         kind=GapClaimKind.UNRESOLVED_LIMITATION,
@@ -664,7 +745,8 @@ async def test_gap_claim_support_rejects_nonmention_without_confirmation() -> No
 
     assert supported == []
     assert any("Excluded 1 atomic Gap claim" in warning for warning in warnings)
-    assert len(llm.calls) == 1
+    assert len(llm.calls) == 2
+    assert "research-gap-claim-narrowing" in llm.calls[1]["system"]
 
 
 def test_counter_support_normalizes_wrapped_alias_fields() -> None:
