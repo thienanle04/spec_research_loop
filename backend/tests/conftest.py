@@ -11,7 +11,13 @@ from app.db import models as _models  # noqa: F401
 from app.db.base import Base
 from app.db.session import dispose_engine, get_engine
 from app.main import create_app
-from app.modules.loop.catalog import WORKFLOW_NODES, WorkflowNode
+from app.modules.judgement.adapters.fake_llm import FakeJudgeLlmPort
+from app.modules.loop.catalog import (
+    LOOP_STAGE_NODES,
+    WORKFLOW_NODES,
+    LoopStage,
+    WorkflowNode,
+)
 from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.spec.deps import FakeSpecLlmPort
 
@@ -33,16 +39,22 @@ _STRUCTURED_NODES = {
 }
 
 
+_JUDGE_NODES = set(LOOP_STAGE_NODES[LoopStage.INDEPENDENT_JUDGES])
+
+
 def _bind_test_domain_llms() -> None:
     """HTTP tests need schema-shaped fakes; runtime fake profiles stay generic (ADR 0034)."""
     research_llm = FakeLlmPort()
     spec_llm = FakeSpecLlmPort()
+    judge_llm = FakeJudgeLlmPort()
     ports: dict = {}
     for node in WORKFLOW_NODES:
         if node in _RESEARCH_NODES:
             ports[node.value] = research_llm
         elif node in _STRUCTURED_NODES:
             ports[node.value] = spec_llm
+        elif node in _JUDGE_NODES:
+            ports[node.value] = judge_llm
         else:
             ports[node.value] = get_llm_port(node.value)
     bind_llm_ports(ports)

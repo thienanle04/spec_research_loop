@@ -1,0 +1,413 @@
+"""Judgement HTTP seam: Gap Judge generate, floors, Confirm, ownership."""
+
+import json
+
+import pytest
+from httpx import AsyncClient
+
+from app.adapters.llm import FakeLlm, bind_llm_ports, get_llm_port
+from app.modules.loop.catalog import WORKFLOW_NODES, WorkflowNode
+from tests.test_loop_api import (
+    _auth_client,
+    _confirm,
+    _create_session,
+    _head,
+    _interpret,
+    _patch_working_draft,
+    _prepare,
+    _register,
+)
+
+UNSUPPORTED_GAP = (
+    "The literature has not measured whether brass instruments improve "
+    "soil nitrogen fixation in alpine peat bogs."
+)
+
+
+def _events(body: str) -> list[dict]:
+    return [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+def _bind_gap_judge_llm(payload: dict) -> FakeLlm:
+    fake = FakeLlm(response=json.dumps(payload))
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    ports[WorkflowNode.GAP_JUDGE.value] = fake
+    bind_llm_ports(ports)
+    return fake
+
+
+async def _mint_valid_spec(
+    client: AsyncClient, *, gap_statement: str | None = None
+) -> dict:
+    created = await _create_session(client)
+    session_id = created["id"]
+    interpreted = await _interpret(client, session_id, created["version"])
+    decomposed = await _confirm(
+        client, session_id, "idea_decomposition", interpreted["version"]
+    )
+    inputs = await _prepare(client, session_id, "related_work", decomposed["version"])
+    inputs_confirmed = await _confirm(
+        client, session_id, "research_inputs", inputs["version"]
+    )
+    related = await _prepare(
+        client, session_id, "related_work", inputs_confirmed["version"]
+    )
+    related_generation = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/related_work/generate",
+        json={"expected_version": related["version"], "max_results": 5},
+    )
+    related_events = _events(related_generation.text)
+    related_confirmed = await _confirm(
+        client, session_id, "related_work", related_events[-1]["version"]
+    )
+    gap = await _prepare(client, session_id, "gap", related_confirmed["version"])
+    gap_generation = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/gap/generate",
+        json={"expected_version": gap["version"]},
+    )
+    gap_events = _events(gap_generation.text)
+    candidate = next(
+        event["narrative"]["candidate"]
+        for event in gap_events
+        if event["type"] == "draft_patch"
+    )
+    if gap_statement is not None:
+        candidate = {
+            **candidate,
+            "statement": gap_statement,
+            "supporting_citation_keys": [],
+        }
+    card = await client.post(
+        f"/api/loop/sessions/{session_id}/cards",
+        json={
+            "kind": "gap",
+            "body": candidate,
+            "expected_version": gap_events[-1]["version"],
+        },
+    )
+    assert card.status_code == 201, card.text
+    gap_confirmed = await _confirm(
+        client, session_id, "gap", card.json()["version"]
+    )
+    expected_version = gap_confirmed["version"]
+    for stage, node in (
+        ("contribution", "contribution"),
+        ("claims_evidence", "claims"),
+        ("claims_evidence", "evidence"),
+        ("experiment_planning", "experiment_plan"),
+        ("experiment_planning", "feasibility"),
+    ):
+        prepared = await _prepare(client, session_id, stage, expected_version)
+        confirmed = await _confirm(client, session_id, node, prepared["version"])
+        expected_version = confirmed["version"]
+    fetched = await client.get(f"/api/loop/sessions/{session_id}")
+    payload = fetched.json()
+    assert payload["valid_spec_version_id"] == payload["produced_spec_version"]["id"]
+    return payload
+
+
+async def _prepare_gap_judge(
+    client: AsyncClient, *, gap_statement: str | None = None
+) -> dict:
+    minted = await _mint_valid_spec(client, gap_statement=gap_statement)
+    return await _prepare(
+        client, minted["id"], "independent_judges", minted["version"]
+    )
+
+
+async def _generate_gap_judge(
+    client: AsyncClient, session_id: str, expected_version: int, **extra: object
+) -> list[dict]:
+    body: dict = {"expected_version": expected_version, **extra}
+    response = await client.post(
+        f"/api/judgement/sessions/{session_id}/nodes/gap_judge/generate",
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    events = _events(response.text)
+    assert events[-1]["type"] == "done"
+    return events
+
+
+@pytest.mark.asyncio
+async def test_gap_judge_generate_requires_valid_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    response = await client.post(
+        f"/api/judgement/sessions/{created['id']}/nodes/gap_judge/generate",
+        json={"expected_version": created["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "valid_spec_version_required"
+
+
+@pytest.mark.asyncio
+async def test_gap_judge_generate_rejects_working_draft_outside_independent_judges(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    minted = await _mint_valid_spec(client)
+    response = await client.post(
+        f"/api/judgement/sessions/{minted['id']}/nodes/gap_judge/generate",
+        json={"expected_version": minted["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "invalid_working_draft_target"
+
+
+@pytest.mark.asyncio
+async def test_other_account_cannot_read_or_generate_gap_judge(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    token = await _register(client, email="other-judge@example.com")
+    client.headers["Authorization"] = f"Bearer {token}"
+    listed = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/gap_judge"
+    )
+    assert listed.status_code == 404
+    generated = await client.post(
+        f"/api/judgement/sessions/{draft['id']}/nodes/gap_judge/generate",
+        json={"expected_version": draft["version"]},
+    )
+    assert generated.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_gap_judge_generate_version_conflict(client: AsyncClient) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    response = await client.post(
+        f"/api/judgement/sessions/{draft['id']}/nodes/gap_judge/generate",
+        json={"expected_version": draft["version"] - 1},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "version_conflict"
+
+
+@pytest.mark.asyncio
+async def test_gap_verifier_emits_critical_when_llm_omits_issues(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
+    events = await _generate_gap_judge(client, draft["id"], draft["version"])
+    assert events[0]["type"] == "progress"
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    kinds = {item["finding_kind"] for item in patch["issues"]}
+    assert "gap_unsupported_by_sources" in kinds
+    assert all(
+        item["severity"] == "CRITICAL"
+        for item in patch["issues"]
+        if item["finding_kind"] == "gap_unsupported_by_sources"
+    )
+
+    listed = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/gap_judge"
+    )
+    assert listed.status_code == 200, listed.text
+    stored = listed.json()["issues"]
+    assert any(
+        item["finding_kind"] == "gap_unsupported_by_sources"
+        and item["severity"] == "CRITICAL"
+        for item in stored
+    )
+
+
+@pytest.mark.asyncio
+async def test_gap_judge_floors_llm_minor_unsupported_gap_to_critical(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    _bind_gap_judge_llm(
+        {
+            "issues": [
+                {
+                    "finding_kind": "gap_unsupported_by_sources",
+                    "severity": "MINOR",
+                    "reason": "The model tried to hide this.",
+                    "suggestion": "Ignore it.",
+                },
+                {
+                    "finding_kind": "invented_kind",
+                    "severity": "CRITICAL",
+                    "reason": "Should be dropped.",
+                    "suggestion": "",
+                },
+                {
+                    "finding_kind": "gap_untestable",
+                    "severity": "CRITICAL",
+                    "reason": "No evaluation protocol exists.",
+                    "suggestion": "Add a measurable test.",
+                },
+            ]
+        }
+    )
+    events = await _generate_gap_judge(client, draft["id"], draft["version"])
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    by_kind = {item["finding_kind"]: item for item in patch["issues"]}
+    assert "invented_kind" not in by_kind
+    assert by_kind["gap_unsupported_by_sources"]["severity"] == "CRITICAL"
+    assert by_kind["gap_untestable"]["severity"] == "CRITICAL"
+    assert (
+        sum(
+            1
+            for item in patch["issues"]
+            if item["finding_kind"] == "gap_unsupported_by_sources"
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_confirm_gap_judge_with_critical_keeps_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
+    events = await _generate_gap_judge(client, draft["id"], draft["version"])
+    confirmed = await _confirm(
+        client, draft["id"], "gap_judge", events[-1]["version"]
+    )
+    assert _head(confirmed, "gap_judge")["status"] == "current"
+    assert confirmed["valid_spec_version_id"] == confirmed["produced_spec_version"]["id"]
+    revision_id = _head(confirmed, "gap_judge")["stage_revision_id"]
+    frozen = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/gap_judge",
+        params={"stage_revision_id": revision_id},
+    )
+    assert frozen.status_code == 200, frozen.text
+    assert any(
+        item["finding_kind"] == "gap_unsupported_by_sources"
+        and item["severity"] == "CRITICAL"
+        for item in frozen.json()["issues"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_independent_judges_does_not_wipe_current_gap_judge(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
+    events = await _generate_gap_judge(client, draft["id"], draft["version"])
+    confirmed = await _confirm(
+        client, draft["id"], "gap_judge", events[-1]["version"]
+    )
+    revision_id = _head(confirmed, "gap_judge")["stage_revision_id"]
+    prepared = await _prepare(
+        client, draft["id"], "independent_judges", confirmed["version"]
+    )
+    assert prepared["working_draft_node"] == "contribution_judge"
+    assert _head(prepared, "gap_judge")["status"] == "current"
+    assert _head(prepared, "gap_judge")["stage_revision_id"] == revision_id
+    frozen = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/gap_judge",
+        params={"stage_revision_id": revision_id},
+    )
+    assert any(
+        item["finding_kind"] == "gap_unsupported_by_sources"
+        for item in frozen.json()["issues"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_gap_judge_generate_allowed_when_working_draft_is_sibling_judge(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
+    events = await _generate_gap_judge(client, draft["id"], draft["version"])
+    confirmed = await _confirm(
+        client, draft["id"], "gap_judge", events[-1]["version"]
+    )
+    prepared = await _prepare(
+        client, draft["id"], "independent_judges", confirmed["version"]
+    )
+    assert prepared["working_draft_node"] == "contribution_judge"
+    sibling = await _generate_gap_judge(
+        client, draft["id"], prepared["version"]
+    )
+    patch = next(event for event in sibling if event["type"] == "draft_patch")
+    assert any(
+        item["finding_kind"] == "gap_unsupported_by_sources"
+        for item in patch["issues"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_gap_judge_content_change_stales_aggregator(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
+    events = await _generate_gap_judge(client, draft["id"], draft["version"])
+    session = await _confirm(client, draft["id"], "gap_judge", events[-1]["version"])
+    for _ in range(5):
+        session = await _prepare(
+            client, draft["id"], "independent_judges", session["version"]
+        )
+        session = await _confirm(
+            client, draft["id"], session["working_draft_node"], session["version"]
+        )
+    assert _head(session, "aggregator")["status"] == "current"
+
+    reopened = await _patch_working_draft(
+        client,
+        draft["id"],
+        expected_version=session["version"],
+        node="gap_judge",
+    )
+    assert reopened.status_code == 200, reopened.text
+    _bind_gap_judge_llm(
+        {
+            "issues": [
+                {
+                    "finding_kind": "gap_already_addressed",
+                    "severity": "MAJOR",
+                    "reason": "A prior paper already closed this gap.",
+                    "suggestion": "Narrow the claim.",
+                }
+            ]
+        }
+    )
+    regenerated = await _generate_gap_judge(
+        client, draft["id"], reopened.json()["version"]
+    )
+    changed = await _confirm(
+        client, draft["id"], "gap_judge", regenerated[-1]["version"]
+    )
+    assert _head(changed, "aggregator")["status"] == "stale"
+    assert changed["valid_spec_version_id"] == changed["produced_spec_version"]["id"]
+    listed = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/gap_judge"
+    )
+    kinds = {item["finding_kind"] for item in listed.json()["issues"]}
+    assert "gap_already_addressed" in kinds
+    assert all(
+        item["severity"] == "CRITICAL"
+        for item in listed.json()["issues"]
+        if item["finding_kind"] == "gap_already_addressed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_evidence_judge_generate_is_unavailable_in_gap_ticket(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    response = await client.post(
+        f"/api/judgement/sessions/{draft['id']}/nodes/evidence_judge/generate",
+        json={"expected_version": draft["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "judge_generate_unavailable"

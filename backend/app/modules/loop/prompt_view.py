@@ -15,6 +15,17 @@ _SPEC_NODES = frozenset(
     }
 )
 
+_JUDGE_NODES = frozenset(
+    {
+        WorkflowNode.GAP_JUDGE,
+        WorkflowNode.CONTRIBUTION_JUDGE,
+        WorkflowNode.EVIDENCE_JUDGE,
+        WorkflowNode.EXPERIMENT_JUDGE,
+        WorkflowNode.CONFERENCE_JUDGE,
+        WorkflowNode.AGGREGATOR,
+    }
+)
+
 # Upstream Workflow Nodes whose card_snapshot may contribute Card texts.
 _SPEC_CARD_UPSTREAM: tuple[WorkflowNode, ...] = (
     WorkflowNode.IDEA_DECOMPOSITION,
@@ -29,6 +40,8 @@ _SPEC_CARD_KINDS: frozenset[str] = frozenset(kind.value for kind in CardKind)
 
 def prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any]:
     """Pure transform: Context Projection → Prompt View for ``node``."""
+    if node in _JUDGE_NODES:
+        return _judge_prompt_view(node, projection)
     if node not in _SPEC_NODES:
         raise ValueError(f"Prompt View is not defined for {node.value} yet")
 
@@ -46,21 +59,35 @@ def prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any
     return view
 
 
-def _spec_cards(projection: dict[str, Any]) -> list[dict[str, Any]]:
-    upstream = projection.get("upstream")
-    if not isinstance(upstream, dict):
-        return []
+def _judge_prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any]:
+    cards = _spec_cards(projection, keep_ids=True, include_spec_version=True)
+    view: dict[str, Any] = {
+        "node": node.value,
+        "cards": cards,
+        "gap_statement": _gap_statement(projection, cards),
+        "related_work": _related_work_passages(projection),
+        "working_draft": _judge_working_draft(node, projection.get("working_draft")),
+        "valid_spec_version": _slim_valid_spec_version(projection.get("valid_spec_version")),
+    }
+    plan = _experiment_plan(projection)
+    if plan:
+        view["experiment_plan"] = plan
+    return view
+
+
+def _spec_cards(
+    projection: dict[str, Any],
+    *,
+    keep_ids: bool = False,
+    include_spec_version: bool = False,
+) -> list[dict[str, Any]]:
     collected: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for source in _SPEC_CARD_UPSTREAM:
-        block = upstream.get(source.value)
-        if not isinstance(block, dict):
-            continue
-        snapshot = block.get("card_snapshot")
-        if not isinstance(snapshot, list):
-            continue
+    for snapshot in _card_snapshots(
+        projection, include_spec_version=include_spec_version
+    ):
         for item in snapshot:
-            slim = _slim_card(item)
+            slim = _slim_card(item, keep_id=keep_ids)
             if slim is None:
                 continue
             key = (slim["kind"], slim.get("text") or slim.get("statement") or "")
@@ -71,7 +98,36 @@ def _spec_cards(projection: dict[str, Any]) -> list[dict[str, Any]]:
     return collected
 
 
-def _slim_card(item: Any) -> dict[str, Any] | None:
+def _card_snapshots(
+    projection: dict[str, Any], *, include_spec_version: bool = False
+) -> list[list[Any]]:
+    snapshots: list[list[Any]] = []
+    if include_spec_version:
+        spec = projection.get("valid_spec_version")
+        if isinstance(spec, dict):
+            document = spec.get("document")
+            if isinstance(document, dict):
+                nodes = document.get("nodes")
+                if isinstance(nodes, dict):
+                    for source in _SPEC_CARD_UPSTREAM:
+                        block = nodes.get(source.value)
+                        if isinstance(block, dict):
+                            snapshot = block.get("card_snapshot")
+                            if isinstance(snapshot, list):
+                                snapshots.append(snapshot)
+    upstream = projection.get("upstream")
+    if isinstance(upstream, dict):
+        for source in _SPEC_CARD_UPSTREAM:
+            block = upstream.get(source.value)
+            if not isinstance(block, dict):
+                continue
+            snapshot = block.get("card_snapshot")
+            if isinstance(snapshot, list):
+                snapshots.append(snapshot)
+    return snapshots
+
+
+def _slim_card(item: Any, *, keep_id: bool = False) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
     kind = item.get("kind")
@@ -83,7 +139,12 @@ def _slim_card(item: Any) -> dict[str, Any] | None:
     slim_body = _slim_body(body)
     if not slim_body:
         return None
-    return {"kind": kind, **slim_body}
+    slim = {"kind": kind, **slim_body}
+    if keep_id:
+        card_id = item.get("id")
+        if isinstance(card_id, str) and card_id:
+            slim["id"] = card_id
+    return slim
 
 
 def _slim_body(body: dict[str, Any]) -> dict[str, Any]:
@@ -128,6 +189,14 @@ def _gap_statement(projection: dict[str, Any], cards: list[dict[str, Any]]) -> s
     return ""
 
 
+def _judge_working_draft(node: WorkflowNode, working: Any) -> dict[str, Any]:
+    if not isinstance(working, dict):
+        return {"narrative": {}, "cards": []}
+    if working.get("node") != node.value:
+        return {"narrative": {}, "cards": []}
+    return _slim_working_draft(working)
+
+
 def _slim_working_draft(working: Any) -> dict[str, Any]:
     if not isinstance(working, dict):
         return {"narrative": {}, "cards": []}
@@ -162,3 +231,86 @@ def _experiment_plan(projection: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(plan, dict) and plan:
         return plan
     return None
+
+
+def _related_work_passages(projection: dict[str, Any]) -> list[dict[str, Any]]:
+    upstream = projection.get("upstream")
+    if not isinstance(upstream, dict):
+        return []
+    block = upstream.get(WorkflowNode.RELATED_WORK.value)
+    if not isinstance(block, dict):
+        return []
+    projected = block.get("projected")
+    if not isinstance(projected, dict):
+        return []
+    id_to_key: dict[str, str] = {}
+    citations = projected.get("citations")
+    if isinstance(citations, list):
+        for cite in citations:
+            if not isinstance(cite, dict):
+                continue
+            cite_id = cite.get("id")
+            key = cite.get("citation_key")
+            if isinstance(cite_id, str) and isinstance(key, str) and key.strip():
+                id_to_key[cite_id] = key.strip()
+    findings = projected.get("related_work")
+    if not isinstance(findings, list):
+        return []
+    passages: list[dict[str, Any]] = []
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        passage = item.get("supporting_passage")
+        if not isinstance(passage, str) or not passage.strip():
+            continue
+        slim: dict[str, Any] = {"supporting_passage": passage.strip()}
+        citation_key = item.get("citation_key")
+        citation_id = item.get("citation_id")
+        if isinstance(citation_id, str) and citation_id.strip():
+            slim["citation_id"] = citation_id.strip()
+            if citation_id in id_to_key:
+                slim["citation_key"] = id_to_key[citation_id]
+        if isinstance(citation_key, str) and citation_key.strip():
+            slim["citation_key"] = citation_key.strip()
+        passages.append(slim)
+    return passages
+
+
+def _slim_valid_spec_version(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    spec_id = raw.get("id")
+    if not isinstance(spec_id, str) or not spec_id:
+        return None
+    document = raw.get("document")
+    nodes: dict[str, Any] = {}
+    if isinstance(document, dict):
+        raw_nodes = document.get("nodes")
+        if isinstance(raw_nodes, dict):
+            for source in (
+                *_SPEC_CARD_UPSTREAM,
+                WorkflowNode.EXPERIMENT_PLAN,
+                WorkflowNode.FEASIBILITY,
+            ):
+                block = raw_nodes.get(source.value)
+                if not isinstance(block, dict):
+                    continue
+                snapshot = block.get("card_snapshot")
+                cards = []
+                if isinstance(snapshot, list):
+                    cards = [
+                        slim
+                        for item in snapshot
+                        if (slim := _slim_card(item, keep_id=True)) is not None
+                    ]
+                narrative = block.get("narrative")
+                slim_narrative: dict[str, Any] = {}
+                if isinstance(narrative, dict):
+                    plan = narrative.get("plan")
+                    if isinstance(plan, dict) and plan:
+                        slim_narrative["plan"] = plan
+                nodes[source.value] = {
+                    "card_snapshot": cards,
+                    "narrative": slim_narrative,
+                }
+    return {"id": spec_id, "document": {"nodes": nodes}}

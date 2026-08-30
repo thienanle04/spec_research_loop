@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { JudgeRunRevisionView, isJudgeNode } from "@/features/judgement";
 import { NodeHeadStatus, WorkflowNode, type HeadRevisionResponse } from "@/lib/api/generated/model";
 import { cn } from "@/lib/utils";
 
@@ -52,13 +53,21 @@ export function HeadRevisionView({
               {status === NodeHeadStatus.stale ? (
                 <p className="text-sm font-medium text-pending">Stale</p>
               ) : null}
-              <StageRevisionBody
-                node={node}
-                payload={{ narrative: revision.narrative, card_snapshot: revision.card_snapshot }}
-                showNodeLabel={false}
-                sessionId={sessionId}
-                stageRevisionId={stageRevisionId ?? null}
-              />
+              {isJudgeNode(node) ? (
+                <JudgeRunRevisionView
+                  sessionId={sessionId}
+                  node={node}
+                  stageRevisionId={stageRevisionId ?? null}
+                />
+              ) : (
+                <StageRevisionBody
+                  node={node}
+                  payload={{ narrative: revision.narrative, card_snapshot: revision.card_snapshot }}
+                  showNodeLabel={false}
+                  sessionId={sessionId}
+                  stageRevisionId={stageRevisionId ?? null}
+                />
+              )}
             </div>
           )}
         </CardContent>

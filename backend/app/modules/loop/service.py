@@ -33,7 +33,6 @@ from app.modules.loop.interpretation_turns import (
     apply_account_reply_patch,
     interpretation_confirmable,
 )
-from app.modules.loop.prompt_view import prompt_view
 from app.modules.loop.models import (
     Card,
     Decision,
@@ -42,6 +41,7 @@ from app.modules.loop.models import (
     SpecVersion,
     StageRevision,
 )
+from app.modules.loop.prompt_view import prompt_view
 from app.modules.loop.schemas import (
     CardBatchMutationResponse,
     CardMutationResponse,
@@ -505,7 +505,8 @@ class LoopService:
                 if child_head.stage_revision_id is not None:
                     child_head.status = NodeHeadStatus.STALE.value
                     child_head.generated_since_prepare = False
-            session.valid_spec_version_id = None
+            if node not in LOOP_STAGE_NODES[LoopStage.INDEPENDENT_JUDGES]:
+                session.valid_spec_version_id = None
 
         self._db.add(
             Decision(
@@ -736,6 +737,18 @@ class LoopService:
             for card in session.cards
             if card.kind_enum() in set(owned_kinds(node))
         ]
+        valid_spec = None
+        if session.valid_spec_version_id is not None:
+            spec = next(
+                (
+                    item
+                    for item in session.spec_versions
+                    if item.id == session.valid_spec_version_id
+                ),
+                None,
+            )
+            if spec is not None:
+                valid_spec = {"id": str(spec.id), "document": spec.document}
         return {
             "node": node.value,
             "projected": projected,
@@ -745,6 +758,7 @@ class LoopService:
                 "narrative": session.working_draft_narrative,
                 "node": session.working_draft_node,
             },
+            "valid_spec_version": valid_spec,
         }
 
     async def project_prompt_view(

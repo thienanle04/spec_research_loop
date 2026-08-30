@@ -138,6 +138,75 @@ def test_feasibility_prompt_view_adds_experiment_plan() -> None:
     assert view["experiment_plan"]["experiments"][0]["claim"] == "c"
 
 
+def test_gap_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_runs() -> None:
+    projection = _fat_projection(with_plan=True)
+    projection["valid_spec_version"] = {
+        "id": "spec-1",
+        "document": {
+            "nodes": {
+                WorkflowNode.GAP.value: {
+                    "card_snapshot": [
+                        {
+                            "id": "gap-1",
+                            "kind": "gap",
+                            "body": {"statement": "Confirmed gap statement"},
+                        }
+                    ],
+                    "narrative": {},
+                }
+            }
+        },
+    }
+    projection["upstream"][WorkflowNode.CONTRIBUTION_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {"issues": [{"finding_kind": "contribution_not_novel"}]},
+        "projected": {
+            "issues": [
+                {
+                    "finding_kind": "contribution_not_novel",
+                    "severity": "MAJOR",
+                    "reason": "peer judge must not appear",
+                }
+            ]
+        },
+    }
+    view = prompt_view(WorkflowNode.GAP_JUDGE, projection)
+    assert view["node"] == "gap_judge"
+    assert view["valid_spec_version"]["id"] == "spec-1"
+    assert view["gap_statement"] == "Confirmed gap statement"
+    assert view["related_work"][0]["supporting_passage"] == "y"
+    assert view["experiment_plan"]["experiments"][0]["claim"] == "c"
+    kinds = {card["kind"] for card in view["cards"]}
+    assert "gap" in kinds
+    assert any(card.get("id") == "gap-1" for card in view["cards"])
+    blob = str(view)
+    assert "peer judge must not appear" not in blob
+    assert "contribution_not_novel" not in blob
+    assert "contribution_judge" not in blob
+    assert "long grilling transcript" not in blob
+
+
+def test_gap_judge_prompt_view_omits_sibling_judge_working_draft() -> None:
+    projection = _fat_projection(with_plan=True)
+    projection["working_draft"] = {
+        "node": WorkflowNode.CONTRIBUTION_JUDGE.value,
+        "narrative": {
+            "issues": [
+                {
+                    "finding_kind": "contribution_not_novel",
+                    "reason": "sibling working draft must not leak",
+                }
+            ]
+        },
+        "card_snapshot": [],
+    }
+    view = prompt_view(WorkflowNode.GAP_JUDGE, projection)
+    blob = str(view)
+    assert "sibling working draft must not leak" not in blob
+    assert "contribution_not_novel" not in blob
+    assert view["working_draft"] == {"narrative": {}, "cards": []}
+
+
 def test_prompt_view_rejects_undefined_nodes() -> None:
     with pytest.raises(ValueError, match="not defined"):
         prompt_view(WorkflowNode.GAP, _fat_projection())

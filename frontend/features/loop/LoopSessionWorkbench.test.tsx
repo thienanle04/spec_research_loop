@@ -71,6 +71,43 @@ vi.mock("./WorkingDraftCardCanvas", () => ({
 
 const researchGenerateFromRequestId = vi.fn();
 
+vi.mock("@/features/judgement", () => ({
+  isJudgeNode: (node: string) =>
+    [
+      "gap_judge",
+      "contribution_judge",
+      "evidence_judge",
+      "experiment_judge",
+      "conference_judge",
+      "aggregator",
+    ].includes(node),
+  JudgementStageContainer: ({
+    sessionId,
+    generateRequestId = 0,
+    onRunningChange,
+    onConfirmabilityChange,
+  }: {
+    sessionId: string;
+    generateRequestId?: number;
+    onRunningChange?: (running: boolean) => void;
+    onConfirmabilityChange?: (confirmable: boolean) => void;
+  }) => {
+    const seenGenerateRequestIdRef = React.useRef(generateRequestId);
+    React.useEffect(() => {
+      onRunningChange?.(false);
+      onConfirmabilityChange?.(true);
+    }, [onConfirmabilityChange, onRunningChange]);
+    React.useEffect(() => {
+      const previous = seenGenerateRequestIdRef.current;
+      seenGenerateRequestIdRef.current = generateRequestId;
+      if (generateRequestId < 1 || generateRequestId <= previous) return;
+      researchGenerateFromRequestId(generateRequestId);
+    }, [generateRequestId]);
+    return <p>Gap Judge Issues for {sessionId}</p>;
+  },
+  JudgeRunRevisionView: () => <p>Frozen Gap Judge Issues</p>,
+}));
+
 vi.mock("@/features/research", () => ({
   ResearchStageContainer: ({
     sessionId,
@@ -432,6 +469,39 @@ describe("LoopSessionWorkbench", () => {
       path(LoopStage.independent_judges, WorkflowNode.gap_judge),
       { scroll: false },
     );
+  });
+
+  it("shows Gap Judge Issues instead of a raw narrative editor", async () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.independent_judges}&node=${WorkflowNode.gap_judge}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.gap_judge,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.current,
+            [WorkflowNode.claims]: NodeHeadStatus.current,
+            [WorkflowNode.evidence]: NodeHeadStatus.current,
+            [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+            [WorkflowNode.feasibility]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(await screen.findByText("Gap Judge Issues for session-1")).toBeInTheDocument();
+    expect(screen.queryByText("Working Draft narrative editor for session-1")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Confirm" })).toBeInTheDocument();
   });
 
   it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {
