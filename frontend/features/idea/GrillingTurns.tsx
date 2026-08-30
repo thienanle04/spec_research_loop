@@ -1,44 +1,65 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { LoaderCircle, MessageSquare, Pencil, User, type LucideIcon } from "lucide-react";
+import { Fragment, useEffect, useId, useState, type ReactNode } from "react";
+import { LoaderCircle, Pencil, type LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
-import { GrillingClusterForm } from "./GrillingClusterForm";
-import type { GrillingTurn, IdeaTurn, NoteTurn } from "./turns";
+import { OTHER, initialOthers, initialPicks } from "./GrillingClusterForm";
+import type {
+  AnswersTurn,
+  GrillingAnswer,
+  GrillingQuestion,
+  GrillingTurn,
+  IdeaTurn,
+  ModelTurn,
+  NoteTurn,
+} from "./turns";
 import { modelTurnBefore } from "./turns";
 
-function answerLabel(answer: { option: string } | { other: string }): string {
+function answerLabel(answer: GrillingAnswer): string {
   return "option" in answer ? answer.option : `Other: ${answer.other}`;
 }
 
-function TurnFrame({
+function HistorySection({
   label,
-  icon: Icon,
-  iconClassName,
-  tone = "text-muted-foreground",
   surface = "border bg-muted",
-  busy,
   children,
 }: {
-  label: string;
-  icon: LucideIcon;
-  iconClassName?: string;
-  tone?: string;
+  label?: string;
   surface?: string;
-  busy?: boolean;
   children: ReactNode;
 }) {
   return (
-    <li aria-busy={busy || undefined}>
-      <p className={cn("mb-1 flex items-center gap-1.5 text-xs font-medium", tone)}>
+    <li>
+      {label ? (
+        <p className="mb-1 text-xs font-medium text-muted-foreground">{label}</p>
+      ) : null}
+      <div className={cn("rounded-md px-3 py-3", surface)}>{children}</div>
+    </li>
+  );
+}
+
+function ReceivingFrame({
+  icon: Icon,
+  iconClassName,
+  label,
+  children,
+}: {
+  icon: LucideIcon;
+  iconClassName?: string;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <li aria-busy="true">
+      <p className="mb-1 flex items-center gap-1.5 text-xs font-medium text-in-progress">
         <Icon aria-hidden="true" className={cn("size-3.5", iconClassName)} />
         {label}
       </p>
-      <div className={cn("rounded-md px-3 py-3", surface)}>{children}</div>
+      <div className="rounded-md border border-in-progress/40 bg-card px-3 py-3">{children}</div>
     </li>
   );
 }
@@ -68,9 +89,9 @@ function AccountTextView({
   onSave: () => void;
   onChange: (text: string) => void;
 }) {
-  return (
-    <TurnFrame icon={User} label={label}>
-      {editing ? (
+  if (editing) {
+    return (
+      <HistorySection label={label}>
         <div className="grid gap-3">
           <label className="grid gap-2 text-sm font-medium">
             {fieldLabel}
@@ -89,24 +110,272 @@ function AccountTextView({
             </Button>
           </div>
         </div>
-      ) : (
-        <div className="grid gap-3">
+      </HistorySection>
+    );
+  }
+
+  return (
+    <li>
+      <p className="mb-1 text-xs font-medium text-muted-foreground">{label}</p>
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-3">
           <p className="whitespace-pre-wrap break-words text-sm">{turn.text}</p>
-          <Button
-            disabled={locked}
-            size="sm"
-            type="button"
-            variant="outline"
-            className="justify-self-start"
-            onClick={onEdit}
-          >
-            <Pencil aria-hidden="true" />
-            Edit
-          </Button>
         </div>
-      )}
-    </TurnFrame>
+        <Button
+          disabled={locked}
+          size="sm"
+          type="button"
+          variant="outline"
+          className="shrink-0"
+          onClick={onEdit}
+        >
+          <Pencil aria-hidden="true" />
+          Edit
+        </Button>
+      </div>
+    </li>
   );
+}
+
+/** Plain title — not <legend>; legend floats on the fieldset border and sits outside the card padding. */
+function QuestionTitle({
+  question,
+  questionIndex,
+  questionCount,
+  id,
+}: {
+  question: GrillingQuestion;
+  questionIndex: number;
+  questionCount: number;
+  id?: string;
+}) {
+  return (
+    <p id={id} className="font-serif text-base text-navy">
+      <span className="mr-2 font-sans text-xs font-medium text-muted-foreground">
+        {questionIndex + 1}/{questionCount}
+      </span>
+      {question.text}
+    </p>
+  );
+}
+
+function SingleAnswerEditor({
+  question,
+  questionIndex,
+  questionCount,
+  answer,
+  dirty,
+  onChange,
+  onCancel,
+  onSave,
+}: {
+  question: GrillingQuestion;
+  questionIndex: number;
+  questionCount: number;
+  answer: GrillingAnswer;
+  dirty: boolean;
+  onChange: (answer: GrillingAnswer) => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  const formId = `history-answer-${useId().replace(/:/g, "")}`;
+  const fieldId = `${formId}-q`;
+  const otherId = `${fieldId}-other`;
+  const picks = initialPicks([question], [answer]);
+  const others = initialOthers([question], [answer]);
+  const selected = picks[0] ?? "";
+  const otherText = others[0] ?? "";
+  const incomplete = !selected || (selected === OTHER && !otherText.trim());
+
+  const titleId = `${fieldId}-title`;
+
+  return (
+    <div className="grid gap-3">
+      <div role="group" aria-labelledby={titleId} className="grid gap-2">
+        <QuestionTitle
+          id={titleId}
+          question={question}
+          questionCount={questionCount}
+          questionIndex={questionIndex}
+        />
+        {question.options.map((option, optionIndex) => {
+          const optionId = `${fieldId}-opt-${optionIndex}`;
+          const isSelected = selected === option;
+          return (
+            <label
+              key={optionId}
+              htmlFor={optionId}
+              className={cn(
+                "flex min-h-11 cursor-pointer items-start gap-3 rounded-md border bg-card px-3 py-3 text-sm transition-colors duration-200",
+                "hover:bg-muted",
+                isSelected && "border-navy bg-muted",
+              )}
+            >
+              <input
+                id={optionId}
+                type="radio"
+                name={fieldId}
+                className="mt-0.5 size-4 accent-navy"
+                checked={isSelected}
+                onChange={() => onChange({ option })}
+              />
+              <span>{option}</span>
+            </label>
+          );
+        })}
+        <label
+          htmlFor={`${fieldId}-other-radio`}
+          className={cn(
+            "flex min-h-11 cursor-pointer items-start gap-3 rounded-md border bg-card px-3 py-3 text-sm transition-colors duration-200",
+            "hover:bg-muted",
+            selected === OTHER && "border-navy bg-muted",
+          )}
+        >
+          <input
+            id={`${fieldId}-other-radio`}
+            type="radio"
+            name={fieldId}
+            className="mt-0.5 size-4 accent-navy"
+            checked={selected === OTHER}
+            onChange={() => onChange({ other: otherText })}
+          />
+          <span>Other</span>
+        </label>
+        {selected === OTHER ? (
+          <div className="grid gap-2 pl-1">
+            <label htmlFor={otherId} className="text-sm font-medium">
+              Your answer
+            </label>
+            <Textarea
+              id={otherId}
+              value={otherText}
+              onChange={(event) => onChange({ other: event.target.value })}
+            />
+          </div>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button disabled={!dirty || incomplete} type="button" onClick={() => onSave()}>
+          Save
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AnsweredClusterPairs({
+  turnIndex,
+  cluster,
+  answers,
+  editing,
+  locked,
+  dirty,
+  onEdit,
+  onCancel,
+  onSave,
+  onDraftChange,
+}: {
+  turnIndex: number;
+  cluster: ModelTurn | null;
+  answers: AnswersTurn;
+  editing: boolean;
+  locked: boolean;
+  dirty: boolean;
+  onEdit: () => void;
+  onCancel: () => void;
+  onSave: () => void;
+  onDraftChange: (turn: AnswersTurn) => void;
+}) {
+  const [editingAnswerIndex, setEditingAnswerIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!editing) {
+      setEditingAnswerIndex(null);
+    }
+  }, [editing]);
+
+  const questions = cluster?.questions ?? [];
+  const questionCount = Math.max(questions.length, answers.answers.length);
+
+  return (
+    <Fragment>
+      {answers.answers.map((answer, answerIndex) => {
+        const question = questions[answerIndex];
+        const editingThis = editing && editingAnswerIndex === answerIndex;
+
+        if (editingThis && question) {
+          return (
+            <li key={`pair-${turnIndex}-${answerIndex}`}>
+              <div className="rounded-md border bg-muted px-3 py-3">
+                <SingleAnswerEditor
+                  answer={answer}
+                  dirty={dirty}
+                  question={question}
+                  questionCount={questionCount}
+                  questionIndex={answerIndex}
+                  onCancel={onCancel}
+                  onChange={(next) => {
+                    onDraftChange({
+                      role: "account",
+                      kind: "answers",
+                      answers: answers.answers.map((item, index) =>
+                        index === answerIndex ? next : item,
+                      ),
+                    });
+                  }}
+                  onSave={onSave}
+                />
+              </div>
+            </li>
+          );
+        }
+
+        return (
+          <li key={`pair-${turnIndex}-${answerIndex}`} className="grid gap-2">
+            {question ? (
+              <div
+                role="group"
+                className="grid gap-2 rounded-md border bg-card px-3 py-3"
+              >
+                <QuestionTitle
+                  question={question}
+                  questionCount={questionCount}
+                  questionIndex={answerIndex}
+                />
+              </div>
+            ) : null}
+            <div className="flex items-start gap-2">
+              <div className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-3">
+                <p className="whitespace-pre-wrap break-words text-sm">{answerLabel(answer)}</p>
+              </div>
+              <Button
+                disabled={locked || (editing && editingAnswerIndex !== answerIndex)}
+                size="sm"
+                type="button"
+                variant="outline"
+                className="shrink-0"
+                onClick={() => {
+                  setEditingAnswerIndex(answerIndex);
+                  onEdit();
+                }}
+              >
+                <Pencil aria-hidden="true" />
+                Edit
+              </Button>
+            </div>
+          </li>
+        );
+      })}
+    </Fragment>
+  );
+}
+
+function isAnsweredModel(turns: GrillingTurn[], index: number): boolean {
+  const next = turns[index + 1];
+  return next?.role === "account" && next.kind === "answers";
 }
 
 export function GrillingTurns({
@@ -138,11 +407,26 @@ export function GrillingTurns({
   const hideLastQuestions = last?.role === "model" && last.questions.length > 0 && !generating;
 
   return (
-    <ol className="grid gap-3" aria-label="Grilling transcript">
+    <ol className="grid gap-3" aria-label="Grilling history">
       {turns.map((turn, index) => {
         const isLastModel = hideLastQuestions && index === turns.length - 1;
         const current = editingIndex === index && draftTurn ? draftTurn : turn;
         const editLocked = locked || (editingIndex !== null && editingIndex !== index);
+
+        if (current.role === "model" && isAnsweredModel(turns, index)) {
+          const preamble = current.preamble.trim();
+          if (!preamble) {
+            return null;
+          }
+          return (
+            <li key={`preamble-${index}`}>
+              <p className="border-l-2 border-navy/30 pl-3 font-serif text-sm italic leading-relaxed whitespace-pre-wrap break-words text-muted-foreground">
+                {preamble}
+              </p>
+            </li>
+          );
+        }
+
         if (current.role === "account" && current.kind === "idea") {
           return (
             <AccountTextView
@@ -151,7 +435,7 @@ export function GrillingTurns({
               dirty={editingIndex === index && dirty}
               editing={editingIndex === index}
               fieldLabel="Research idea"
-              label="Account"
+              label="Research idea"
               locked={editLocked}
               turn={current}
               onCancel={onCancel}
@@ -180,92 +464,68 @@ export function GrillingTurns({
           );
         }
         if (current.role === "account" && current.kind === "answers") {
-          const cluster = modelTurnBefore(turns, index);
+          const answersTurn =
+            editingIndex === index && draftTurn?.role === "account" && draftTurn.kind === "answers"
+              ? draftTurn
+              : current;
           return (
-            <TurnFrame key={`answers-${index}`} icon={User} label="Account">
-              {editingIndex === index && cluster ? (
-                <GrillingClusterForm
-                  cancelLabel="Cancel"
-                  initialAnswers={current.answers}
-                  questions={cluster.questions}
-                  submitDisabled={false}
-                  submitLabel="Save"
-                  disabled={false}
-                  onCancel={onCancel}
-                  onSubmit={(answers) => {
-                    onSave({ role: "account", kind: "answers", answers });
-                  }}
-                />
-              ) : (
-                <div className="grid gap-3">
-                  <ul className="grid gap-3">
-                    {current.answers.map((answer, answerIndex) => {
-                      const question = cluster?.questions[answerIndex];
-                      return (
-                        <li key={`${question?.text ?? "answer"}-${answerIndex}`} className="grid gap-1">
-                          {question ? (
-                            <p className="font-serif text-sm text-navy">{question.text}</p>
-                          ) : null}
-                          <p className="text-sm">{answerLabel(answer)}</p>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  <Button
-                    disabled={editLocked}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                    className="justify-self-start"
-                    onClick={() => onEdit(index)}
-                  >
-                    <Pencil aria-hidden="true" />
-                    Edit
-                  </Button>
-                </div>
-              )}
-            </TurnFrame>
+            <AnsweredClusterPairs
+              key={`answers-${index}`}
+              answers={answersTurn}
+              cluster={modelTurnBefore(turns, index)}
+              dirty={editingIndex === index && dirty}
+              editing={editingIndex === index}
+              locked={editLocked}
+              turnIndex={index}
+              onCancel={onCancel}
+              onDraftChange={onDraftChange}
+              onEdit={() => onEdit(index)}
+              onSave={() => onSave()}
+            />
+          );
+        }
+        if (isLastModel) {
+          return (
+            <li key={`model-${index}`}>
+              <p className="text-sm text-muted-foreground">
+                Open cluster — answer every Grilling Question below.
+              </p>
+            </li>
           );
         }
         return (
-          <TurnFrame
-            key={`model-${index}`}
-            icon={MessageSquare}
-            label="Questions"
-            surface="border bg-card"
-          >
-            {current.preamble ? (
+          <HistorySection key={`model-${index}`} surface="border bg-card">
+            {current.role === "model" && current.preamble ? (
               <p className="font-serif text-base whitespace-pre-wrap break-words text-navy">
                 {current.preamble}
               </p>
             ) : null}
-            {isLastModel ? (
-              <p className="mt-3 text-sm text-muted-foreground">
-                Open cluster — answer every Grilling Question below.
-              </p>
-            ) : current.questions.length > 0 ? (
-              <ol className="mt-3 grid gap-2 text-sm">
-                {current.questions.map((question) => (
-                  <li key={question.text}>{question.text}</li>
+            {current.role === "model" && current.questions.length > 0 ? (
+              <div className="grid gap-4">
+                {current.questions.map((question, questionIndex) => (
+                  <div
+                    key={`${question.text}-${questionIndex}`}
+                    role="group"
+                    className="grid gap-2"
+                  >
+                    <QuestionTitle
+                      question={question}
+                      questionCount={current.questions.length}
+                      questionIndex={questionIndex}
+                    />
+                  </div>
                 ))}
-              </ol>
+              </div>
             ) : null}
-          </TurnFrame>
+          </HistorySection>
         );
       })}
       {generating ? (
-        <TurnFrame
-          busy
-          icon={LoaderCircle}
-          iconClassName="animate-spin"
-          label="Receiving"
-          surface="border border-in-progress/40 bg-card"
-          tone="text-in-progress"
-        >
+        <ReceivingFrame icon={LoaderCircle} iconClassName="animate-spin" label="Receiving">
           <p className="font-serif text-base whitespace-pre-wrap break-words text-navy">
             {preview.trim() ? preview : "Waiting for the next Grilling Questions."}
           </p>
-        </TurnFrame>
+        </ReceivingFrame>
       ) : null}
     </ol>
   );
