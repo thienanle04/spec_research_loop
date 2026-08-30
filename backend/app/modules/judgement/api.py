@@ -22,7 +22,7 @@ from app.modules.judgement.schemas import (
     ReadinessResponse,
     ReadinessState,
 )
-from app.modules.judgement.service import GenerationRun, JudgementService
+from app.modules.judgement.service import JudgementService
 from app.modules.loop.service import LoopService
 from app.ports.llm import LlmPort
 
@@ -97,7 +97,34 @@ async def generate(
         body=body,
     )
     return StreamingResponse(
-        _event_stream(service, run),
+        _event_stream(service.generate(run)),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/generate-pending",
+    responses={409: {"model": OperationalError}},
+)
+async def generate_pending(
+    session_id: UUID,
+    body: JudgementGenerateRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StreamingResponse:
+    service = JudgementService(db)
+    runs = await service.begin_pending_generation(
+        session_id=session_id,
+        account_id=account.id,
+        body=body,
+    )
+    return StreamingResponse(
+        _event_stream(service.generate_pending(runs)),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -108,9 +135,9 @@ async def generate(
 
 
 async def _event_stream(
-    service: JudgementService, run: GenerationRun
+    events: AsyncIterator[dict],
 ) -> AsyncIterator[str]:
-    async for event in service.generate(run):
+    async for event in events:
         event_name = event.get("type", "message")
         payload = json.dumps(event, ensure_ascii=False)
         yield f"event: {event_name}\ndata: {payload}\n\n"

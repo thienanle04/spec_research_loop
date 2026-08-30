@@ -17,6 +17,7 @@ import { AggregatorReportView } from "./AggregatorReportView";
 import { ConferenceScoreList } from "./ConferenceScoreList";
 import { JudgeIssueList } from "./JudgeIssueList";
 import type { ConferenceScores, HandlingOption, JudgeIssue, JudgeNode, JudgeRun } from "./types";
+import { FIVE_JUDGE_NODES } from "./types";
 import { useJudgementStream } from "./useJudgementStream";
 
 const GENERATABLE_JUDGE_NODES = new Set<string>([
@@ -70,6 +71,16 @@ export function JudgementStageContainer({
   const workingHead = session.node_heads.find((head) => head.node === session.working_draft_node);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;
+  const pendingJudges = FIVE_JUDGE_NODES.filter((judge) => {
+    const head = session.node_heads.find((item) => item.node === judge);
+    const status = head?.status ?? NodeHeadStatus.empty;
+    return status === NodeHeadStatus.empty || status === NodeHeadStatus.stale;
+  });
+  const canRunPending = pendingJudges.length > 0;
+  const pendingNeedsReaccept = pendingJudges.some((judge) => {
+    const head = session.node_heads.find((item) => item.node === judge);
+    return head?.status === NodeHeadStatus.stale && head.generated_since_prepare !== true;
+  });
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const runQuery = useQuery({
@@ -102,13 +113,17 @@ export function JudgementStageContainer({
   }, [onRunningChange, stream.running]);
 
   function expectedVersion(): number {
+    return currentSession().version;
+  }
+
+  function currentSession(): LoopSessionResponse {
     const cached = queryClient.getQueryData(sessionKey) as
       | { status: number; data: LoopSessionResponse }
       | undefined;
     if (cached?.status === 200) {
-      return cached.data.version;
+      return cached.data;
     }
-    return session.version;
+    return session;
   }
 
   function updateSession(next: LoopSessionResponse) {
@@ -158,19 +173,58 @@ export function JudgementStageContainer({
             setScores(event.scores ?? null);
             setHandlingOptions(event.handling_options ?? []);
           } else if (event.type === "done") {
+            const latest = currentSession();
             updateSession(
               withGeneratedSincePrepare(
                 {
-                  ...session,
+                  ...latest,
                   version: event.version,
                 },
-                session.working_draft_node,
+                event.node as WorkflowNode,
               ),
             );
           }
         },
       });
       await queryClient.invalidateQueries({ queryKey: judgeRunQueryKey(sessionId, node) });
+    } catch (error) {
+      setSaveError(getApiErrorMessage(error));
+    }
+  }
+
+  async function generatePending() {
+    setSaveError(null);
+    try {
+      await queue.flush();
+      await stream.startPending({
+        sessionId,
+        expectedVersion: expectedVersion(),
+        staleReaccept: pendingNeedsReaccept,
+        onEvent: (event) => {
+          if (event.type === "draft_patch") {
+            if (event.node === node) {
+              setIssues(event.issues);
+              setScores(event.scores ?? null);
+              setHandlingOptions(event.handling_options ?? []);
+            }
+            void queryClient.invalidateQueries({
+              queryKey: judgeRunQueryKey(sessionId, event.node),
+            });
+          } else if (event.type === "done") {
+            const latest = currentSession();
+            updateSession(
+              withGeneratedSincePrepare(
+                {
+                  ...latest,
+                  version: event.version,
+                },
+                event.node as WorkflowNode,
+              ),
+            );
+          }
+        },
+      });
+      await queryClient.invalidateQueries({ queryKey: ["/api/judgement/run", sessionId] });
     } catch (error) {
       setSaveError(getApiErrorMessage(error));
     }
@@ -224,11 +278,20 @@ export function JudgementStageContainer({
               {stream.progressMessage ?? "Running Judge…"}
             </p>
           </div>
-        ) : canGenerate ? (
-          <Button type="button" variant="outline" className="justify-self-start" onClick={() => void generate()}>
-            {hasOutput ? `Regenerate ${title}` : `Generate ${title}`}
-          </Button>
-        ) : null}
+        ) : (
+          <div className="flex flex-wrap items-center gap-3">
+            {canGenerate ? (
+              <Button type="button" variant="outline" onClick={() => void generate()}>
+                {hasOutput ? `Regenerate ${title}` : `Generate ${title}`}
+              </Button>
+            ) : null}
+            {canRunPending ? (
+              <Button type="button" variant="outline" onClick={() => void generatePending()}>
+                Run pending Judges
+              </Button>
+            ) : null}
+          </div>
+        )}
         {error ? (
           <p role="alert" className="text-sm text-destructive">
             {error}

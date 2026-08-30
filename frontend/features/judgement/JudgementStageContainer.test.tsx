@@ -9,7 +9,9 @@ import { JudgementStageContainer } from "./JudgementStageContainer";
 
 const mocks = vi.hoisted(() => ({
   streamStart: vi.fn(),
+  streamStartPending: vi.fn(),
   abort: vi.fn(),
+  running: false,
   customFetch: vi.fn(),
 }));
 
@@ -25,11 +27,12 @@ vi.mock("../loop/loop-session-save", () => ({
 
 vi.mock("./useJudgementStream", () => ({
   useJudgementStream: () => ({
-    running: false,
+    running: mocks.running,
     progress: 0,
-    progressMessage: null,
+    progressMessage: mocks.running ? "Starting Gap Judge" : null,
     error: null,
     start: mocks.streamStart,
+    startPending: mocks.streamStartPending,
     abort: mocks.abort,
   }),
 }));
@@ -67,6 +70,7 @@ function session(
 describe("JudgementStageContainer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.running = false;
     mocks.customFetch.mockResolvedValue({
       status: 200,
       data: {
@@ -423,5 +427,115 @@ describe("JudgementStageContainer", () => {
       }),
     );
     expect(mocks.streamStart).not.toHaveBeenCalled();
+  });
+
+  it("offers run pending Judges and abort", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const pendingHeads: LoopSessionResponse["node_heads"] = [
+      {
+        node: WorkflowNode.gap_judge,
+        status: NodeHeadStatus.empty,
+        stage_revision_id: null,
+        generated_since_prepare: false,
+        head_revision: null,
+      },
+      {
+        node: WorkflowNode.contribution_judge,
+        status: NodeHeadStatus.empty,
+        stage_revision_id: null,
+        generated_since_prepare: false,
+        head_revision: null,
+      },
+      {
+        node: WorkflowNode.aggregator,
+        status: NodeHeadStatus.empty,
+        stage_revision_id: null,
+        generated_since_prepare: false,
+        head_revision: null,
+      },
+    ];
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.gap_judge, pendingHeads)}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Run pending Judges" }));
+    expect(mocks.streamStartPending).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        expectedVersion: 4,
+        staleReaccept: false,
+      }),
+    );
+    expect(mocks.streamStart).not.toHaveBeenCalled();
+  });
+
+  it("sends batch Stale re-accept on run pending when a targeted Judge is Stale", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.experiment_judge, [
+            {
+              node: WorkflowNode.gap_judge,
+              status: NodeHeadStatus.current,
+              stage_revision_id: "rev-gap",
+              generated_since_prepare: false,
+              head_revision: null,
+            },
+            {
+              node: WorkflowNode.experiment_judge,
+              status: NodeHeadStatus.stale,
+              stage_revision_id: "rev-exp",
+              generated_since_prepare: false,
+              head_revision: null,
+            },
+            {
+              node: WorkflowNode.conference_judge,
+              status: NodeHeadStatus.stale,
+              stage_revision_id: "rev-conf",
+              generated_since_prepare: false,
+              head_revision: null,
+            },
+            {
+              node: WorkflowNode.aggregator,
+              status: NodeHeadStatus.stale,
+              stage_revision_id: "rev-agg",
+              generated_since_prepare: false,
+              head_revision: null,
+            },
+          ])}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Run pending Judges" }));
+    expect(mocks.streamStartPending).toHaveBeenCalledWith(
+      expect.objectContaining({ staleReaccept: true }),
+    );
+  });
+
+  it("aborts run pending from Independent judges", async () => {
+    mocks.running = true;
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer sessionId="session-1" session={session()} />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Stop Judge" }));
+    expect(mocks.abort).toHaveBeenCalled();
   });
 });

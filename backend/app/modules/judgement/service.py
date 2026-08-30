@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 
+from app.adapters.llm import get_llm_port
 from app.core.errors import OperationalErrorException
 from app.modules.judgement.catalog import (
     FIVE_JUDGE_NODES,
@@ -71,7 +73,7 @@ class GenerationRun:
 
 
 class JudgementService:
-    def __init__(self, db: AsyncSession, llm: LlmPort) -> None:
+    def __init__(self, db: AsyncSession, llm: LlmPort | None = None) -> None:
         self._db = db
         self._llm = llm
 
@@ -186,80 +188,210 @@ class JudgementService:
             view=view,
         )
 
+    async def begin_pending_generation(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        body: JudgementGenerateRequest,
+    ) -> list[GenerationRun]:
+        session = await self._load_owned_session(session_id, account_id)
+        if session.valid_spec_version_id is None:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="valid_spec_version_required",
+                detail="Generate requires a Valid Spec Version",
+            )
+        working = WorkflowNode(session.working_draft_node)
+        if working not in JUDGE_NODES:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="invalid_working_draft_target",
+                detail=(
+                    "generate must target an Independent judges Workflow Node "
+                    "or run after that Loop Stage is prepared"
+                ),
+            )
+        rows = await self._db.scalars(
+            select(NodeHead).where(NodeHead.session_id == session_id)
+        )
+        heads = {WorkflowNode(row.node): row for row in rows.all()}
+        pending = [
+            node
+            for node in FIVE_JUDGE_NODES
+            if heads[node].status_enum()
+            in (NodeHeadStatus.EMPTY, NodeHeadStatus.STALE)
+        ]
+        if not pending:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="no_pending_judges",
+                detail="No empty or Stale Judges to run",
+            )
+        needs_ack = any(
+            heads[node].status_enum() is NodeHeadStatus.STALE
+            and not heads[node].generated_since_prepare
+            for node in pending
+        )
+        if needs_ack and not body.stale_reaccept:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="stale_reaccept_required",
+                detail=(
+                    "Generating Stale Judges without a post-prepare run "
+                    "requires stale_reaccept"
+                ),
+            )
+        for node in pending:
+            await self._assert_upstream_current(session_id, node)
+        loop = LoopService(self._db)
+        views: list[tuple[WorkflowNode, dict[str, Any]]] = []
+        for node in pending:
+            view = await loop.project_prompt_view(
+                session_id=session_id,
+                account_id=account_id,
+                node=node,
+            )
+            views.append((node, view))
+        version = await self._claim_version(
+            session=session,
+            account_id=account_id,
+            expected_version=body.expected_version,
+        )
+        return [
+            GenerationRun(
+                session_id=session_id,
+                account_id=account_id,
+                node=node,
+                version=version,
+                view=view,
+            )
+            for node, view in views
+        ]
+
     async def generate(self, run: GenerationRun) -> AsyncIterator[dict[str, Any]]:
         try:
-            label = _judge_label(run.node)
-            yield ProgressEvent(
-                node=JudgementNode(run.node.value),
-                message=f"Starting {label}",
-                pct=0,
-            ).model_dump(mode="json")
-            if run.node is WorkflowNode.AGGREGATOR:
-                report = compose_from_view(run.view)
-                parsed = await self._llm.complete_structured(
-                    system="aggregator",
-                    prompt=_prompt_payload(run.view),
-                    schema=AggregatorLlmResponse,
-                )
-                options = filter_handling_options(parsed.options, report.issues)
-                await self._replace_working_aggregator(
-                    session_id=run.session_id, report=report, options=options
-                )
-            elif run.node is WorkflowNode.CONFERENCE_JUDGE:
-                parsed = await self._llm.complete_structured(
-                    system=_judge_system(run.node),
-                    prompt=_prompt_payload(run.view),
-                    schema=ConferenceLlmResponse,
-                )
-                await self._replace_working_issues(
-                    session_id=run.session_id, node=run.node, issues=[]
-                )
-                await self._replace_working_scores(
-                    session_id=run.session_id, scores=parsed.scores
-                )
-            else:
-                parsed = await self._llm.complete_structured(
-                    system=_judge_system(run.node),
-                    prompt=_prompt_payload(run.view),
-                    schema=JudgeLlmResponse,
-                )
-                llm_issues = normalize_llm_issues(parsed.issues)
-                verifier_issues = _verifier_issues(run.node, run.view)
-                issues = merge_issues(llm_issues, verifier_issues)
-                await self._replace_working_issues(
-                    session_id=run.session_id, node=run.node, issues=issues
-                )
-            await self._mark_generated_since_prepare(run.session_id, run.node.value)
+            yield _starting_event(run)
+            llm = self._llm if self._llm is not None else self._port_for(run.node)
+            await self._complete_and_persist(run, llm)
             await self._db.commit()
-            stored = await self.get_run(
-                session_id=run.session_id,
-                account_id=run.account_id,
-                node=JudgementNode(run.node.value),
-            )
-            yield DraftPatchEvent(
-                node=JudgementNode(run.node.value),
-                issues=stored.issues,
-                scores=stored.scores,
-                clusters=stored.clusters,
-                handling_options=stored.handling_options,
-                readiness=stored.readiness,
-            ).model_dump(mode="json")
-            yield ProgressEvent(
-                node=JudgementNode(run.node.value),
-                message=f"{label} complete",
-                pct=100,
-            ).model_dump(mode="json")
-            yield DoneEvent(
-                node=JudgementNode(run.node.value),
-                version=run.version,
-            ).model_dump(mode="json")
+            async for event in self._result_events(run):
+                yield event
         except Exception as exc:  # noqa: BLE001 - stream converts failures to typed events
             await self._db.rollback()
-            yield ErrorEvent(
-                node=JudgementNode(run.node.value),
-                code="generation_failed",
-                message=f"Judge generation failed: {type(exc).__name__}",
-            ).model_dump(mode="json")
+            yield _failure_event(run, exc)
+
+    async def generate_pending(
+        self, runs: list[GenerationRun]
+    ) -> AsyncIterator[dict[str, Any]]:
+        for run in runs:
+            yield _starting_event(run)
+
+        async def _invoke(
+            run: GenerationRun,
+        ) -> tuple[GenerationRun, Any, BaseException | None]:
+            try:
+                parsed = await self._complete_llm(run, self._port_for(run.node))
+            except Exception as exc:  # noqa: BLE001 - per-Judge failure stays on that node
+                return run, None, exc
+            return run, parsed, None
+
+        try:
+            completed = await asyncio.gather(*[_invoke(run) for run in runs])
+            for run, parsed, error in completed:
+                if error is not None:
+                    yield _failure_event(run, error)
+                    continue
+                await self._persist_completed(run, parsed)
+                await self._mark_generated_since_prepare(
+                    run.session_id, run.node.value
+                )
+                await self._db.commit()
+                async for event in self._result_events(run):
+                    yield event
+        except Exception as exc:  # noqa: BLE001 - stream converts failures to typed events
+            await self._db.rollback()
+            yield _failure_event(runs[0], exc)
+
+    def _port_for(self, node: WorkflowNode) -> LlmPort:
+        return get_llm_port(node.value)
+
+    async def _complete_llm(self, run: GenerationRun, llm: LlmPort) -> Any:
+        if run.node is WorkflowNode.AGGREGATOR:
+            report = compose_from_view(run.view)
+            parsed = await llm.complete_structured(
+                system="aggregator",
+                prompt=_prompt_payload(run.view),
+                schema=AggregatorLlmResponse,
+            )
+            options = filter_handling_options(parsed.options, report.issues)
+            return ("aggregator", report, options)
+        if run.node is WorkflowNode.CONFERENCE_JUDGE:
+            parsed = await llm.complete_structured(
+                system=_judge_system(run.node),
+                prompt=_prompt_payload(run.view),
+                schema=ConferenceLlmResponse,
+            )
+            return ("conference", parsed.scores)
+        parsed = await llm.complete_structured(
+            system=_judge_system(run.node),
+            prompt=_prompt_payload(run.view),
+            schema=JudgeLlmResponse,
+        )
+        llm_issues = normalize_llm_issues(parsed.issues)
+        verifier_issues = _verifier_issues(run.node, run.view)
+        return ("issues", merge_issues(llm_issues, verifier_issues))
+
+    async def _persist_completed(self, run: GenerationRun, parsed: Any) -> None:
+        kind = parsed[0]
+        if kind == "aggregator":
+            _, report, options = parsed
+            await self._replace_working_aggregator(
+                session_id=run.session_id, report=report, options=options
+            )
+            return
+        if kind == "conference":
+            await self._replace_working_issues(
+                session_id=run.session_id, node=run.node, issues=[]
+            )
+            await self._replace_working_scores(
+                session_id=run.session_id, scores=parsed[1]
+            )
+            return
+        await self._replace_working_issues(
+            session_id=run.session_id, node=run.node, issues=parsed[1]
+        )
+
+    async def _complete_and_persist(self, run: GenerationRun, llm: LlmPort) -> None:
+        parsed = await self._complete_llm(run, llm)
+        await self._persist_completed(run, parsed)
+        await self._mark_generated_since_prepare(run.session_id, run.node.value)
+
+    async def _result_events(
+        self, run: GenerationRun
+    ) -> AsyncIterator[dict[str, Any]]:
+        stored = await self.get_run(
+            session_id=run.session_id,
+            account_id=run.account_id,
+            node=JudgementNode(run.node.value),
+        )
+        yield DraftPatchEvent(
+            node=JudgementNode(run.node.value),
+            issues=stored.issues,
+            scores=stored.scores,
+            clusters=stored.clusters,
+            handling_options=stored.handling_options,
+            readiness=stored.readiness,
+        ).model_dump(mode="json")
+        yield ProgressEvent(
+            node=JudgementNode(run.node.value),
+            message=f"{_judge_label(run.node)} complete",
+            pct=100,
+        ).model_dump(mode="json")
+        yield DoneEvent(
+            node=JudgementNode(run.node.value),
+            version=run.version,
+        ).model_dump(mode="json")
 
     async def _replace_working_issues(
         self,
@@ -520,6 +652,22 @@ def _issue_response(item: dict[str, Any]) -> JudgeIssueResponse:
         source_node=item.get("source_node"),
         cluster=item.get("cluster"),
     )
+
+
+def _starting_event(run: GenerationRun) -> dict[str, Any]:
+    return ProgressEvent(
+        node=JudgementNode(run.node.value),
+        message=f"Starting {_judge_label(run.node)}",
+        pct=0,
+    ).model_dump(mode="json")
+
+
+def _failure_event(run: GenerationRun, exc: BaseException) -> dict[str, Any]:
+    return ErrorEvent(
+        node=JudgementNode(run.node.value),
+        code="generation_failed",
+        message=f"Judge generation failed: {type(exc).__name__}",
+    ).model_dump(mode="json")
 
 
 def _prompt_payload(view: dict[str, Any]) -> str:

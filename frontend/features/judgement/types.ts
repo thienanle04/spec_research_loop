@@ -63,6 +63,14 @@ export const JUDGE_NODES = [
   "aggregator",
 ] as const;
 
+export const FIVE_JUDGE_NODES = [
+  "gap_judge",
+  "contribution_judge",
+  "evidence_judge",
+  "experiment_judge",
+  "conference_judge",
+] as const;
+
 export type JudgeNode = (typeof JUDGE_NODES)[number];
 
 export function isJudgeNode(node: string): node is JudgeNode {
