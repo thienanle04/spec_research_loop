@@ -149,10 +149,19 @@ export function needsStaleReaccept(head: NodeHeadResponse | undefined | null): b
   );
 }
 
-/** Dim Stale revision/draft until post-prepare generate or Stale re-accept (ADR 0036). */
-export function shouldDimStaleContent(head: NodeHeadResponse | undefined | null): boolean {
-  return needsStaleReaccept(head);
+/**
+ * Dim Stale revision/draft while the invalidation banner is showing and
+ * Stale re-accept is still needed (ADR 0036). Dismiss hides the banner and undims.
+ */
+export function shouldDimStaleContent(
+  head: NodeHeadResponse | undefined | null,
+  invalidationBannerVisible: boolean,
+): boolean {
+  return needsStaleReaccept(head) && invalidationBannerVisible;
 }
+
+/** Banner dismiss subject: one Workflow Node or Spec Draft (ADR 0036). */
+export type InvalidationBannerSubject = WorkflowNode | "spec_draft";
 
 export function invalidationWaveKey(
   session: Pick<
@@ -172,6 +181,31 @@ export function invalidationWaveKey(
     return "";
   }
   return `${staleNodes}|spec:${specStale ? "1" : "0"}`;
+}
+
+/** Whether Spec Draft's invalidation line belongs in the current-view banner. */
+export function specInvalidationInView(args: {
+  selectedNode: WorkflowNode | undefined;
+  selectedStage: LoopStage;
+  viewedNodeStale: boolean;
+  specVersionStale: boolean;
+}): boolean {
+  if (!args.specVersionStale) {
+    return false;
+  }
+  return (
+    args.viewedNodeStale ||
+    args.selectedStage === LoopStage.spec_draft ||
+    args.selectedNode == null
+  );
+}
+
+export function isInvalidationSubjectDismissed(
+  subject: InvalidationBannerSubject,
+  waveKey: string,
+  dismissedBySubject: Readonly<Record<string, string>>,
+): boolean {
+  return waveKey !== "" && dismissedBySubject[subject] === waveKey;
 }
 
 function fieldText(value: unknown): string {

@@ -1738,6 +1738,142 @@ describe("LoopSessionWorkbench", () => {
     );
   });
 
+  it("keeps invalidation banner on another Stale node after Dismiss, and undims after Dismiss", async () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_interpretation}`,
+    );
+    const nodeHeads = heads({
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.stale,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+    }).map((head) =>
+      head.node === WorkflowNode.idea_interpretation ||
+      head.node === WorkflowNode.idea_decomposition
+        ? { ...head, generated_since_prepare: false }
+        : head,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.idea_interpretation,
+          working_draft_narrative: answeredTurns("stale interpretation"),
+          node_heads: nodeHeads,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    const view = render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(
+      screen.getAllByRole("status").some((el) =>
+        (el.textContent ?? "").includes("Idea interpretation is Stale"),
+      ),
+    ).toBe(true);
+    expect(document.querySelector(".opacity-50")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(
+      screen.queryAllByRole("status").some((el) =>
+        (el.textContent ?? "").includes("Idea interpretation is Stale"),
+      ),
+    ).toBe(false);
+    expect(document.querySelector(".opacity-50")).toBeNull();
+
+    search = new URLSearchParams(
+      `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.idea_decomposition,
+          working_draft_narrative: { text: "restored cards" },
+          cards: [
+            {
+              id: "card-1",
+              kind: CardKind.problem,
+              body: { text: "accuracy" },
+              created_at: "2026-08-15T10:00:00Z",
+              updated_at: "2026-08-15T10:00:00Z",
+            },
+          ],
+          node_heads: nodeHeads,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    view.rerender(<LoopSessionWorkbench sessionId="session-1" />);
+
+    expect(
+      screen.getAllByRole("status").some((el) =>
+        (el.textContent ?? "").includes("Idea decomposition is Stale"),
+      ),
+    ).toBe(true);
+    expect(document.querySelector(".opacity-50")).toBeTruthy();
+  });
+
+  it("dismisses Spec Draft invalidation independently of a Workflow Node", async () => {
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    const nodeHeads = heads({
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+    }).map((head) =>
+      head.node === WorkflowNode.idea_decomposition
+        ? { ...head, generated_since_prepare: false }
+        : head,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.idea_decomposition,
+          working_draft_narrative: { text: "restored cards" },
+          cards: [
+            {
+              id: "card-1",
+              kind: CardKind.problem,
+              body: { text: "accuracy" },
+              created_at: "2026-08-15T10:00:00Z",
+              updated_at: "2026-08-15T10:00:00Z",
+            },
+          ],
+          node_heads: nodeHeads,
+          produced_spec_version: {
+            id: "spec-1",
+            document: {},
+            created_at: "2026-08-16T10:00:00Z",
+          },
+          valid_spec_version_id: null,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    const view = render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Spec Draft has no Valid Spec Version",
+    );
+    expect(screen.getByRole("status")).not.toHaveTextContent("Idea decomposition is Stale");
+
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    search = new URLSearchParams(
+      `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
+    );
+    view.rerender(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Idea decomposition is Stale");
+    expect(screen.getByRole("status")).not.toHaveTextContent(
+      "Spec Draft has no Valid Spec Version",
+    );
+  });
+
   it("prepares the rest of the Loop Stage after Confirm when the next Workflow Node is empty", async () => {
     search = new URLSearchParams(`stage=${LoopStage.related_work}`);
     getHook.mockReturnValue({

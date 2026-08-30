@@ -8,7 +8,11 @@ import {
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
+  isInvalidationSubjectDismissed,
+  needsStaleReaccept,
   shouldAutoPrepare,
+  shouldDimStaleContent,
+  specInvalidationInView,
   staleInvalidationStages,
 } from "./stage-signals";
 
@@ -543,5 +547,60 @@ describe("Confirm signals", () => {
         ],
       }),
     ).toBe(true);
+  });
+});
+
+describe("Stale invalidation banner visibility", () => {
+  it("dims only when re-accept is needed and the invalidation banner is visible", () => {
+    const stale = heads({ [WorkflowNode.contribution]: NodeHeadStatus.stale }).find(
+      (item) => item.node === WorkflowNode.contribution,
+    );
+    expect(shouldDimStaleContent(stale, true)).toBe(true);
+    expect(shouldDimStaleContent(stale, false)).toBe(false);
+    expect(shouldDimStaleContent({ ...stale!, generated_since_prepare: true }, true)).toBe(false);
+    expect(needsStaleReaccept(stale)).toBe(true);
+  });
+
+  it("tracks Spec Draft invalidation in view and per-subject dismiss against the wave key", () => {
+    expect(
+      specInvalidationInView({
+        selectedNode: WorkflowNode.idea_decomposition,
+        selectedStage: LoopStage.grilling,
+        viewedNodeStale: true,
+        specVersionStale: true,
+      }),
+    ).toBe(true);
+    expect(
+      specInvalidationInView({
+        selectedNode: WorkflowNode.idea_decomposition,
+        selectedStage: LoopStage.grilling,
+        viewedNodeStale: false,
+        specVersionStale: true,
+      }),
+    ).toBe(false);
+    expect(
+      specInvalidationInView({
+        selectedNode: undefined,
+        selectedStage: LoopStage.spec_draft,
+        viewedNodeStale: false,
+        specVersionStale: true,
+      }),
+    ).toBe(true);
+
+    const wave = "idea_decomposition|spec:1";
+    expect(
+      isInvalidationSubjectDismissed(WorkflowNode.idea_decomposition, wave, {
+        [WorkflowNode.idea_decomposition]: wave,
+      }),
+    ).toBe(true);
+    expect(
+      isInvalidationSubjectDismissed(WorkflowNode.idea_interpretation, wave, {
+        [WorkflowNode.idea_decomposition]: wave,
+      }),
+    ).toBe(false);
+    expect(isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: wave })).toBe(true);
+    expect(
+      isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: "other-wave" }),
+    ).toBe(false);
   });
 });

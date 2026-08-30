@@ -64,9 +64,11 @@ import {
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
   invalidationWaveKey,
+  isInvalidationSubjectDismissed,
   needsStaleReaccept,
   shouldAutoPrepare,
   shouldDimStaleContent,
+  specInvalidationInView,
   staleInvalidationStages,
   type CompletionSignal,
 } from "./stage-signals";
@@ -237,7 +239,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const [grillDirty, setGrillDirty] = useState(false);
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const [generateRequestId, setGenerateRequestId] = useState(0);
-  const [dismissedWaveKey, setDismissedWaveKey] = useState<string | null>(null);
+  const [dismissedBySubject, setDismissedBySubject] = useState<Record<string, string>>({});
 
   const queriedSession = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
   const session = newerSession(queriedSession, appliedSession);
@@ -420,20 +422,31 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     ? session.node_heads.find((head) => head.node === selectedNode)
     : undefined;
   const workingDraftHead = session.node_heads.find((head) => head.node === workingDraftNode);
-  const dimStaleContent = shouldDimStaleContent(
-    viewingWorkingDraft ? workingDraftHead : viewedHead,
-  );
   const waveKey = invalidationWaveKey(session);
   const viewedNodeStale = viewedHead?.status === NodeHeadStatus.stale;
   const specVersionStale =
     session.produced_spec_version != null &&
     session.valid_spec_version_id !== session.produced_spec_version.id;
+  const nodeBannerSubject =
+    viewedNodeStale && selectedNode != null ? selectedNode : null;
+  const specBannerInView = specInvalidationInView({
+    selectedNode,
+    selectedStage,
+    viewedNodeStale,
+    specVersionStale,
+  });
+  const showNodeInvalidationLine =
+    nodeBannerSubject != null &&
+    !isInvalidationSubjectDismissed(nodeBannerSubject, waveKey, dismissedBySubject);
+  const showSpecInvalidationLine =
+    specBannerInView &&
+    !isInvalidationSubjectDismissed("spec_draft", waveKey, dismissedBySubject);
   const showInvalidationBanner =
-    waveKey !== "" &&
-    dismissedWaveKey !== waveKey &&
-    (viewedNodeStale ||
-      (selectedStage === LoopStage.spec_draft && specVersionStale) ||
-      (selectedNode == null && specVersionStale));
+    waveKey !== "" && (showNodeInvalidationLine || showSpecInvalidationLine);
+  const dimStaleContent = shouldDimStaleContent(
+    viewingWorkingDraft ? workingDraftHead : viewedHead,
+    showInvalidationBanner,
+  );
   const confirmNeedsReaccept = needsStaleReaccept(workingDraftHead);
   const canEditSelected =
     selectedNode != null &&
@@ -631,21 +644,35 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
             className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-pending bg-card p-3"
           >
             <div className="grid gap-1 text-sm text-pending">
-              {viewedNodeStale && selectedNode ? (
+              {showNodeInvalidationLine && nodeBannerSubject ? (
                 <p>
-                  <span className="font-medium">{WORKFLOW_NODE_LABELS[selectedNode]}</span> is
-                  Stale. Generate again before Confirm, or use Stale re-accept.
+                  <span className="font-medium">
+                    {WORKFLOW_NODE_LABELS[nodeBannerSubject]}
+                  </span>{" "}
+                  is Stale. Generate again before Confirm, or use Stale re-accept.
                 </p>
               ) : null}
-              {specVersionStale ? (
+              {showSpecInvalidationLine ? (
                 <p>Spec Draft has no Valid Spec Version after upstream invalidation.</p>
               ) : null}
             </div>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="sm"
-              onClick={() => setDismissedWaveKey(waveKey)}
+              className="shrink-0 text-pending hover:bg-pending/10 hover:text-pending"
+              onClick={() =>
+                setDismissedBySubject((prev) => {
+                  const next = { ...prev };
+                  if (nodeBannerSubject) {
+                    next[nodeBannerSubject] = waveKey;
+                  }
+                  if (specBannerInView) {
+                    next.spec_draft = waveKey;
+                  }
+                  return next;
+                })
+              }
             >
               Dismiss
             </Button>
