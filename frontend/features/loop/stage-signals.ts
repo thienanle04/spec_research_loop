@@ -142,6 +142,38 @@ export function staleInvalidationStages({
   return LOOP_STAGE_CATALOG.map((stage) => stage.id).filter((id) => stages.has(id));
 }
 
+/** Confirm needs Stale re-accept when the head is Stale and no post-prepare generate ran. */
+export function needsStaleReaccept(head: NodeHeadResponse | undefined | null): boolean {
+  return (
+    head?.status === NodeHeadStatus.stale && head.generated_since_prepare !== true
+  );
+}
+
+/** Dim Stale revision/draft until post-prepare generate or Stale re-accept (ADR 0036). */
+export function shouldDimStaleContent(head: NodeHeadResponse | undefined | null): boolean {
+  return needsStaleReaccept(head);
+}
+
+export function invalidationWaveKey(
+  session: Pick<
+    LoopSessionResponse,
+    "node_heads" | "produced_spec_version" | "valid_spec_version_id"
+  >,
+): string {
+  const staleNodes = session.node_heads
+    .filter((head) => head.status === NodeHeadStatus.stale)
+    .map((head) => head.node)
+    .sort()
+    .join(",");
+  const specStale =
+    session.produced_spec_version != null &&
+    session.valid_spec_version_id !== session.produced_spec_version.id;
+  if (!staleNodes && !specStale) {
+    return "";
+  }
+  return `${staleNodes}|spec:${specStale ? "1" : "0"}`;
+}
+
 function fieldText(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return "";

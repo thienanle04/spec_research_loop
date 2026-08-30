@@ -63,7 +63,10 @@ import {
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
+  invalidationWaveKey,
+  needsStaleReaccept,
   shouldAutoPrepare,
+  shouldDimStaleContent,
   staleInvalidationStages,
   type CompletionSignal,
 } from "./stage-signals";
@@ -232,6 +235,9 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [grillEditing, setGrillEditing] = useState(false);
   const [grillDirty, setGrillDirty] = useState(false);
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
+  const [generateRequestId, setGenerateRequestId] = useState(0);
+  const [dismissedWaveKey, setDismissedWaveKey] = useState<string | null>(null);
 
   const queriedSession = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
   const session = newerSession(queriedSession, appliedSession);
@@ -413,6 +419,22 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const viewedHead = selectedNode
     ? session.node_heads.find((head) => head.node === selectedNode)
     : undefined;
+  const workingDraftHead = session.node_heads.find((head) => head.node === workingDraftNode);
+  const dimStaleContent = shouldDimStaleContent(
+    viewingWorkingDraft ? workingDraftHead : viewedHead,
+  );
+  const waveKey = invalidationWaveKey(session);
+  const viewedNodeStale = viewedHead?.status === NodeHeadStatus.stale;
+  const specVersionStale =
+    session.produced_spec_version != null &&
+    session.valid_spec_version_id !== session.produced_spec_version.id;
+  const showInvalidationBanner =
+    waveKey !== "" &&
+    dismissedWaveKey !== waveKey &&
+    (viewedNodeStale ||
+      (selectedStage === LoopStage.spec_draft && specVersionStale) ||
+      (selectedNode == null && specVersionStale));
+  const confirmNeedsReaccept = needsStaleReaccept(workingDraftHead);
   const canEditSelected =
     selectedNode != null &&
     selectedNode !== workingDraftNode &&
@@ -467,11 +489,20 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     }
   }
 
-  function confirmWorkingDraft() {
+  function confirmWorkingDraft(options?: { stale_reaccept?: boolean }) {
+    if (confirmNeedsReaccept && !options?.stale_reaccept) {
+      setConfirmDialogOpen(true);
+      return;
+    }
+    setConfirmDialogOpen(false);
     void applyTransition((version) =>
       confirmMutation.mutateAsync({
         sessionId,
-        data: { node: workingDraftNode, expected_version: version },
+        data: {
+          node: workingDraftNode,
+          expected_version: version,
+          ...(options?.stale_reaccept ? { stale_reaccept: true } : {}),
+        },
       }),
     ).then((next) => {
       if (!next) return;
@@ -492,6 +523,16 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       }
       router.replace(hrefForSession(next), { scroll: false });
     });
+  }
+
+  function confirmDialogGenerate() {
+    setConfirmDialogOpen(false);
+    if (!isGrillingNode(workingDraftNode)) {
+      setGenerateRequestId((current) => current + 1);
+      return;
+    }
+    if (!session) return;
+    void runGenerate(session);
   }
 
   function continueWork(target: ContinueTarget, expectedVersionOverride?: number) {
@@ -578,11 +619,38 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         <StagePathNav
           emptyTabLabel={selectedStage === LoopStage.spec_draft ? selected.name : undefined}
           nodes={selected.nodes}
+          nodeHeads={session.node_heads}
           viewedNode={selectedNode}
           previous={previousStop}
           next={nextStop}
           onBrowse={browseTo}
         />
+        {showInvalidationBanner ? (
+          <div
+            role="status"
+            className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-pending bg-card p-3"
+          >
+            <div className="grid gap-1 text-sm text-pending">
+              {viewedNodeStale && selectedNode ? (
+                <p>
+                  <span className="font-medium">{WORKFLOW_NODE_LABELS[selectedNode]}</span> is
+                  Stale. Generate again before Confirm, or use Stale re-accept.
+                </p>
+              ) : null}
+              {specVersionStale ? (
+                <p>Spec Draft has no Valid Spec Version after upstream invalidation.</p>
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setDismissedWaveKey(waveKey)}
+            >
+              Dismiss
+            </Button>
+          </div>
+        ) : null}
         {transitionError ? (
           <div role="alert" className="rounded-md border border-pending bg-card p-3">
             <p className="text-sm">{transitionMessage(transitionError)}</p>
@@ -606,7 +674,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           </div>
         ) : null}
         {viewingWorkingDraft ? (
-          <>
+          <div className={cn(dimStaleContent && "opacity-50")}>
             {isGrillingNode(workingDraftNode) ? (
               <GrillingWorkspace
                 error={generateError}
@@ -632,6 +700,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
+                generateRequestId={generateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
@@ -639,6 +708,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               <ContributionStageContainer
                 sessionId={sessionId}
                 session={session}
+                generateRequestId={generateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
@@ -647,6 +717,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
+                generateRequestId={generateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
@@ -655,6 +726,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
+                generateRequestId={generateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
@@ -664,13 +736,14 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 <WorkingDraftCardCanvas locked={generating} sessionId={sessionId} />
               </>
             )}
-          </>
+          </div>
         ) : selectedNode ? (
           <HeadRevisionView
             node={selectedNode}
             status={viewedHead?.status ?? NodeHeadStatus.empty}
             revision={viewedHead?.head_revision ?? null}
             available={stageAvailable}
+            dimmed={dimStaleContent}
             upstreamNames={incompleteUpstreamNodes({
               stage: selectedStage,
               nodeHeads: session.node_heads,
@@ -693,7 +766,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               </p>
             ) : null}
             {showConfirm ? (
-              <Button className="w-full" disabled={confirmDisabled} onClick={confirmWorkingDraft}>
+              <Button className="w-full" disabled={confirmDisabled} onClick={() => confirmWorkingDraft()}>
                 Confirm
               </Button>
             ) : null}
@@ -715,6 +788,40 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         ) : null}
       </div>
       </div>
+      {confirmDialogOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="stale-reaccept-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+        >
+          <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-lg">
+            <h2 id="stale-reaccept-title" className="font-serif text-lg text-navy">
+              Stale Workflow Node
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              This Working Draft was restored from a Stale Stage Revision. Generate again to
+              refresh it from upstream, or Confirm anyway as a Stale re-accept.
+            </p>
+            <div className="mt-4 grid gap-2">
+              <Button type="button" disabled={confirmDisabled} onClick={confirmDialogGenerate}>
+                Generate
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={confirmDisabled}
+                onClick={() => confirmWorkingDraft({ stale_reaccept: true })}
+              >
+                Confirm anyway
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => setConfirmDialogOpen(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -736,6 +843,7 @@ function StageSignalSummary({
 function StagePathNav({
   emptyTabLabel,
   nodes,
+  nodeHeads,
   viewedNode,
   previous,
   next,
@@ -743,21 +851,27 @@ function StagePathNav({
 }: {
   emptyTabLabel?: string;
   nodes: readonly WorkflowNode[];
+  nodeHeads: NodeHeadResponse[];
   viewedNode: WorkflowNode | undefined;
   previous: NavStop | null;
   next: NavStop | null;
   onBrowse: (stop: NavStop) => void;
 }) {
+  const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
   const tabs =
     nodes.length > 0
-      ? nodes.map((node) => ({
-          key: node,
-          label: WORKFLOW_NODE_LABELS[node],
-          selected: viewedNode === node,
-          onSelect: () => onBrowse({ stage: stageForWorkflowNode(node), node }),
-        }))
+      ? nodes.map((node) => {
+          const stale = statusByNode.get(node) === NodeHeadStatus.stale;
+          return {
+            key: node,
+            label: WORKFLOW_NODE_LABELS[node],
+            stale,
+            selected: viewedNode === node,
+            onSelect: () => onBrowse({ stage: stageForWorkflowNode(node), node }),
+          };
+        })
       : emptyTabLabel
-        ? [{ key: emptyTabLabel, label: emptyTabLabel, selected: true, onSelect: undefined }]
+        ? [{ key: emptyTabLabel, label: emptyTabLabel, stale: false, selected: true, onSelect: undefined }]
         : [];
 
   return (
@@ -791,14 +905,19 @@ function StagePathNav({
               size="sm"
               aria-selected={tab.selected}
               className={cn(
-                "h-auto shrink-0 rounded-none px-3 py-2 text-base font-normal shadow-none hover:bg-transparent",
+                "h-auto shrink-0 rounded-none px-3 py-2 text-base shadow-none hover:bg-transparent",
                 tab.selected
                   ? "border-b-2 border-navy text-navy hover:text-navy"
                   : "border-b-2 border-transparent text-muted-foreground hover:text-navy",
+                tab.stale && "font-medium text-pending hover:text-pending",
+                tab.stale && tab.selected && "border-pending",
               )}
               onClick={tab.onSelect}
             >
-              {tab.label}
+              <span className="inline-flex items-center gap-1.5">
+                {tab.label}
+                {tab.stale ? <span className="text-xs uppercase tracking-wide">Stale</span> : null}
+              </span>
             </Button>
           ))}
         </div>

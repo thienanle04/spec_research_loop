@@ -78,11 +78,13 @@ export function ContributionStageContainer({
   session,
   onRunningChange,
   onConfirmabilityChange,
+  generateRequestId = 0,
 }: {
   sessionId: string;
   session: LoopSessionResponse;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  generateRequestId?: number;
 }) {
   const queryClient = useQueryClient();
   const { queue, status } = useLoopSessionSave();
@@ -165,6 +167,12 @@ export function ContributionStageContainer({
       setError(getApiErrorMessage(caught));
     }
   }
+
+  useEffect(() => {
+    if (generateRequestId < 1) return;
+    void loadDirections();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
+  }, [generateRequestId]);
 
   const saveBodies = useMemo(() => {
     if (!selected) return [];

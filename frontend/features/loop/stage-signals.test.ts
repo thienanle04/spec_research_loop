@@ -19,6 +19,7 @@ function heads(
     node,
     status: overrides[node] ?? NodeHeadStatus.empty,
     stage_revision_id: null,
+    generated_since_prepare: false,
     head_revision: null,
   }));
 }

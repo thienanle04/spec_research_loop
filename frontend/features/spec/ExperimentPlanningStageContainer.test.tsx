@@ -29,7 +29,7 @@ vi.mock("@/lib/api/generated/endpoints", () => ({
 }));
 
 function experimentSession(
-  node: WorkflowNode.experiment_plan | WorkflowNode.feasibility,
+  node: "experiment_plan" | "feasibility",
 ): LoopSessionResponse {
   return {
     id: "session-1",

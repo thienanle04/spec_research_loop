@@ -12,5 +12,6 @@ export interface NodeHeadResponse {
   node: WorkflowNode;
   status: NodeHeadStatus;
   stage_revision_id: string | null;
+  generated_since_prepare?: boolean;
   head_revision: HeadRevisionResponse | null;
 }

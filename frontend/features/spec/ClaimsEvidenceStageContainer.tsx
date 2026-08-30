@@ -24,11 +24,13 @@ export function ClaimsEvidenceStageContainer({
   session,
   onRunningChange,
   onConfirmabilityChange,
+  generateRequestId = 0,
 }: {
   sessionId: string;
   session: LoopSessionResponse;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  generateRequestId?: number;
 }) {
   const queryClient = useQueryClient();
   const generateClaims = useGenerateClaimsApiSpecSessionsSessionIdClaimsGeneratePost();
@@ -93,6 +95,12 @@ export function ClaimsEvidenceStageContainer({
       setError(getApiErrorMessage(caught));
     }
   }
+
+  useEffect(() => {
+    if (generateRequestId < 1) return;
+    void loadClaims();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
+  }, [generateRequestId]);
 
   async function saveSelection() {
     setError(null);

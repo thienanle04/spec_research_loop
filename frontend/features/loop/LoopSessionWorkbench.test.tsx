@@ -138,6 +138,7 @@ function heads(
     node,
     status: overrides[node] ?? NodeHeadStatus.empty,
     stage_revision_id: null,
+    generated_since_prepare: false,
     head_revision: null,
   }));
 }
@@ -1303,7 +1304,7 @@ describe("LoopSessionWorkbench", () => {
     );
   });
 
-  it("lists Workflow Nodes for the selected Loop Stage without Node Head states", () => {
+  it("lists Workflow Nodes for the selected Loop Stage and marks Stale tabs", () => {
     search = new URLSearchParams(`stage=${LoopStage.grilling}`);
     getHook.mockReturnValue({
       data: {
@@ -1311,7 +1312,7 @@ describe("LoopSessionWorkbench", () => {
         data: session({
           node_heads: heads({
             [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
-            [WorkflowNode.idea_decomposition]: NodeHeadStatus.empty,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
           }),
         }),
       },
@@ -1322,11 +1323,10 @@ describe("LoopSessionWorkbench", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const tabs = screen.getByRole("tablist", { name: "Workflow Nodes" });
 
-    expect(within(tabs).getByRole("tab", { name: "Idea interpretation" })).toBeInTheDocument();
-    expect(within(tabs).getByRole("tab", { name: "Idea decomposition" })).toBeInTheDocument();
+    expect(within(tabs).getByRole("tab", { name: /Idea interpretation/ })).toBeInTheDocument();
+    expect(within(tabs).getByRole("tab", { name: /Idea decomposition/ })).toHaveTextContent("Stale");
     expect(tabs).not.toHaveTextContent("Current");
     expect(tabs).not.toHaveTextContent("Empty");
-    expect(tabs).not.toHaveTextContent("Stale");
     expect(tabs).not.toHaveTextContent("Working Draft");
     expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
@@ -1682,6 +1682,60 @@ describe("LoopSessionWorkbench", () => {
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
     expect(screen.queryByText("may become Stale")).not.toBeInTheDocument();
+  });
+
+  it("opens Stale re-accept dialog when Confirming a Stale Working Draft without generate", async () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
+    );
+    const mutateAsync = vi.fn();
+    confirmHook.mockReturnValue({ mutateAsync, error: null });
+    const nodeHeads = heads({
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+    }).map((head) =>
+      head.node === WorkflowNode.idea_decomposition
+        ? { ...head, generated_since_prepare: false }
+        : head,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.idea_decomposition,
+          working_draft_narrative: { text: "restored cards" },
+          cards: [
+            {
+              id: "card-1",
+              kind: CardKind.problem,
+              body: { text: "accuracy" },
+              created_at: "2026-08-15T10:00:00Z",
+              updated_at: "2026-08-15T10:00:00Z",
+            },
+          ],
+          node_heads: nodeHeads,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Idea decomposition is Stale");
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(mutateAsync).not.toHaveBeenCalled();
+    const dialog = screen.getByRole("dialog", { name: "Stale Workflow Node" });
+    expect(dialog).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm anyway" }));
+    expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          node: WorkflowNode.idea_decomposition,
+          stale_reaccept: true,
+        }),
+      }),
+    );
   });
 
   it("prepares the rest of the Loop Stage after Confirm when the next Workflow Node is empty", async () => {

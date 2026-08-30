@@ -88,11 +88,13 @@ export function ExperimentPlanningStageContainer({
   session,
   onRunningChange,
   onConfirmabilityChange,
+  generateRequestId = 0,
 }: {
   sessionId: string;
   session: LoopSessionResponse;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  generateRequestId?: number;
 }) {
   const queryClient = useQueryClient();
   const generateExperiment = useGenerateExperimentApiSpecSessionsSessionIdExperimentPlanGeneratePost();
@@ -164,6 +166,16 @@ export function ExperimentPlanningStageContainer({
       setError(getApiErrorMessage(caught));
     }
   }
+
+  useEffect(() => {
+    if (generateRequestId < 1) return;
+    if (isFeasibilityNode) {
+      void runFeasibilityCheck();
+    } else {
+      void loadExperimentPlan();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
+  }, [generateRequestId]);
 
   async function runFeasibilityCheck() {
     setError(null);

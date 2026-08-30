@@ -173,6 +173,15 @@ class SpecService:
                 detail="Loop Session was changed by another request",
                 current_version=session.version,
             )
+        await self._db.execute(
+            update(NodeHead)
+            .where(
+                NodeHead.session_id == session_id,
+                NodeHead.node == session.working_draft_node,
+            )
+            .values(generated_since_prepare=True)
+            .execution_options(synchronize_session=False)
+        )
         await self._db.commit()
         return row.version
 

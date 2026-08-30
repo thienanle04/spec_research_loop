@@ -394,6 +394,7 @@ class LoopService:
         account_id: UUID,
         node: WorkflowNode,
         expected_version: int,
+        stale_reaccept: bool = False,
     ) -> LoopSessionResponse:
         session = await self._load_session(session_id, account_id)
         if session.working_draft_node != node.value:
@@ -417,6 +418,20 @@ class LoopService:
                 code="version_conflict",
                 detail="Loop Session was changed by another request",
                 current_version=session.version,
+            )
+        head = heads[node]
+        if (
+            head.status_enum() is NodeHeadStatus.STALE
+            and not head.generated_since_prepare
+            and not stale_reaccept
+        ):
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="stale_reaccept_required",
+                detail=(
+                    "Confirming a Stale Workflow Node without a post-prepare "
+                    "generate requires stale_reaccept"
+                ),
             )
         if node is WorkflowNode.IDEA_INTERPRETATION and not interpretation_confirmable(
             dict(session.working_draft_narrative)
@@ -442,7 +457,6 @@ class LoopService:
         typed_data = await port.fingerprint(session_id=session.id, node=node.value)
         digest = _freeze_hash(narrative, snapshot, typed_data)
 
-        head = heads[node]
         if head.stage_revision_id is not None:
             current_rev = next(
                 (
@@ -455,6 +469,7 @@ class LoopService:
             if current_rev is not None and current_rev.freeze_hash == digest:
                 if head.status_enum() is NodeHeadStatus.STALE:
                     head.status = NodeHeadStatus.CURRENT.value
+                head.generated_since_prepare = False
                 await self._db.commit()
                 return await self.get_session(
                     session_id=session_id, account_id=account_id
@@ -482,12 +497,14 @@ class LoopService:
 
         head.status = NodeHeadStatus.CURRENT.value
         head.stage_revision_id = revision.id
+        head.generated_since_prepare = False
 
         if next_n > 1:
             for child in descendants(node):
                 child_head = heads[child]
                 if child_head.stage_revision_id is not None:
                     child_head.status = NodeHeadStatus.STALE.value
+                    child_head.generated_since_prepare = False
             session.valid_spec_version_id = None
 
         self._db.add(
@@ -573,6 +590,7 @@ class LoopService:
             head = heads[node]
             if head.status_enum() not in (NodeHeadStatus.STALE, NodeHeadStatus.EMPTY):
                 continue
+            head.generated_since_prepare = False
             from_revision_id = head.stage_revision_id
             if (
                 from_revision_id is not None
@@ -638,8 +656,20 @@ class LoopService:
             and session.working_draft_node == WorkflowNode.IDEA_DECOMPOSITION.value
         ):
             self._upsert_decomposition_cards(session, card_texts)
+        self.mark_generated_since_prepare(
+            session, WorkflowNode(session.working_draft_node)
+        )
         await self._db.commit()
         return await self.get_session(session_id=session_id, account_id=account_id)
+
+    @staticmethod
+    def mark_generated_since_prepare(
+        session: LoopSession, node: WorkflowNode
+    ) -> None:
+        for head in session.node_heads:
+            if head.node_enum() is node:
+                head.generated_since_prepare = True
+                return
 
     def _upsert_decomposition_cards(
         self,
@@ -822,6 +852,7 @@ class LoopService:
                     node=head.node_enum(),
                     status=head.status_enum(),
                     stage_revision_id=head.stage_revision_id,
+                    generated_since_prepare=head.generated_since_prepare,
                     head_revision=_head_revision(head, revisions),
                 )
                 for head in heads

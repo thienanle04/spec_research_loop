@@ -26,6 +26,7 @@ class WorkingDraftPatchRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     node: WorkflowNode
     expected_version: int = Field(ge=1)
+    stale_reaccept: bool = False
 
 
 class PrepareRequest(BaseModel):
@@ -59,6 +60,7 @@ class NodeHeadResponse(BaseModel):
     node: WorkflowNode
     status: NodeHeadStatus
     stage_revision_id: UUID | None
+    generated_since_prepare: bool = False
     head_revision: HeadRevisionResponse | None = None
 
     model_config = {"from_attributes": True}

@@ -100,6 +100,10 @@ _Avoid_: review, score, feedback (when you mean this stored run)
 A Stage Revision or Spec Version whose upstream inputs have changed via a confirm with different content. It remains for history and diff; it is not used as input. Opening a Working Draft is not a change.
 _Avoid_: deleted, invalid, outdated (when you mean this state)
 
+**Stale re-accept**:
+A Confirm on a Stale Workflow Node after the Account explicitly accepts proceeding without a successful generate or Judge Run since that node’s Working Draft was prepared from Stale. The acknowledgement is not a separate Decision.
+_Avoid_: force confirm, skip regenerate, override stale, Confirm anyway (UI copy only)
+
 **Context Projection**:
 The payload assembled for a generate or Judge run from valid upstream Stage Revisions plus the Working Draft of the node being run.
 _Avoid_: context (alone), prompt, Prompt View (when you mean the full assembly), RAG dump

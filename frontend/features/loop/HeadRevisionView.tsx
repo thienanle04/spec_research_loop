@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { NodeHeadStatus, WorkflowNode, type HeadRevisionResponse } from "@/lib/api/generated/model";
+import { cn } from "@/lib/utils";
 
 import { WORKFLOW_NODE_LABELS } from "./catalog";
 import { StageRevisionBody } from "./StageRevisionBody";
@@ -11,6 +12,7 @@ export function HeadRevisionView({
   revision,
   available,
   upstreamNames,
+  dimmed = false,
   onEdit,
 }: {
   node: WorkflowNode;
@@ -18,6 +20,7 @@ export function HeadRevisionView({
   revision: HeadRevisionResponse | null;
   available: boolean;
   upstreamNames: string[];
+  dimmed?: boolean;
   onEdit?: () => void;
 }) {
   const title = WORKFLOW_NODE_LABELS[node];
@@ -41,7 +44,7 @@ export function HeadRevisionView({
           ) : status === NodeHeadStatus.empty || revision == null ? (
             <p className="text-sm text-muted-foreground">No Stage Revision yet.</p>
           ) : (
-            <div className="grid gap-3">
+            <div className={cn("grid gap-3", dimmed && "opacity-50")}>
               {status === NodeHeadStatus.stale ? (
                 <p className="text-sm font-medium text-pending">Stale</p>
               ) : null}

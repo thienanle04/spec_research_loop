@@ -394,6 +394,7 @@ class ResearchService:
                 await self._set_narrative(run.session_id, run.node.value, narrative)
                 yield self._event(DraftPatchEvent(node=run.node, narrative=narrative))
 
+            await self._mark_generated_since_prepare(run.session_id, run.node.value)
             await self._db.commit()
             yield self._event(
                 ProgressEvent(
@@ -3020,6 +3021,16 @@ class ResearchService:
                 code="upstream_not_current",
                 detail="Upstream Node Heads must be current",
             )
+
+    async def _mark_generated_since_prepare(
+        self, session_id: UUID, node: str
+    ) -> None:
+        await self._db.execute(
+            update(NodeHead)
+            .where(NodeHead.session_id == session_id, NodeHead.node == node)
+            .values(generated_since_prepare=True)
+            .execution_options(synchronize_session=False)
+        )
 
     async def _claim_version(
         self,

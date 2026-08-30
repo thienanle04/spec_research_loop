@@ -43,11 +43,13 @@ export function ResearchStageContainer({
   session,
   onRunningChange,
   onConfirmabilityChange,
+  generateRequestId = 0,
 }: {
   sessionId: string;
   session: LoopSessionResponse;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  generateRequestId?: number;
 }) {
   const queryClient = useQueryClient();
   const { queue, status } = useLoopSessionSave();
@@ -213,6 +215,12 @@ export function ResearchStageContainer({
       setSaveError(getApiErrorMessage(error));
     }
   }
+
+  useEffect(() => {
+    if (generateRequestId < 1) return;
+    void generate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
+  }, [generateRequestId]);
 
   async function selectGap(candidate: GapCandidate) {
     setSaveError(null);

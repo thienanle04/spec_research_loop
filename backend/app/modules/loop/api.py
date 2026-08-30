@@ -201,6 +201,7 @@ async def confirm(
         account_id=account.id,
         node=body.node,
         expected_version=body.expected_version,
+        stale_reaccept=body.stale_reaccept,
     )
 
 

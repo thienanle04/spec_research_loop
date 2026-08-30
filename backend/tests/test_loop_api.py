@@ -87,11 +87,19 @@ def _interpretation_done() -> str:
 
 
 async def _confirm(
-    client: AsyncClient, session_id: str, node: str, expected_version: int
+    client: AsyncClient,
+    session_id: str,
+    node: str,
+    expected_version: int,
+    *,
+    stale_reaccept: bool = False,
 ) -> dict:
+    body: dict = {"node": node, "expected_version": expected_version}
+    if stale_reaccept:
+        body["stale_reaccept"] = True
     response = await client.post(
         f"/api/loop/sessions/{session_id}/confirm",
-        json={"node": node, "expected_version": expected_version},
+        json=body,
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -696,6 +704,7 @@ async def test_stale_confirm_creates_no_revision_decision_or_handoff(client: Asy
         "node": "idea_interpretation",
         "status": "empty",
         "stage_revision_id": None,
+        "generated_since_prepare": False,
         "head_revision": None,
     }
     decisions = await client.get(f"/api/loop/sessions/{created['id']}/decisions")
@@ -1254,3 +1263,100 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
             "body": candidate,
         }
     ]
+
+
+async def _stale_decomposition_prepared(client: AsyncClient) -> dict:
+    created = await _create_session(client)
+    session_id = created["id"]
+    interpreted = await _interpret(client, session_id, created["version"])
+    card = await _create_card(
+        client,
+        session_id,
+        kind="problem",
+        body={"text": "accuracy"},
+        expected_version=interpreted["version"],
+    )
+    assert card.status_code == 201
+    decomposed = await _confirm(
+        client, session_id, "idea_decomposition", card.json()["version"]
+    )
+    reopened = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=decomposed["version"],
+        node="idea_interpretation",
+        narrative=_changed_interpretation_narrative(),
+    )
+    assert reopened.status_code == 200
+    changed = await _confirm(
+        client, session_id, "idea_interpretation", reopened.json()["version"]
+    )
+    assert _head(changed, "idea_decomposition")["status"] == "stale"
+    assert _head(changed, "idea_decomposition")["generated_since_prepare"] is False
+    return await _prepare(client, session_id, "grilling", changed["version"])
+
+
+@pytest.mark.asyncio
+async def test_stale_confirm_without_generate_requires_reaccept(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    prepared = await _stale_decomposition_prepared(client)
+    session_id = prepared["id"]
+    assert _head(prepared, "idea_decomposition")["status"] == "stale"
+    assert _head(prepared, "idea_decomposition")["generated_since_prepare"] is False
+
+    denied = await client.post(
+        f"/api/loop/sessions/{session_id}/confirm",
+        json={
+            "node": "idea_decomposition",
+            "expected_version": prepared["version"],
+        },
+    )
+    assert denied.status_code == 409
+    assert denied.json()["code"] == "stale_reaccept_required"
+
+    accepted = await _confirm(
+        client,
+        session_id,
+        "idea_decomposition",
+        prepared["version"],
+        stale_reaccept=True,
+    )
+    assert _head(accepted, "idea_decomposition")["status"] == "current"
+    assert _head(accepted, "idea_decomposition")["generated_since_prepare"] is False
+
+
+@pytest.mark.asyncio
+async def test_stale_confirm_after_generate_skips_reaccept(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    prepared = await _stale_decomposition_prepared(client)
+    session_id = prepared["id"]
+    version = await _generate_idea(
+        client,
+        session_id,
+        prepared["version"],
+        idea="accuracy",
+        response_text=(
+            "Cards ready.\n---json---\n"
+            + json.dumps(
+                {
+                    "exhausted": True,
+                    "cards": [
+                        {"kind": "problem", "text": "accuracy"},
+                        {
+                            "kind": "research_question",
+                            "text": IDEA_FRAME["research_question"],
+                        },
+                    ],
+                }
+            )
+        ),
+    )
+    fetched = await client.get(f"/api/loop/sessions/{session_id}")
+    assert _head(fetched.json(), "idea_decomposition")["generated_since_prepare"] is True
+    confirmed = await _confirm(client, session_id, "idea_decomposition", version)
+    assert _head(confirmed, "idea_decomposition")["status"] == "current"
+    assert _head(confirmed, "idea_decomposition")["generated_since_prepare"] is False

@@ -10,4 +10,5 @@ export interface ConfirmRequest {
   node: WorkflowNode;
   /** @minimum 1 */
   expected_version: number;
+  stale_reaccept?: boolean;
 }
