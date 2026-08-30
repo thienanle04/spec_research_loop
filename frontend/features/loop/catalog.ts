@@ -120,6 +120,15 @@ const INVALIDATION_CHILDREN: Record<WorkflowNode, readonly WorkflowNode[]> = {
   [WorkflowNode.aggregator]: [],
 };
 
+export const HANDLING_OPTION_TARGETS = [
+  WorkflowNode.gap,
+  WorkflowNode.contribution,
+  WorkflowNode.claims,
+  WorkflowNode.evidence,
+  WorkflowNode.experiment_plan,
+  WorkflowNode.idea_decomposition,
+] as const;
+
 export const WORKFLOW_NODE_LABELS: Record<WorkflowNode, string> = {
   [WorkflowNode.idea_interpretation]: "Idea interpretation",
   [WorkflowNode.idea_decomposition]: "Idea decomposition",

@@ -34,6 +34,7 @@ type Props = {
   generateRequestId?: number;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  onPicked?: (next: LoopSessionResponse) => void;
 };
 
 function judgeRunQueryKey(sessionId: string, node: string, revisionId?: string | null) {
@@ -46,6 +47,7 @@ export function JudgementStageContainer({
   generateRequestId = 0,
   onRunningChange,
   onConfirmabilityChange,
+  onPicked,
 }: Props) {
   const queryClient = useQueryClient();
   const { queue } = useLoopSessionSave();
@@ -55,6 +57,7 @@ export function JudgementStageContainer({
   const [scores, setScores] = useState<ConferenceScores | null>(null);
   const [handlingOptions, setHandlingOptions] = useState<HandlingOption[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
   const node = session.working_draft_node as JudgeNode;
   const isConference = node === WorkflowNode.conference_judge;
   const isAggregator = node === WorkflowNode.aggregator;
@@ -110,6 +113,34 @@ export function JudgementStageContainer({
 
   function updateSession(next: LoopSessionResponse) {
     queryClient.setQueryData(sessionKey, { status: 200, data: next });
+  }
+
+  async function pick(body: {
+    handling_option_id?: string;
+    prose?: string;
+    target_node?: WorkflowNode;
+  }) {
+    setSaveError(null);
+    setPicking(true);
+    try {
+      await queue.flush();
+      const response = await customFetch<{ data: LoopSessionResponse; status: number }>(
+        `/api/loop/sessions/${sessionId}/pick`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            expected_version: expectedVersion(),
+            ...body,
+          }),
+        },
+      );
+      updateSession(response.data);
+      onPicked?.(response.data);
+    } catch (error) {
+      setSaveError(getApiErrorMessage(error));
+    } finally {
+      setPicking(false);
+    }
   }
 
   async function generate(options?: { staleReaccept?: boolean }) {
@@ -168,7 +199,17 @@ export function JudgementStageContainer({
       </CardHeader>
       <CardContent className="grid gap-4">
         {isAggregator ? (
-          <AggregatorReportView issues={issues} scores={scores} handlingOptions={handlingOptions} />
+          <AggregatorReportView
+            issues={issues}
+            scores={scores}
+            handlingOptions={handlingOptions}
+            canPick
+            picking={picking}
+            onPick={(option) => void pick({ handling_option_id: option.id })}
+            onPickOther={(prose, targetNode) =>
+              void pick({ prose, target_node: targetNode })
+            }
+          />
         ) : isConference ? (
           <ConferenceScoreList scores={scores} />
         ) : (

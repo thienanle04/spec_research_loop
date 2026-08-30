@@ -29,6 +29,13 @@ class ConfirmRequest(BaseModel):
     stale_reaccept: bool = False
 
 
+class HandlingOptionPickRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    handling_option_id: UUID | None = None
+    prose: str | None = None
+    target_node: WorkflowNode | None = None
+
+
 class PrepareRequest(BaseModel):
     stage: LoopStage
     expected_version: int = Field(ge=1)

@@ -54,6 +54,7 @@ import {
 import { HeadRevisionView } from "./HeadRevisionView";
 import { LoopSessionTitleEditor } from "./LoopSessionTitleEditor";
 import { ProducedSpecVersionView } from "./ProducedSpecVersionView";
+import { SuggestedPatchNotice } from "./SuggestedPatchNotice";
 import { WorkingDraftCardCanvas } from "./WorkingDraftCardCanvas";
 import { WorkingDraftNarrativeEditor } from "./WorkingDraftNarrativeEditor";
 import { LoopSessionSaveProvider, useLoopSessionSave } from "./loop-session-save";
@@ -740,6 +741,9 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
         ) : null}
         {viewingWorkingDraft ? (
           <div className={cn(dimStaleContent && "opacity-50")}>
+            <SuggestedPatchNotice
+              narrative={session.working_draft_narrative as Record<string, unknown>}
+            />
             {isGrillingNode(workingDraftNode) ? (
               <GrillingWorkspace
                 error={generateError}
@@ -801,6 +805,14 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 generateRequestId={stagedGenerateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
+                onPicked={(next) => {
+                  queryClient.setQueryData(sessionKey, { status: 200, data: next });
+                  setAppliedSession(next);
+                  void queryClient.invalidateQueries({
+                    queryKey: getListDecisionsApiLoopSessionsSessionIdDecisionsGetQueryKey(sessionId),
+                  });
+                  router.replace(hrefForSession(next), { scroll: false });
+                }}
               />
             ) : (
               <>

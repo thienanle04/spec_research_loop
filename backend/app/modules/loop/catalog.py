@@ -166,6 +166,18 @@ def owned_kinds(node: WorkflowNode) -> tuple[CardKind, ...]:
     return _OWNER_KINDS.get(node, ())
 
 
+HANDLING_OPTION_TARGETS: frozenset[str] = frozenset(
+    {
+        WorkflowNode.GAP.value,
+        WorkflowNode.CONTRIBUTION.value,
+        WorkflowNode.CLAIMS.value,
+        WorkflowNode.EVIDENCE.value,
+        WorkflowNode.EXPERIMENT_PLAN.value,
+        WorkflowNode.IDEA_DECOMPOSITION.value,
+    }
+)
+
+
 def descendants(node: WorkflowNode) -> frozenset[WorkflowNode]:
     found: set[WorkflowNode] = set()
     stack = list(_EDGES[node])

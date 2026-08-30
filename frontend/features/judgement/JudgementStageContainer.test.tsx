@@ -341,42 +341,47 @@ describe("JudgementStageContainer", () => {
     );
   });
 
-  it("shows Aggregator Report issues, disagreement, scores, and Handling Options without PICK", async () => {
-    mocks.customFetch.mockResolvedValue({
-      status: 200,
-      data: {
-        node: "aggregator",
-        issues: [
-          {
-            id: "issue-5",
-            finding_kind: "unsupported_citation",
-            severity: "CRITICAL",
-            reason: "The cited passage does not entail the claim.",
-            suggestion: "Cite a passage that entails the claim.",
-            target_card_id: null,
-            source_node: "evidence_judge",
-            cluster: "disagreement",
+  it("shows Aggregator Report issues, disagreement, scores, and pickable Handling Options", async () => {
+    mocks.customFetch.mockImplementation(async (path: unknown) => {
+      if (typeof path === "string" && path.endsWith("/pick")) {
+        return { status: 200, data: session(WorkflowNode.claims) };
+      }
+      return {
+        status: 200,
+        data: {
+          node: "aggregator",
+          issues: [
+            {
+              id: "issue-5",
+              finding_kind: "unsupported_citation",
+              severity: "CRITICAL",
+              reason: "The cited passage does not entail the claim.",
+              suggestion: "Cite a passage that entails the claim.",
+              target_card_id: null,
+              source_node: "evidence_judge",
+              cluster: "disagreement",
+            },
+          ],
+          scores: {
+            originality: 7,
+            significance: 8,
+            soundness: 6,
+            clarity: 7,
+            reproducibility: 5,
           },
-        ],
-        scores: {
-          originality: 7,
-          significance: 8,
-          soundness: 6,
-          clarity: 7,
-          reproducibility: 5,
+          handling_options: [
+            {
+              id: "opt-1",
+              finding_kind: "unsupported_citation",
+              source_node: "evidence_judge",
+              label: "Revise the claim",
+              target_node: "claims",
+              prose: "Cite a passage that entails the claim.",
+            },
+          ],
+          readiness: "blocked",
         },
-        handling_options: [
-          {
-            id: "opt-1",
-            finding_kind: "unsupported_citation",
-            source_node: "evidence_judge",
-            label: "Revise the claim",
-            target_node: "claims",
-            prose: "Cite a passage that entails the claim.",
-          },
-        ],
-        readiness: "blocked",
-      },
+      };
     });
     const user = userEvent.setup();
     const queryClient = new QueryClient({
@@ -393,7 +398,8 @@ describe("JudgementStageContainer", () => {
     expect(await screen.findByText("Unsupported citation")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Disagreement" })).toBeInTheDocument();
     expect(screen.getByText("Revise the claim")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /pick/i })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Pick Revise the claim" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Other prose")).toBeInTheDocument();
     expect(screen.getAllByText("7/10").length).toBeGreaterThanOrEqual(1);
     await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
     expect(mocks.streamStart).toHaveBeenCalledWith(
@@ -404,5 +410,18 @@ describe("JudgementStageContainer", () => {
         staleReaccept: false,
       }),
     );
+    mocks.streamStart.mockClear();
+    await user.click(screen.getByRole("button", { name: "Pick Revise the claim" }));
+    expect(mocks.customFetch).toHaveBeenCalledWith(
+      "/api/loop/sessions/session-1/pick",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          expected_version: 4,
+          handling_option_id: "opt-1",
+        }),
+      }),
+    );
+    expect(mocks.streamStart).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,7 @@ from sqlalchemy.orm import attributes, selectinload
 from app.core.errors import OperationalErrorException
 from app.modules.loop.catalog import (
     CARD_KIND_OWNER,
+    HANDLING_OPTION_TARGETS,
     LOOP_STAGE_NODES,
     WORKFLOW_NODES,
     CardKind,
@@ -89,6 +90,27 @@ def _head_revision(
         narrative=dict(revision.narrative),
         card_snapshot=list(revision.card_snapshot),
     )
+
+
+def _card_ids_for_option(
+    issues: list[dict[str, Any]], option: dict[str, Any]
+) -> list[str]:
+    finding_kind = option.get("finding_kind")
+    source_node = option.get("source_node")
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in issues:
+        if not isinstance(item, dict):
+            continue
+        if item.get("finding_kind") != finding_kind:
+            continue
+        if item.get("source_node") != source_node:
+            continue
+        card_id = item.get("target_card_id")
+        if isinstance(card_id, str) and card_id and card_id not in seen:
+            seen.add(card_id)
+            ids.append(card_id)
+    return ids
 
 
 class LoopService:
@@ -394,6 +416,202 @@ class LoopService:
         session = await self._load_session(session_id, account_id)
         ordered = sorted(session.decisions, key=lambda row: row.created_at)
         return [DecisionResponse.model_validate(row) for row in ordered]
+
+    async def pick_handling_option(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+        handling_option_id: UUID | None,
+        prose: str | None,
+        target_node: WorkflowNode | None,
+    ) -> LoopSessionResponse:
+        session = await self._load_session(session_id, account_id)
+        if session.working_draft_node != WorkflowNode.AGGREGATOR.value:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="invalid_working_draft_target",
+                detail="PICK requires the Working Draft Aggregator",
+            )
+        if session.version != expected_version:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="version_conflict",
+                detail="Loop Session was changed by another request",
+                current_version=session.version,
+            )
+        heads = {head.node_enum(): head for head in session.node_heads}
+        report = await self._current_aggregator_report(session)
+        if handling_option_id is not None:
+            option = next(
+                (
+                    item
+                    for item in report["options"]
+                    if item.get("id") == str(handling_option_id)
+                ),
+                None,
+            )
+            if option is None:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="handling_option_not_found",
+                    detail="Handling Option is not on the current Aggregator Report",
+                )
+            target = WorkflowNode(str(option["target_node"]))
+            patch_prose = str(option.get("prose") or "")
+            card_ids = _card_ids_for_option(report["issues"], option)
+        else:
+            other_prose = (prose or "").strip()
+            if not other_prose or target_node is None:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="handling_option_not_found",
+                    detail="Other requires Account prose and a target Workflow Node",
+                )
+            if target_node.value not in HANDLING_OPTION_TARGETS:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="invalid_working_draft_target",
+                    detail="Other target must be a Handling Option Workflow Node",
+                )
+            if not report["issues"] and not report["options"]:
+                aggregator = heads.get(WorkflowNode.AGGREGATOR)
+                if (
+                    aggregator is None
+                    or aggregator.status_enum() is not NodeHeadStatus.CURRENT
+                ):
+                    raise OperationalErrorException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        code="handling_option_not_found",
+                        detail="PICK requires a current Aggregator Report",
+                    )
+            target = target_node
+            patch_prose = other_prose
+            card_ids = []
+
+        for ancestor in ancestors(target):
+            if heads[ancestor].status_enum() != NodeHeadStatus.CURRENT:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="upstream_not_current",
+                    detail="Upstream Node Heads must be current",
+                )
+        if heads[target].status_enum() != NodeHeadStatus.CURRENT:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="invalid_working_draft_target",
+                detail="PICK can only reopen a current Workflow Node",
+            )
+
+        next_narrative = self._narrative_for_current_node(session, heads, target)
+        next_narrative["suggested_patch"] = patch_prose
+        next_narrative["target_card_ids"] = card_ids
+        saved_narratives = dict(session.working_draft_narratives)
+        saved_narratives[session.working_draft_node] = dict(
+            session.working_draft_narrative
+        )
+        saved_narratives[target.value] = next_narrative
+        updated = await self._db.execute(
+            update(LoopSession)
+            .where(
+                LoopSession.id == session_id,
+                LoopSession.account_id == account_id,
+                LoopSession.version == expected_version,
+            )
+            .values(
+                working_draft_node=target.value,
+                working_draft_narrative=next_narrative,
+                working_draft_narratives=saved_narratives,
+                version=LoopSession.version + 1,
+                updated_at=func.now(),
+            )
+            .returning(LoopSession.version, LoopSession.updated_at)
+            .execution_options(synchronize_session=False)
+        )
+        updated_row = updated.one_or_none()
+        if updated_row is None:
+            await self._db.refresh(session, attribute_names=["version"])
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="version_conflict",
+                detail="Loop Session was changed by another request",
+                current_version=session.version,
+            )
+        attributes.set_committed_value(session, "working_draft_node", target.value)
+        attributes.set_committed_value(
+            session, "working_draft_narrative", next_narrative
+        )
+        attributes.set_committed_value(
+            session, "working_draft_narratives", saved_narratives
+        )
+        attributes.set_committed_value(session, "version", updated_row.version)
+        attributes.set_committed_value(session, "updated_at", updated_row.updated_at)
+        self._db.add(
+            Decision(
+                session_id=session.id,
+                kind=DecisionKind.PICK.value,
+                node=target.value,
+                stage_revision_id=heads[target].stage_revision_id,
+            )
+        )
+        response = await self._to_response(session)
+        await self._db.commit()
+        return response
+
+    async def _current_aggregator_report(
+        self, session: LoopSession
+    ) -> dict[str, list[dict[str, Any]]]:
+        port = self._ports[WorkflowNode.AGGREGATOR.value]
+        projected = await port.project(
+            session_id=session.id,
+            node=WorkflowNode.AGGREGATOR.value,
+            revision_id=None,
+        )
+        options = projected.get("handling_options")
+        issues = projected.get("issues")
+        if not isinstance(options, list):
+            options = []
+        if not isinstance(issues, list):
+            issues = []
+        if options or issues:
+            return {"options": options, "issues": issues}
+        heads = {head.node_enum(): head for head in session.node_heads}
+        aggregator = heads.get(WorkflowNode.AGGREGATOR)
+        if aggregator is None or aggregator.stage_revision_id is None:
+            return {"options": [], "issues": []}
+        frozen = await port.project(
+            session_id=session.id,
+            node=WorkflowNode.AGGREGATOR.value,
+            revision_id=aggregator.stage_revision_id,
+        )
+        frozen_options = frozen.get("handling_options")
+        frozen_issues = frozen.get("issues")
+        return {
+            "options": frozen_options if isinstance(frozen_options, list) else [],
+            "issues": frozen_issues if isinstance(frozen_issues, list) else [],
+        }
+
+    def _narrative_for_current_node(
+        self,
+        session: LoopSession,
+        heads: dict[WorkflowNode, NodeHead],
+        node: WorkflowNode,
+    ) -> dict[str, Any]:
+        saved_narratives = dict(session.working_draft_narratives)
+        saved_narrative = saved_narratives.get(node.value)
+        if isinstance(saved_narrative, dict):
+            return dict(saved_narrative)
+        revision_id = heads[node].stage_revision_id
+        if revision_id is None:
+            return {}
+        revision = next(
+            (item for item in session.stage_revisions if item.id == revision_id),
+            None,
+        )
+        if revision is None:
+            return {}
+        return dict(revision.narrative)
 
     async def confirm(
         self,

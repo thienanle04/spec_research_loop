@@ -8,21 +8,14 @@ from typing import Any
 from uuid import UUID
 
 from app.modules.judgement.catalog import Severity
-from app.modules.loop.catalog import FIVE_JUDGE_NODES, WorkflowNode
+from app.modules.loop.catalog import (
+    FIVE_JUDGE_NODES,
+    HANDLING_OPTION_TARGETS,
+    WorkflowNode,
+)
 
 CLUSTER_CONSENSUS = "consensus"
 CLUSTER_DISAGREEMENT = "disagreement"
-
-HANDLING_OPTION_TARGETS: frozenset[str] = frozenset(
-    {
-        WorkflowNode.GAP.value,
-        WorkflowNode.CONTRIBUTION.value,
-        WorkflowNode.CLAIMS.value,
-        WorkflowNode.EVIDENCE.value,
-        WorkflowNode.EXPERIMENT_PLAN.value,
-        WorkflowNode.IDEA_DECOMPOSITION.value,
-    }
-)
 
 
 @dataclass

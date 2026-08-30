@@ -18,6 +18,7 @@ from app.modules.loop.schemas import (
     CreateCardRequest,
     CreateSessionRequest,
     DecisionResponse,
+    HandlingOptionPickRequest,
     LoopSessionResponse,
     LoopSessionSummary,
     PatchCardRequest,
@@ -183,6 +184,27 @@ async def list_decisions(
 ) -> list[DecisionResponse]:
     return await _service(db).list_decisions(
         session_id=session_id, account_id=account.id
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/pick",
+    response_model=LoopSessionResponse,
+    responses={409: {"model": OperationalError}},
+)
+async def pick_handling_option(
+    session_id: UUID,
+    body: HandlingOptionPickRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> LoopSessionResponse:
+    return await _service(db).pick_handling_option(
+        session_id=session_id,
+        account_id=account.id,
+        expected_version=body.expected_version,
+        handling_option_id=body.handling_option_id,
+        prose=body.prose,
+        target_node=body.target_node,
     )
 
 
