@@ -207,6 +207,53 @@ def test_gap_judge_prompt_view_omits_sibling_judge_working_draft() -> None:
     assert view["working_draft"] == {"narrative": {}, "cards": []}
 
 
+def test_evidence_judge_prompt_view_includes_claim_citation_passage_triples() -> None:
+    projection = _fat_projection()
+    projection["upstream"][WorkflowNode.CLAIMS.value] = {
+        "card_snapshot": [
+            {
+                "id": "claim-1",
+                "kind": "claim",
+                "body": {
+                    "statement": "Brass instruments improve soil nitrogen fixation.",
+                    "supporting_citation_keys": ["large-language-models-as-optimizers-2023"],
+                },
+            }
+        ],
+        "narrative": {},
+        "projected": {},
+    }
+    projection["upstream"][WorkflowNode.RELATED_WORK.value]["projected"]["citations"] = [
+        {
+            "id": "cite-1",
+            "citation_key": "large-language-models-as-optimizers-2023",
+        }
+    ]
+    projection["upstream"][WorkflowNode.RELATED_WORK.value]["projected"]["related_work"] = [
+        {
+            "citation_id": "cite-1",
+            "citation_key": "large-language-models-as-optimizers-2023",
+            "supporting_passage": (
+                "An optimizer model proposes prompts and receives task scores as "
+                "feedback over multiple optimization rounds."
+            ),
+        }
+    ]
+    view = prompt_view(WorkflowNode.EVIDENCE_JUDGE, projection)
+    assert view["node"] == "evidence_judge"
+    assert view["claim_citation_passages"] == [
+        {
+            "claim_id": "claim-1",
+            "claim": "Brass instruments improve soil nitrogen fixation.",
+            "citation_key": "large-language-models-as-optimizers-2023",
+            "passage": (
+                "An optimizer model proposes prompts and receives task scores as "
+                "feedback over multiple optimization rounds."
+            ),
+        }
+    ]
+
+
 def test_prompt_view_rejects_undefined_nodes() -> None:
     with pytest.raises(ValueError, match="not defined"):
         prompt_view(WorkflowNode.GAP, _fat_projection())

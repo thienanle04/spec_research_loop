@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import UUID
 
@@ -71,3 +72,52 @@ def gap_unsupported_by_sources(view: dict[str, Any]) -> list[JudgeIssueDraft]:
             target_card_id=_gap_card_id(card),
         )
     ]
+
+
+def _parse_card_id(raw: Any) -> UUID | None:
+    if isinstance(raw, UUID):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            return UUID(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _passage_entails_claim(claim: str, passage: str) -> bool:
+    if not claim.strip() or not passage.strip():
+        return False
+    tokens = [token for token in re.findall(r"[a-z0-9]+", claim.casefold()) if len(token) > 3]
+    if not tokens:
+        return False
+    haystack = passage.casefold()
+    return all(token in haystack for token in tokens)
+
+
+def unsupported_citation(view: dict[str, Any]) -> list[JudgeIssueDraft]:
+    grouped: dict[UUID | None, list[tuple[str, str]]] = {}
+    for item in view.get("claim_citation_passages") or []:
+        if not isinstance(item, dict):
+            continue
+        claim = item.get("claim")
+        if not isinstance(claim, str) or not claim.strip():
+            continue
+        passage = item.get("passage")
+        passage_text = passage.strip() if isinstance(passage, str) else ""
+        key = _parse_card_id(item.get("claim_id"))
+        grouped.setdefault(key, []).append((claim.strip(), passage_text))
+    issues: list[JudgeIssueDraft] = []
+    for card_id, items in grouped.items():
+        if any(_passage_entails_claim(claim, passage) for claim, passage in items):
+            continue
+        issues.append(
+            JudgeIssueDraft(
+                finding_kind=FindingKind.UNSUPPORTED_CITATION.value,
+                severity=Severity.CRITICAL.value,
+                reason="The cited passage does not entail the claim.",
+                suggestion="Cite a passage that entails the claim or revise the claim.",
+                target_card_id=card_id,
+            )
+        )
+    return issues

@@ -72,6 +72,10 @@ def _judge_prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[s
     plan = _experiment_plan(projection)
     if plan:
         view["experiment_plan"] = plan
+    if node is WorkflowNode.EVIDENCE_JUDGE:
+        view["claim_citation_passages"] = _claim_citation_passages(
+            cards, view["related_work"]
+        )
     return view
 
 
@@ -274,6 +278,61 @@ def _related_work_passages(projection: dict[str, Any]) -> list[dict[str, Any]]:
             slim["citation_key"] = citation_key.strip()
         passages.append(slim)
     return passages
+
+
+def _claim_text(card: dict[str, Any]) -> str:
+    for key in ("statement", "text", "claim"):
+        value = card.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _claim_citation_passages(
+    cards: list[dict[str, Any]], related_work: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    passages_by_key: dict[str, str] = {}
+    for item in related_work:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("citation_key")
+        passage = item.get("supporting_passage")
+        if isinstance(key, str) and key.strip() and isinstance(passage, str) and passage.strip():
+            passages_by_key[key.strip()] = passage.strip()
+    triples: list[dict[str, Any]] = []
+    for card in cards:
+        if not isinstance(card, dict) or card.get("kind") != CardKind.CLAIM.value:
+            continue
+        claim = _claim_text(card)
+        if not claim:
+            continue
+        card_id = card.get("id")
+        keys = card.get("supporting_citation_keys")
+        cited = [
+            key.strip()
+            for key in keys
+            if isinstance(key, str) and key.strip()
+        ] if isinstance(keys, list) else []
+        if not cited:
+            triple: dict[str, Any] = {
+                "claim": claim,
+                "citation_key": "",
+                "passage": "",
+            }
+            if isinstance(card_id, str) and card_id:
+                triple["claim_id"] = card_id
+            triples.append(triple)
+            continue
+        for key in cited:
+            triple = {
+                "claim": claim,
+                "citation_key": key,
+                "passage": passages_by_key.get(key, ""),
+            }
+            if isinstance(card_id, str) and card_id:
+                triple["claim_id"] = card_id
+            triples.append(triple)
+    return triples
 
 
 def _slim_valid_spec_version(raw: Any) -> dict[str, Any] | None:

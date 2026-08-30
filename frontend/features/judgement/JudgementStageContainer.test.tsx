@@ -161,4 +161,47 @@ describe("JudgementStageContainer", () => {
       ),
     );
   });
+
+  it("shows Evidence Judge Issues and starts generate", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "evidence_judge",
+        issues: [
+          {
+            id: "issue-2",
+            finding_kind: "unsupported_citation",
+            severity: "CRITICAL",
+            reason: "The cited passage does not entail the claim.",
+            suggestion: "Cite a passage that entails the claim.",
+            target_card_id: null,
+          },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.evidence_judge)}
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Unsupported citation")).toBeInTheDocument();
+    expect(screen.getByText("CRITICAL")).toBeInTheDocument();
+    expect(screen.getByText("The cited passage does not entail the claim.")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Regenerate Evidence Judge" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        node: "evidence_judge",
+        expectedVersion: 4,
+        staleReaccept: false,
+      }),
+    );
+  });
 });

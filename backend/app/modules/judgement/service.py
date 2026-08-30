@@ -24,6 +24,7 @@ from app.modules.judgement.schemas import (
     DoneEvent,
     DraftPatchEvent,
     ErrorEvent,
+    JudgeIssueDraft,
     JudgeIssueResponse,
     JudgeLlmResponse,
     JudgementGenerateRequest,
@@ -31,7 +32,10 @@ from app.modules.judgement.schemas import (
     JudgeRunResponse,
     ProgressEvent,
 )
-from app.modules.judgement.verifiers import gap_unsupported_by_sources
+from app.modules.judgement.verifiers import (
+    gap_unsupported_by_sources,
+    unsupported_citation,
+)
 from app.modules.loop.catalog import NodeHeadStatus, WorkflowNode, ancestors
 from app.modules.loop.deps import get_stage_ports
 from app.modules.loop.models import LoopSession, NodeHead
@@ -143,22 +147,19 @@ class JudgementService:
 
     async def generate(self, run: GenerationRun) -> AsyncIterator[dict[str, Any]]:
         try:
+            label = _judge_label(run.node)
             yield ProgressEvent(
                 node=JudgementNode(run.node.value),
-                message="Starting Gap Judge",
+                message=f"Starting {label}",
                 pct=0,
             ).model_dump(mode="json")
             parsed = await self._llm.complete_structured(
-                system="judge-gap",
+                system=_judge_system(run.node),
                 prompt=_prompt_payload(run.view),
                 schema=JudgeLlmResponse,
             )
             llm_issues = normalize_llm_issues(parsed.issues)
-            verifier_issues = (
-                gap_unsupported_by_sources(run.view)
-                if run.node is WorkflowNode.GAP_JUDGE
-                else []
-            )
+            verifier_issues = _verifier_issues(run.node, run.view)
             issues = merge_issues(llm_issues, verifier_issues)
             await self._replace_working_issues(
                 session_id=run.session_id, node=run.node, issues=issues
@@ -176,7 +177,7 @@ class JudgementService:
             ).model_dump(mode="json")
             yield ProgressEvent(
                 node=JudgementNode(run.node.value),
-                message="Gap Judge complete",
+                message=f"{label} complete",
                 pct=100,
             ).model_dump(mode="json")
             yield DoneEvent(
@@ -322,3 +323,21 @@ class JudgementService:
 
 def _prompt_payload(view: dict[str, Any]) -> str:
     return json.dumps(view, ensure_ascii=False, sort_keys=True)
+
+
+def _judge_label(node: WorkflowNode) -> str:
+    return node.value.replace("_", " ").title()
+
+
+def _judge_system(node: WorkflowNode) -> str:
+    if node is WorkflowNode.EVIDENCE_JUDGE:
+        return "judge-evidence"
+    return "judge-gap"
+
+
+def _verifier_issues(node: WorkflowNode, view: dict[str, Any]) -> list[JudgeIssueDraft]:
+    if node is WorkflowNode.GAP_JUDGE:
+        return gap_unsupported_by_sources(view)
+    if node is WorkflowNode.EVIDENCE_JUDGE:
+        return unsupported_citation(view)
+    return []

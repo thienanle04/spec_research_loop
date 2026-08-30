@@ -43,7 +43,8 @@ export function JudgementStageContainer({
   const [issues, setIssues] = useState<JudgeIssue[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const node = session.working_draft_node as JudgeNode;
-  const canGenerate = node === WorkflowNode.gap_judge;
+  const canGenerate =
+    node === WorkflowNode.gap_judge || node === WorkflowNode.evidence_judge;
   const workingHead = session.node_heads.find((head) => head.node === session.working_draft_node);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;
@@ -152,7 +153,7 @@ export function JudgementStageContainer({
           </div>
         ) : canGenerate ? (
           <Button type="button" variant="outline" className="justify-self-start" onClick={() => void generate()}>
-            {issues.length > 0 ? "Regenerate Gap Judge" : "Generate Gap Judge"}
+            {issues.length > 0 ? `Regenerate ${title}` : `Generate ${title}`}
           </Button>
         ) : null}
         {error ? (
