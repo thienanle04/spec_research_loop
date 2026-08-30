@@ -15,17 +15,32 @@ from sqlalchemy.orm import attributes
 
 from app.core.errors import OperationalErrorException
 from app.modules.judgement.catalog import (
+    FIVE_JUDGE_NODES,
     GENERATABLE_JUDGE_NODES,
     JUDGE_NODES,
 )
+from app.modules.judgement.composer import (
+    ComposedReport,
+    compose_from_view,
+    filter_handling_options,
+)
 from app.modules.judgement.issues import merge_issues, normalize_llm_issues
-from app.modules.judgement.models import ConferenceScore, JudgeIssue
+from app.modules.judgement.models import (
+    AggregatorIssue,
+    AggregatorScore,
+    ConferenceScore,
+    HandlingOption,
+    JudgeIssue,
+)
 from app.modules.judgement.schemas import (
+    AggregatorLlmResponse,
+    ClusterMap,
     ConferenceLlmResponse,
     ConferenceScores,
     DoneEvent,
     DraftPatchEvent,
     ErrorEvent,
+    HandlingOptionResponse,
     JudgeIssueDraft,
     JudgeIssueResponse,
     JudgeLlmResponse,
@@ -33,6 +48,7 @@ from app.modules.judgement.schemas import (
     JudgementNode,
     JudgeRunResponse,
     ProgressEvent,
+    ReadinessState,
 )
 from app.modules.judgement.verifiers import (
     gap_unsupported_by_sources,
@@ -75,28 +91,44 @@ class JudgementService:
             revision_id=stage_revision_id,
         )
         raw_scores = payload.get("scores")
+        issues = [_issue_response(item) for item in payload.get("issues", [])]
+        clusters = payload.get("clusters")
+        options = payload.get("handling_options")
+        readiness = payload.get("readiness")
         return JudgeRunResponse(
             node=node,
-            issues=[
-                JudgeIssueResponse(
-                    id=UUID(item["id"]),
-                    finding_kind=item["finding_kind"],
-                    severity=item["severity"],
-                    reason=item["reason"],
-                    suggestion=item["suggestion"],
-                    target_card_id=(
-                        UUID(item["target_card_id"])
-                        if item.get("target_card_id")
-                        else None
-                    ),
-                )
-                for item in payload.get("issues", [])
-            ],
+            issues=issues,
             scores=(
                 ConferenceScores.model_validate(raw_scores)
                 if raw_scores is not None
                 else None
             ),
+            clusters=(
+                ClusterMap(
+                    consensus=[_issue_response(item) for item in clusters.get("consensus", [])],
+                    disagreement=[
+                        _issue_response(item) for item in clusters.get("disagreement", [])
+                    ],
+                )
+                if isinstance(clusters, dict)
+                else None
+            ),
+            handling_options=(
+                [
+                    HandlingOptionResponse(
+                        id=UUID(item["id"]),
+                        finding_kind=item["finding_kind"],
+                        source_node=item["source_node"],
+                        label=item["label"],
+                        target_node=item["target_node"],
+                        prose=item["prose"],
+                    )
+                    for item in options
+                ]
+                if isinstance(options, list)
+                else None
+            ),
+            readiness=ReadinessState(readiness) if isinstance(readiness, str) else None,
         )
 
     async def begin_generation(
@@ -131,6 +163,7 @@ class JudgementService:
                     "or run after that Loop Stage is prepared"
                 ),
             )
+        await self._assert_five_judge_heads_current(session_id, workflow_node)
         await self._assert_upstream_current(session_id, workflow_node)
         await self._assert_stale_reaccept(
             session_id, workflow_node, body.stale_reaccept
@@ -161,7 +194,18 @@ class JudgementService:
                 message=f"Starting {label}",
                 pct=0,
             ).model_dump(mode="json")
-            if run.node is WorkflowNode.CONFERENCE_JUDGE:
+            if run.node is WorkflowNode.AGGREGATOR:
+                report = compose_from_view(run.view)
+                parsed = await self._llm.complete_structured(
+                    system="aggregator",
+                    prompt=_prompt_payload(run.view),
+                    schema=AggregatorLlmResponse,
+                )
+                options = filter_handling_options(parsed.options, report.issues)
+                await self._replace_working_aggregator(
+                    session_id=run.session_id, report=report, options=options
+                )
+            elif run.node is WorkflowNode.CONFERENCE_JUDGE:
                 parsed = await self._llm.complete_structured(
                     system=_judge_system(run.node),
                     prompt=_prompt_payload(run.view),
@@ -196,6 +240,9 @@ class JudgementService:
                 node=JudgementNode(run.node.value),
                 issues=stored.issues,
                 scores=stored.scores,
+                clusters=stored.clusters,
+                handling_options=stored.handling_options,
+                readiness=stored.readiness,
             ).model_dump(mode="json")
             yield ProgressEvent(
                 node=JudgementNode(run.node.value),
@@ -266,6 +313,83 @@ class JudgementService:
         )
         await self._db.flush()
 
+    async def _replace_working_aggregator(
+        self,
+        *,
+        session_id: UUID,
+        report: ComposedReport,
+        options: list[dict[str, str]],
+    ) -> None:
+        await self._db.execute(
+            delete(AggregatorIssue).where(
+                AggregatorIssue.session_id == session_id,
+                AggregatorIssue.stage_revision_id.is_(None),
+            )
+        )
+        await self._db.execute(
+            delete(HandlingOption).where(
+                HandlingOption.session_id == session_id,
+                HandlingOption.stage_revision_id.is_(None),
+            )
+        )
+        await self._db.execute(
+            delete(AggregatorScore).where(
+                AggregatorScore.session_id == session_id,
+                AggregatorScore.stage_revision_id.is_(None),
+            )
+        )
+        issue_rows: list[AggregatorIssue] = []
+        for index, item in enumerate(report.issues):
+            issue_rows.append(
+                AggregatorIssue(
+                    session_id=session_id,
+                    source_node=item.source_node,
+                    source_issue_id=item.source_issue_id,
+                    finding_kind=item.finding_kind,
+                    severity=item.severity,
+                    reason=item.reason,
+                    suggestion=item.suggestion,
+                    target_card_id=item.target_card_id,
+                    cluster=item.cluster,
+                    sort_index=index,
+                )
+            )
+        self._db.add_all(issue_rows)
+        await self._db.flush()
+        by_key = {
+            (row.finding_kind, row.source_node): row.id for row in issue_rows
+        }
+        option_rows: list[HandlingOption] = []
+        for index, option in enumerate(options):
+            issue_id = by_key.get((option["finding_kind"], option["source_node"]))
+            if issue_id is None:
+                continue
+            option_rows.append(
+                HandlingOption(
+                    session_id=session_id,
+                    aggregator_issue_id=issue_id,
+                    finding_kind=option["finding_kind"],
+                    source_node=option["source_node"],
+                    label=option["label"],
+                    target_node=option["target_node"],
+                    prose=option["prose"],
+                    sort_index=index,
+                )
+            )
+        self._db.add_all(option_rows)
+        if report.scores is not None:
+            self._db.add(
+                AggregatorScore(
+                    session_id=session_id,
+                    originality=report.scores["originality"],
+                    significance=report.scores["significance"],
+                    soundness=report.scores["soundness"],
+                    clarity=report.scores["clarity"],
+                    reproducibility=report.scores["reproducibility"],
+                )
+            )
+        await self._db.flush()
+
     async def _load_owned_session(
         self, session_id: UUID, account_id: UUID
     ) -> LoopSession:
@@ -281,6 +405,25 @@ class JudgementService:
                 detail="Loop Session not found",
             )
         return session
+
+    async def _assert_five_judge_heads_current(
+        self, session_id: UUID, node: WorkflowNode
+    ) -> None:
+        if node is not WorkflowNode.AGGREGATOR:
+            return
+        rows = await self._db.scalars(
+            select(NodeHead).where(NodeHead.session_id == session_id)
+        )
+        heads = {WorkflowNode(row.node): row for row in rows.all()}
+        if any(
+            heads[judge].status != NodeHeadStatus.CURRENT.value
+            for judge in FIVE_JUDGE_NODES
+        ):
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="judge_heads_not_current",
+                detail="Aggregator generate requires all five Judge Node Heads to be current",
+            )
 
     async def _assert_upstream_current(
         self, session_id: UUID, node: WorkflowNode
@@ -362,6 +505,21 @@ class JudgementService:
             )
         attributes.set_committed_value(session, "version", row.version)
         return row.version
+
+
+def _issue_response(item: dict[str, Any]) -> JudgeIssueResponse:
+    raw_card = item.get("target_card_id")
+    raw_id = item["id"]
+    return JudgeIssueResponse(
+        id=UUID(raw_id),
+        finding_kind=item["finding_kind"],
+        severity=item["severity"],
+        reason=item.get("reason") or "",
+        suggestion=item.get("suggestion") or "",
+        target_card_id=UUID(raw_card) if raw_card else None,
+        source_node=item.get("source_node"),
+        cluster=item.get("cluster"),
+    )
 
 
 def _prompt_payload(view: dict[str, Any]) -> str:

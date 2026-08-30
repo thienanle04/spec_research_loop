@@ -20,6 +20,17 @@ export interface LoopSessionResponse {
   cards: CardResponse[];
   produced_spec_version: SpecVersionResponse | null;
   valid_spec_version_id: string | null;
+  readiness?: {
+    state: 'not_evaluated' | 'blocked' | 'ready';
+    notice: string;
+    scores?: {
+      originality: number;
+      significance: number;
+      soundness: number;
+      clarity: number;
+      reproducibility: number;
+    } | null;
+  };
   created_at: string;
   updated_at: string;
 }

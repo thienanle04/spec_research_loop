@@ -13,9 +13,10 @@ import { customFetch } from "@/lib/api/mutator";
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
 import { withGeneratedSincePrepare } from "../loop/stage-signals";
+import { AggregatorReportView } from "./AggregatorReportView";
 import { ConferenceScoreList } from "./ConferenceScoreList";
 import { JudgeIssueList } from "./JudgeIssueList";
-import type { ConferenceScores, JudgeIssue, JudgeNode, JudgeRun } from "./types";
+import type { ConferenceScores, HandlingOption, JudgeIssue, JudgeNode, JudgeRun } from "./types";
 import { useJudgementStream } from "./useJudgementStream";
 
 const GENERATABLE_JUDGE_NODES = new Set<string>([
@@ -24,6 +25,7 @@ const GENERATABLE_JUDGE_NODES = new Set<string>([
   WorkflowNode.evidence_judge,
   WorkflowNode.experiment_judge,
   WorkflowNode.conference_judge,
+  WorkflowNode.aggregator,
 ]);
 
 type Props = {
@@ -51,11 +53,17 @@ export function JudgementStageContainer({
   const seenGenerateRequestIdRef = useRef(generateRequestId);
   const [issues, setIssues] = useState<JudgeIssue[]>([]);
   const [scores, setScores] = useState<ConferenceScores | null>(null);
+  const [handlingOptions, setHandlingOptions] = useState<HandlingOption[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const node = session.working_draft_node as JudgeNode;
   const isConference = node === WorkflowNode.conference_judge;
+  const isAggregator = node === WorkflowNode.aggregator;
   const canGenerate = GENERATABLE_JUDGE_NODES.has(node);
-  const hasOutput = isConference ? scores != null : issues.length > 0;
+  const hasOutput = isConference
+    ? scores != null
+    : isAggregator
+      ? issues.length > 0 || scores != null || handlingOptions.length > 0
+      : issues.length > 0;
   const workingHead = session.node_heads.find((head) => head.node === session.working_draft_node);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;
@@ -78,6 +86,7 @@ export function JudgementStageContainer({
     }
     if (runQuery.data) {
       setScores(runQuery.data.scores ?? null);
+      setHandlingOptions(runQuery.data.handling_options ?? []);
     }
   }, [runQuery.data]);
 
@@ -116,6 +125,7 @@ export function JudgementStageContainer({
           if (event.type === "draft_patch") {
             setIssues(event.issues);
             setScores(event.scores ?? null);
+            setHandlingOptions(event.handling_options ?? []);
           } else if (event.type === "done") {
             updateSession(
               withGeneratedSincePrepare(
@@ -151,12 +161,19 @@ export function JudgementStageContainer({
       <CardHeader>
         <CardTitle className="font-serif text-navy">{title}</CardTitle>
         <CardDescription>
-          Independent Judges evaluate the Valid Spec Version. Confirm freezes this Judge Run even when
-          CRITICAL Issues remain.
+          {isAggregator
+            ? "The Aggregator copies Judge Issues and scores. It does not majority-vote. Confirm freezes the report even when CRITICAL Issues remain."
+            : "Independent Judges evaluate the Valid Spec Version. Confirm freezes this Judge Run even when CRITICAL Issues remain."}
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        {isConference ? <ConferenceScoreList scores={scores} /> : <JudgeIssueList issues={issues} />}
+        {isAggregator ? (
+          <AggregatorReportView issues={issues} scores={scores} handlingOptions={handlingOptions} />
+        ) : isConference ? (
+          <ConferenceScoreList scores={scores} />
+        ) : (
+          <JudgeIssueList issues={issues} />
+        )}
         {stream.running ? (
           <div className="flex flex-wrap items-center gap-3">
             <Button type="button" variant="outline" onClick={stream.abort}>
@@ -213,6 +230,15 @@ export function JudgeRunRevisionView({
   }
   if (node === WorkflowNode.conference_judge) {
     return <ConferenceScoreList scores={runQuery.data.scores ?? null} />;
+  }
+  if (node === WorkflowNode.aggregator) {
+    return (
+      <AggregatorReportView
+        issues={runQuery.data.issues}
+        scores={runQuery.data.scores ?? null}
+        handlingOptions={runQuery.data.handling_options ?? []}
+      />
+    );
   }
   return <JudgeIssueList issues={runQuery.data.issues} />;
 }

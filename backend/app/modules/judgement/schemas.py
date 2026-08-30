@@ -46,6 +46,29 @@ class ConferenceLlmResponse(BaseModel):
     scores: ConferenceScores
 
 
+class HandlingOptionDraft(BaseModel):
+    finding_kind: str = ""
+    source_node: str = ""
+    label: str = ""
+    target_node: str = ""
+    prose: str = ""
+
+
+class AggregatorLlmResponse(BaseModel):
+    options: list[HandlingOptionDraft] = Field(default_factory=list)
+
+    model_config = {"extra": "ignore"}
+
+
+class ReadinessState(StrEnum):
+    NOT_EVALUATED = "not_evaluated"
+    BLOCKED = "blocked"
+    READY = "ready"
+
+
+READINESS_COPY = "This is not conference acceptance."
+
+
 class JudgeIssueResponse(BaseModel):
     id: UUID
     finding_kind: str
@@ -53,21 +76,39 @@ class JudgeIssueResponse(BaseModel):
     reason: str
     suggestion: str
     target_card_id: UUID | None = None
+    source_node: str | None = None
+    cluster: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class HandlingOptionResponse(BaseModel):
+    id: UUID
+    finding_kind: str
+    source_node: str
+    label: str
+    target_node: str
+    prose: str
+
+
+class ClusterMap(BaseModel):
+    consensus: list[JudgeIssueResponse] = Field(default_factory=list)
+    disagreement: list[JudgeIssueResponse] = Field(default_factory=list)
 
 
 class JudgeRunResponse(BaseModel):
     node: JudgementNode
     issues: list[JudgeIssueResponse]
     scores: ConferenceScores | None = None
+    clusters: ClusterMap | None = None
+    handling_options: list[HandlingOptionResponse] | None = None
+    readiness: ReadinessState | None = None
 
 
-class ProgressEvent(BaseModel):
-    type: str = "progress"
-    node: JudgementNode
-    message: str
-    pct: int = Field(ge=0, le=100)
+class ReadinessResponse(BaseModel):
+    state: ReadinessState
+    notice: str = READINESS_COPY
+    scores: ConferenceScores | None = None
 
 
 class DraftPatchEvent(BaseModel):
@@ -75,6 +116,16 @@ class DraftPatchEvent(BaseModel):
     node: JudgementNode
     issues: list[JudgeIssueResponse]
     scores: ConferenceScores | None = None
+    clusters: ClusterMap | None = None
+    handling_options: list[HandlingOptionResponse] | None = None
+    readiness: ReadinessState | None = None
+
+
+class ProgressEvent(BaseModel):
+    type: str = "progress"
+    node: JudgementNode
+    message: str
+    pct: int = Field(ge=0, le=100)
 
 
 class DoneEvent(BaseModel):

@@ -51,6 +51,8 @@ from app.modules.loop.schemas import (
     LoopSessionResponse,
     LoopSessionSummary,
     NodeHeadResponse,
+    ReadinessSummary,
+    SpecArtifactResponse,
     SpecVersionResponse,
 )
 from app.ports.stage import StagePort
@@ -132,6 +134,12 @@ class LoopService:
     ) -> LoopSessionResponse:
         session = await self._load_session(session_id, account_id)
         return await self._to_response(session)
+
+    async def get_readiness(
+        self, *, session_id: UUID, account_id: UUID
+    ) -> ReadinessSummary:
+        session = await self._load_session(session_id, account_id)
+        return await self._readiness(session)
 
     async def patch_title(
         self,
@@ -876,6 +884,7 @@ class LoopService:
             if produced
             else None,
             valid_spec_version_id=session.valid_spec_version_id,
+            readiness=await self._readiness(session),
             created_at=session.created_at,
             updated_at=session.updated_at,
         )
@@ -909,3 +918,76 @@ class LoopService:
                     "narrative": narrative,
                 }
         return {"nodes": nodes}
+
+    async def export_spec_artifact(
+        self, *, session_id: UUID, account_id: UUID
+    ) -> SpecArtifactResponse:
+        session = await self._load_session(session_id, account_id)
+        readiness = await self._readiness(session)
+        if readiness.state == "not_evaluated":
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="readiness_not_evaluated",
+                detail="Spec Artifact export requires a current Aggregator Report",
+            )
+        if readiness.state == "blocked":
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="critical_issues_block_export",
+                detail=(
+                    "CRITICAL Judge Issues on the current Aggregator Report "
+                    "block Spec Artifact export"
+                ),
+            )
+        if session.valid_spec_version_id is None:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="valid_spec_version_required",
+                detail="Spec Artifact export requires a Valid Spec Version",
+            )
+        spec = next(
+            (
+                item
+                for item in session.spec_versions
+                if item.id == session.valid_spec_version_id
+            ),
+            None,
+        )
+        if spec is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Spec Version not found"
+            )
+        return SpecArtifactResponse(spec_version_id=spec.id, document=spec.document)
+
+    async def _readiness(self, session: LoopSession) -> ReadinessSummary:
+        notice = "This is not conference acceptance."
+        heads = {head.node_enum(): head for head in session.node_heads}
+        aggregator = heads.get(WorkflowNode.AGGREGATOR)
+        if (
+            aggregator is None
+            or aggregator.status_enum() is not NodeHeadStatus.CURRENT
+            or aggregator.stage_revision_id is None
+        ):
+            return ReadinessSummary(state="not_evaluated", notice=notice)
+        projected = await self._ports[WorkflowNode.AGGREGATOR.value].project(
+            session_id=session.id,
+            node=WorkflowNode.AGGREGATOR.value,
+            revision_id=aggregator.stage_revision_id,
+        )
+        issues = projected.get("issues")
+        if not isinstance(issues, list):
+            issues = []
+        state = (
+            "blocked"
+            if any(
+                isinstance(item, dict) and item.get("severity") == "CRITICAL"
+                for item in issues
+            )
+            else "ready"
+        )
+        scores = projected.get("scores")
+        return ReadinessSummary(
+            state=state,
+            notice=notice,
+            scores=scores if isinstance(scores, dict) else None,
+        )

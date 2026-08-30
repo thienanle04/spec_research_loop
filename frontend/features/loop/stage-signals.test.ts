@@ -247,6 +247,36 @@ describe("Loop Stage signals", () => {
     });
   });
 
+  it("displays Readiness as blocked or ready from the Aggregator Report", () => {
+    const nodeHeads = heads({
+      [WorkflowNode.aggregator]: NodeHeadStatus.current,
+    });
+    expect(
+      deriveStageSignals({
+        stage: LoopStage.readiness,
+        nodeHeads,
+        workingDraftNode: WorkflowNode.aggregator,
+        readinessState: "blocked",
+      }),
+    ).toEqual({
+      completion: "blocked",
+      editing: false,
+      available: true,
+    });
+    expect(
+      deriveStageSignals({
+        stage: LoopStage.readiness,
+        nodeHeads,
+        workingDraftNode: WorkflowNode.aggregator,
+        readinessState: "ready",
+      }),
+    ).toEqual({
+      completion: "ready",
+      editing: false,
+      available: true,
+    });
+  });
+
   it("lists incomplete upstream Workflow Nodes for an unavailable Loop Stage", () => {
     expect(
       incompleteUpstreamNodes({

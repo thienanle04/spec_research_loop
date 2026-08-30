@@ -93,6 +93,17 @@ class SpecVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ReadinessSummary(BaseModel):
+    state: str
+    notice: str
+    scores: dict[str, int] | None = None
+
+
+class SpecArtifactResponse(BaseModel):
+    spec_version_id: UUID
+    document: dict[str, Any]
+
+
 class DecisionResponse(BaseModel):
     id: UUID
     kind: str
@@ -113,6 +124,7 @@ class LoopSessionResponse(BaseModel):
     cards: list[CardResponse]
     produced_spec_version: SpecVersionResponse | None
     valid_spec_version_id: UUID | None
+    readiness: ReadinessSummary
     created_at: datetime
     updated_at: datetime
 

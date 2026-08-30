@@ -340,4 +340,69 @@ describe("JudgementStageContainer", () => {
       }),
     );
   });
+
+  it("shows Aggregator Report issues, disagreement, scores, and Handling Options without PICK", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [
+          {
+            id: "issue-5",
+            finding_kind: "unsupported_citation",
+            severity: "CRITICAL",
+            reason: "The cited passage does not entail the claim.",
+            suggestion: "Cite a passage that entails the claim.",
+            target_card_id: null,
+            source_node: "evidence_judge",
+            cluster: "disagreement",
+          },
+        ],
+        scores: {
+          originality: 7,
+          significance: 8,
+          soundness: 6,
+          clarity: 7,
+          reproducibility: 5,
+        },
+        handling_options: [
+          {
+            id: "opt-1",
+            finding_kind: "unsupported_citation",
+            source_node: "evidence_judge",
+            label: "Revise the claim",
+            target_node: "claims",
+            prose: "Cite a passage that entails the claim.",
+          },
+        ],
+        readiness: "blocked",
+      },
+    });
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator)}
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Unsupported citation")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Disagreement" })).toBeInTheDocument();
+    expect(screen.getByText("Revise the claim")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pick/i })).not.toBeInTheDocument();
+    expect(screen.getAllByText("7/10").length).toBeGreaterThanOrEqual(1);
+    await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        node: "aggregator",
+        expectedVersion: 4,
+        staleReaccept: false,
+      }),
+    );
+  });
 });

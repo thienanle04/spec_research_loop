@@ -138,6 +138,14 @@ _EDGES: dict[WorkflowNode, tuple[WorkflowNode, ...]] = {
     WorkflowNode.AGGREGATOR: (),
 }
 
+FIVE_JUDGE_NODES: tuple[WorkflowNode, ...] = (
+    WorkflowNode.GAP_JUDGE,
+    WorkflowNode.CONTRIBUTION_JUDGE,
+    WorkflowNode.EVIDENCE_JUDGE,
+    WorkflowNode.EXPERIMENT_JUDGE,
+    WorkflowNode.CONFERENCE_JUDGE,
+)
+
 CARD_KIND_OWNER: dict[CardKind, WorkflowNode] = {
     CardKind.PROBLEM: WorkflowNode.IDEA_DECOMPOSITION,
     CardKind.RESEARCH_QUESTION: WorkflowNode.IDEA_DECOMPOSITION,

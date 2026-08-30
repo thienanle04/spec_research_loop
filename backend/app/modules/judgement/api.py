@@ -15,11 +15,15 @@ from app.modules.identity.deps import get_current_account
 from app.modules.identity.models import Account
 from app.modules.judgement.deps import get_judgement_node_llm
 from app.modules.judgement.schemas import (
+    ConferenceScores,
     JudgementGenerateRequest,
     JudgementNode,
     JudgeRunResponse,
+    ReadinessResponse,
+    ReadinessState,
 )
 from app.modules.judgement.service import GenerationRun, JudgementService
+from app.modules.loop.service import LoopService
 from app.ports.llm import LlmPort
 
 router = APIRouter()
@@ -47,6 +51,29 @@ async def get_judge_run(
         account_id=account.id,
         node=node,
         stage_revision_id=stage_revision_id,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/readiness",
+    response_model=ReadinessResponse,
+)
+async def get_readiness(
+    session_id: UUID,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ReadinessResponse:
+    summary = await LoopService(db).get_readiness(
+        session_id=session_id, account_id=account.id
+    )
+    return ReadinessResponse(
+        state=ReadinessState(summary.state),
+        notice=summary.notice,
+        scores=(
+            ConferenceScores.model_validate(summary.scores)
+            if summary.scores is not None
+            else None
+        ),
     )
 
 

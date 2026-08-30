@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.modules.loop.catalog import CardKind, WorkflowNode
+from app.modules.loop.catalog import FIVE_JUDGE_NODES, CardKind, WorkflowNode
 
 _SPEC_NODES = frozenset(
     {
@@ -15,16 +15,7 @@ _SPEC_NODES = frozenset(
     }
 )
 
-_JUDGE_NODES = frozenset(
-    {
-        WorkflowNode.GAP_JUDGE,
-        WorkflowNode.CONTRIBUTION_JUDGE,
-        WorkflowNode.EVIDENCE_JUDGE,
-        WorkflowNode.EXPERIMENT_JUDGE,
-        WorkflowNode.CONFERENCE_JUDGE,
-        WorkflowNode.AGGREGATOR,
-    }
-)
+_JUDGE_NODES = frozenset({*FIVE_JUDGE_NODES, WorkflowNode.AGGREGATOR})
 
 # Upstream Workflow Nodes whose card_snapshot may contribute Card texts.
 _SPEC_CARD_UPSTREAM: tuple[WorkflowNode, ...] = (
@@ -40,6 +31,8 @@ _SPEC_CARD_KINDS: frozenset[str] = frozenset(kind.value for kind in CardKind)
 
 def prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any]:
     """Pure transform: Context Projection → Prompt View for ``node``."""
+    if node is WorkflowNode.AGGREGATOR:
+        return _aggregator_prompt_view(projection)
     if node in _JUDGE_NODES:
         return _judge_prompt_view(node, projection)
     if node not in _SPEC_NODES:
@@ -57,6 +50,30 @@ def prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any
         if plan:
             view["experiment_plan"] = plan
     return view
+
+
+def _aggregator_prompt_view(projection: dict[str, Any]) -> dict[str, Any]:
+    upstream = projection.get("upstream")
+    if not isinstance(upstream, dict):
+        upstream = {}
+    runs: list[dict[str, Any]] = []
+    for source in FIVE_JUDGE_NODES:
+        block = upstream.get(source.value)
+        projected: dict[str, Any] = {}
+        if isinstance(block, dict):
+            raw = block.get("projected")
+            if isinstance(raw, dict):
+                projected = raw
+        issues = projected.get("issues")
+        scores = projected.get("scores")
+        runs.append(
+            {
+                "node": source.value,
+                "issues": issues if isinstance(issues, list) else [],
+                "scores": scores if isinstance(scores, dict) else None,
+            }
+        )
+    return {"node": WorkflowNode.AGGREGATOR.value, "judge_runs": runs}
 
 
 def _judge_prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any]:

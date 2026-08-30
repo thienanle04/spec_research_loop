@@ -24,6 +24,7 @@ from app.modules.loop.schemas import (
     PatchSessionRequest,
     PrepareRequest,
     ReplaceCardsRequest,
+    SpecArtifactResponse,
     WorkingDraftPatchRequest,
 )
 from app.modules.loop.service import LoopService
@@ -221,4 +222,19 @@ async def recompute_prepare(
         account_id=account.id,
         stage=body.stage,
         expected_version=body.expected_version,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/spec-artifact",
+    response_model=SpecArtifactResponse,
+    responses={409: {"model": OperationalError}},
+)
+async def export_spec_artifact(
+    session_id: UUID,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> SpecArtifactResponse:
+    return await _service(db).export_spec_artifact(
+        session_id=session_id, account_id=account.id
     )

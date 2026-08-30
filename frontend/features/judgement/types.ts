@@ -7,6 +7,8 @@ export type JudgeIssue = {
   reason: string;
   suggestion: string;
   target_card_id: string | null;
+  source_node?: string | null;
+  cluster?: "consensus" | "disagreement" | null;
 };
 
 export type ConferenceScores = {
@@ -17,15 +19,38 @@ export type ConferenceScores = {
   reproducibility: number;
 };
 
+export type HandlingOption = {
+  id: string;
+  finding_kind: string;
+  source_node: string;
+  label: string;
+  target_node: string;
+  prose: string;
+};
+
+export type ReadinessState = "not_evaluated" | "blocked" | "ready";
+
 export type JudgeRun = {
   node: string;
   issues: JudgeIssue[];
+  scores?: ConferenceScores | null;
+  clusters?: {
+    consensus: JudgeIssue[];
+    disagreement: JudgeIssue[];
+  } | null;
+  handling_options?: HandlingOption[] | null;
+  readiness?: ReadinessState | null;
+};
+
+export type Readiness = {
+  state: ReadinessState;
+  notice: string;
   scores?: ConferenceScores | null;
 };
 
 export type JudgementStreamEvent =
   | { type: "progress"; node: string; message: string; pct: number }
-  | { type: "draft_patch"; node: string; issues: JudgeIssue[]; scores?: ConferenceScores | null }
+  | { type: "draft_patch"; node: string; issues: JudgeIssue[]; scores?: ConferenceScores | null; handling_options?: HandlingOption[] | null }
   | { type: "done"; node: string; version: number }
   | { type: "error"; node: string; code: string; message: string };
 

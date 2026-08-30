@@ -2,20 +2,19 @@
 
 from enum import StrEnum
 
-from app.modules.loop.catalog import LOOP_STAGE_NODES, LoopStage, WorkflowNode
+from app.modules.loop.catalog import (
+    FIVE_JUDGE_NODES,
+    LOOP_STAGE_NODES,
+    LoopStage,
+    WorkflowNode,
+)
 
 JUDGE_NODES: frozenset[WorkflowNode] = frozenset(
     LOOP_STAGE_NODES[LoopStage.INDEPENDENT_JUDGES]
 )
 
 GENERATABLE_JUDGE_NODES: frozenset[WorkflowNode] = frozenset(
-    {
-        WorkflowNode.GAP_JUDGE,
-        WorkflowNode.CONTRIBUTION_JUDGE,
-        WorkflowNode.EVIDENCE_JUDGE,
-        WorkflowNode.EXPERIMENT_JUDGE,
-        WorkflowNode.CONFERENCE_JUDGE,
-    }
+    {*FIVE_JUDGE_NODES, WorkflowNode.AGGREGATOR}
 )
 
 

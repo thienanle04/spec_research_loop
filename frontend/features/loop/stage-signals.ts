@@ -11,7 +11,7 @@ import {
   upstreamOfStage,
 } from "./catalog";
 
-export type CompletionSignal = "complete" | "needs_work" | "stale" | "not_evaluated";
+export type CompletionSignal = "complete" | "needs_work" | "stale" | "not_evaluated" | "blocked" | "ready";
 
 export type StageSignals = {
   completion: CompletionSignal;
@@ -97,10 +97,12 @@ export function deriveStageSignals({
   stage,
   nodeHeads,
   workingDraftNode,
+  readinessState,
 }: {
   stage: LoopStage;
   nodeHeads: NodeHeadResponse[];
   workingDraftNode: WorkflowNode;
+  readinessState?: "not_evaluated" | "blocked" | "ready";
 }): StageSignals {
   const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
   const nodes = catalogStage(stage).nodes;
@@ -109,6 +111,13 @@ export function deriveStageSignals({
   const available = incompleteUpstream.length === 0;
 
   if (nodes.length === 0) {
+    if (stage === LoopStage.readiness) {
+      const completion =
+        readinessState === "blocked" || readinessState === "ready"
+          ? readinessState
+          : "not_evaluated";
+      return { completion, editing: false, available };
+    }
     return { completion: "not_evaluated", editing: false, available };
   }
 

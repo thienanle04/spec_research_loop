@@ -35,7 +35,7 @@ import {
 } from "@/features/research";
 import { ClaimsEvidenceStageContainer } from "@/features/spec/ClaimsEvidenceStageContainer";
 import { ExperimentPlanningStageContainer } from "@/features/spec/ExperimentPlanningStageContainer";
-import { isJudgeNode, JudgementStageContainer } from "@/features/judgement";
+import { isJudgeNode, JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
 
 import {
   LOOP_STAGE_CATALOG,
@@ -79,14 +79,19 @@ const COMPLETION_LABEL: Record<CompletionSignal, string> = {
   needs_work: "Needs work",
   stale: "Stale",
   not_evaluated: "Not evaluated",
+  blocked: "Blocked",
+  ready: "Ready",
 };
 
 function completionClass(completion: CompletionSignal): string {
   switch (completion) {
     case "complete":
+    case "ready":
       return "text-navy";
     case "stale":
       return "text-pending";
+    case "blocked":
+      return "text-destructive";
     case "not_evaluated":
       return "text-muted-foreground";
     default:
@@ -630,6 +635,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   stage: stage.id,
                   nodeHeads: session.node_heads,
                   workingDraftNode: session.working_draft_node,
+                  readinessState: session.readiness?.state,
                 });
                 const Icon = LOOP_STAGE_ICONS[stage.id];
                 const active = stage.id === selectedStage;
@@ -660,7 +666,9 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
 
       <div className="grid min-w-0 grid-cols-1 gap-4">
         <StagePathNav
-          emptyTabLabel={selectedStage === LoopStage.spec_draft ? selected.name : undefined}
+          emptyTabLabel={
+            selectedStage === LoopStage.spec_draft ? selected.name : undefined
+          }
           nodes={selected.nodes}
           nodeHeads={session.node_heads}
           viewedNode={selectedNode}
@@ -823,6 +831,9 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
             validSpecVersionId={session.valid_spec_version_id}
             sessionId={sessionId}
           />
+        ) : null}
+        {selectedStage === LoopStage.readiness ? (
+          <ReadinessStageView session={session} sessionId={sessionId} />
         ) : null}
         {showConfirm || availableContinueTarget ? (
           <div className="grid gap-3 border-t border-border pt-4">

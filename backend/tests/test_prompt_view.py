@@ -429,6 +429,117 @@ def test_evidence_judge_prompt_view_includes_claim_citation_passage_triples() ->
     ]
 
 
+def test_aggregator_prompt_view_is_the_five_current_judge_runs_only() -> None:
+    projection = _fat_projection(with_plan=True)
+    projection["valid_spec_version"] = {
+        "id": "spec-1",
+        "document": {"nodes": {}},
+    }
+    projection["upstream"][WorkflowNode.GAP_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {
+            "issues": [
+                {
+                    "id": "gap-issue",
+                    "finding_kind": "gap_unsupported_by_sources",
+                    "severity": "CRITICAL",
+                    "reason": "No cited passage supports the gap statement.",
+                    "suggestion": "Cite a supporting passage.",
+                    "target_card_id": None,
+                }
+            ]
+        },
+    }
+    projection["upstream"][WorkflowNode.CONTRIBUTION_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {"issues": []},
+    }
+    projection["upstream"][WorkflowNode.EVIDENCE_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {
+            "issues": [
+                {
+                    "id": "evidence-issue",
+                    "finding_kind": "unsupported_citation",
+                    "severity": "CRITICAL",
+                    "reason": "The cited passage does not entail the claim.",
+                    "suggestion": "Cite a passage that entails the claim.",
+                    "target_card_id": None,
+                }
+            ]
+        },
+    }
+    projection["upstream"][WorkflowNode.EXPERIMENT_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {"issues": []},
+    }
+    projection["upstream"][WorkflowNode.CONFERENCE_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {
+            "issues": [],
+            "scores": {
+                "originality": 7,
+                "significance": 8,
+                "soundness": 6,
+                "clarity": 7,
+                "reproducibility": 5,
+            },
+        },
+    }
+    view = prompt_view(WorkflowNode.AGGREGATOR, projection)
+    assert view == {
+        "node": "aggregator",
+        "judge_runs": [
+            {
+                "node": "gap_judge",
+                "issues": projection["upstream"][WorkflowNode.GAP_JUDGE.value][
+                    "projected"
+                ]["issues"],
+                "scores": None,
+            },
+            {
+                "node": "contribution_judge",
+                "issues": [],
+                "scores": None,
+            },
+            {
+                "node": "evidence_judge",
+                "issues": projection["upstream"][WorkflowNode.EVIDENCE_JUDGE.value][
+                    "projected"
+                ]["issues"],
+                "scores": None,
+            },
+            {
+                "node": "experiment_judge",
+                "issues": [],
+                "scores": None,
+            },
+            {
+                "node": "conference_judge",
+                "issues": [],
+                "scores": {
+                    "originality": 7,
+                    "significance": 8,
+                    "soundness": 6,
+                    "clarity": 7,
+                    "reproducibility": 5,
+                },
+            },
+        ],
+    }
+    blob = str(view)
+    assert "Confirmed gap statement" not in blob
+    assert "Primary contribution" not in blob
+    assert "valid_spec_version" not in blob
+    assert "related_work" not in blob
+    assert "experiment_plan" not in blob
+
+
 def test_prompt_view_rejects_undefined_nodes() -> None:
     with pytest.raises(ValueError, match="not defined"):
         prompt_view(WorkflowNode.GAP, _fat_projection())

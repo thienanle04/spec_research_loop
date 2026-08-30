@@ -106,6 +106,12 @@ vi.mock("@/features/judgement", () => ({
     return <p>Gap Judge Issues for {sessionId}</p>;
   },
   JudgeRunRevisionView: () => <p>Frozen Gap Judge Issues</p>,
+  ReadinessStageView: ({ session }: { session: LoopSessionResponse }) => (
+    <section aria-label="Readiness overview">
+      <p>{session.readiness?.notice ?? "This is not conference acceptance."}</p>
+      <p>{session.readiness?.state ?? "not_evaluated"}</p>
+    </section>
+  ),
 }));
 
 vi.mock("@/features/research", () => ({
@@ -1519,7 +1525,10 @@ describe("LoopSessionWorkbench", () => {
 
     expect(readiness).toHaveTextContent("Not evaluated");
     expect(readiness).not.toHaveTextContent("%");
-    expect(screen.queryByRole("region", { name: "Readiness overview" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Readiness overview" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Readiness overview" })).toHaveTextContent(
+      "not conference acceptance",
+    );
     expect(screen.queryByRole("img", { name: /readiness criteria met/i })).not.toBeInTheDocument();
   });
 
@@ -2474,10 +2483,76 @@ describe("LoopSessionWorkbench", () => {
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });
     const readiness = within(nav).getByRole("link", { name: /Readiness/ });
 
-    expect(screen.queryByRole("region", { name: "Readiness overview" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Readiness overview" })).toBeInTheDocument();
     expect(readiness).toHaveTextContent("Not evaluated");
     expect(readiness).not.toHaveTextContent("%");
     expect(readiness).not.toHaveTextContent("Complete");
+  });
+
+  it("shows Readiness as Blocked once a current Aggregator Report has CRITICAL Issues", () => {
+    search = new URLSearchParams(`stage=${LoopStage.readiness}`);
+    const current = Object.fromEntries(
+      Object.values(WorkflowNode).map((node) => [node, NodeHeadStatus.current]),
+    ) as Partial<Record<WorkflowNode, NodeHeadStatus>>;
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads(current),
+          readiness: {
+            state: "blocked",
+            notice: "This is not conference acceptance.",
+          },
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const nav = screen.getByRole("navigation", { name: "Loop Stages" });
+    const readiness = within(nav).getByRole("link", { name: /Readiness/ });
+
+    expect(readiness).toHaveTextContent("Blocked");
+    expect(readiness).not.toHaveTextContent("Not evaluated");
+    expect(screen.getByRole("region", { name: "Readiness overview" })).toHaveTextContent(
+      "not conference acceptance",
+    );
+  });
+
+  it("shows Readiness as Ready once a current Aggregator Report has no CRITICAL Issues", () => {
+    search = new URLSearchParams(`stage=${LoopStage.readiness}`);
+    const current = Object.fromEntries(
+      Object.values(WorkflowNode).map((node) => [node, NodeHeadStatus.current]),
+    ) as Partial<Record<WorkflowNode, NodeHeadStatus>>;
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads(current),
+          readiness: {
+            state: "ready",
+            notice: "This is not conference acceptance.",
+          },
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    const nav = screen.getByRole("navigation", { name: "Loop Stages" });
+    const readiness = within(nav).getByRole("link", { name: /Readiness/ });
+
+    expect(readiness).toHaveTextContent("Ready");
+    expect(readiness).not.toHaveTextContent("Not evaluated");
+    expect(screen.getByRole("region", { name: "Readiness overview" })).toHaveTextContent(
+      "not conference acceptance",
+    );
   });
 
   it("refreshes Decisions and dashboard queries after Confirm", async () => {
