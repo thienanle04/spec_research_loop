@@ -126,6 +126,13 @@ class _GapClaimSupportResponse(BaseModel):
     assessments: list[_GapClaimSupportItem] = Field(min_length=1)
 
 
+class _GapClaimNarrowing(BaseModel):
+    claim_id: str = Field(min_length=1)
+    can_narrow: bool
+    statement: str = ""
+    evidence_span: str = ""
+
+
 class _CounterEvidenceFinding(BaseModel):
     result_key: str = Field(min_length=1)
     claim_ids: list[str] = Field(default_factory=list)
@@ -1043,11 +1050,18 @@ class ResearchService:
                     "each value contains passage and location), and confidence "
                     "(number from 0 to 1). Do not rename or nest the keys. "
                     "Use only retrieved_text for source assertions. For every evidence "
-                    "item, passage must be a concise verbatim sentence or paragraph "
-                    "that separately supports that assertion. Never use a document "
-                    "type, section heading, navigation text, or the whole HTML/PDF as "
-                    "evidence. Assess relevance "
-                    "and limitation against the supplied Problem, Research "
+                     "item, passage must be a concise verbatim sentence or paragraph "
+                     "that separately supports that assertion. Never use a document "
+                     "type, section heading, navigation text, or the whole HTML/PDF as "
+                     "evidence. The limitation must contain exactly one atomic, "
+                     "source-stated limitation, and evidence.limitation.passage must "
+                     "entail every asserted clause. Do not combine a supported limitation "
+                     "with another cost, mechanism, scope, metric, or application unless "
+                     "the same passage explicitly supports it. Never infer that a method "
+                     "lacks a feature merely because the source does not mention that "
+                     "feature. If the source states several limitations, select the single "
+                     "most relevant one. Assess relevance "
+                     "and limitation against the supplied Problem, Research "
                     "Questions, and Research Inputs. If the source does not state a "
                     "method or feedback type, use 'Not stated in the source metadata'."
                 ),
@@ -1586,12 +1600,101 @@ class ResearchService:
         bulk_statuses = {
             item.claim_id: item.support_status for item in parsed.assessments
         }
-        confirmation_candidates = [
+        direct_confirmation_candidates = [
             item
             for item in claim_candidates
             if bulk_statuses[item.claim_id] is CounterEvidenceSupport.SUPPORTED
             and _claim_statement_precheck(item.statement)
         ]
+
+        narrowing_candidates = [
+            item
+            for item in claim_candidates
+            if bulk_statuses[item.claim_id] is not CounterEvidenceSupport.SUPPORTED
+            or not _claim_statement_precheck(item.statement)
+        ]
+
+        async def narrow_one(claim: _GapClaim) -> object:
+            return await self._llm.complete(
+                system=(
+                    _idea_language_instruction(idea)
+                    + "research-gap-claim-narrowing: recover at most one atomic, "
+                    "source-stated limitation from exactly one rejected or uncertain "
+                    "Related Work claim and its supplied evidence passage. Return only "
+                    "JSON with claim_id, can_narrow, statement, and evidence_span. Keep "
+                    "claim_id unchanged. Set can_narrow=true only when the passage "
+                    "explicitly states a limitation, challenge, boundary, cost, bias, or "
+                    "evaluation omission. When true, statement must express only that one "
+                    "limitation in the idea's primary language, and evidence_span must be "
+                    "one exact contiguous verbatim span from the supplied passage that "
+                    "entails every clause in statement. Remove unsupported mechanisms, "
+                    "comparisons, metrics, domains, applications, and claims based only on "
+                    "source non-mention. Do not preserve the original wording when it is "
+                    "broader than the passage. Set can_narrow=false with empty statement "
+                    "and evidence_span when no source-stated limitation can be recovered."
+                ),
+                prompt=json.dumps(
+                    {"claim_candidate": claim.model_dump(mode="json")},
+                    default=str,
+                    ensure_ascii=False,
+                ),
+            )
+
+        narrowing_responses = await asyncio.gather(
+            *(narrow_one(item) for item in narrowing_candidates),
+            return_exceptions=True,
+        )
+        narrowed_by_id: dict[str, _GapClaim] = {}
+        narrowing_failures: list[str] = []
+        for claim, response in zip(
+            narrowing_candidates,
+            narrowing_responses,
+            strict=True,
+        ):
+            try:
+                if isinstance(response, BaseException):
+                    raise response
+                narrowed = _GapClaimNarrowing.model_validate(
+                    _json_value(str(response), dict)
+                )
+                if narrowed.claim_id != claim.claim_id:
+                    raise ValueError("Gap claim narrowing changed claim_id")
+                if not narrowed.can_narrow:
+                    continue
+                if not narrowed.statement.strip() or not _claim_statement_precheck(
+                    narrowed.statement
+                ):
+                    raise ValueError("Narrowed Gap claim is empty or non-atomic")
+                normalized_span = " ".join(
+                    narrowed.evidence_span.casefold().split()
+                )
+                if not normalized_span or not any(
+                    normalized_span
+                    in " ".join(evidence.passage.casefold().split())
+                    for evidence in claim.supporting_evidence
+                ):
+                    raise ValueError(
+                        "Narrowed Gap claim evidence_span is not verbatim source evidence"
+                    )
+                narrowed_by_id[claim.claim_id] = claim.model_copy(
+                    update={"statement": narrowed.statement.strip()}
+                )
+            except Exception as exc:  # noqa: BLE001 - fail closed per claim
+                narrowing_failures.append(
+                    f"{claim.claim_id}: {_structured_failure_detail(exc)}"
+                )
+
+        confirmation_candidates = [
+            *direct_confirmation_candidates,
+            *[
+                narrowed_by_id[item.claim_id]
+                for item in narrowing_candidates
+                if item.claim_id in narrowed_by_id
+            ],
+        ]
+        effective_by_id = {
+            item.claim_id: item for item in confirmation_candidates
+        }
 
         async def confirm_one(claim: _GapClaim) -> object:
             return await self._llm.complete(
@@ -1651,22 +1754,25 @@ class ResearchService:
         statuses: dict[str, CounterEvidenceSupport] = {}
         for claim in claim_candidates:
             bulk_status = bulk_statuses[claim.claim_id]
-            if bulk_status is not CounterEvidenceSupport.SUPPORTED:
-                statuses[claim.claim_id] = bulk_status
-                continue
-            if not _claim_statement_precheck(claim.statement):
-                statuses[claim.claim_id] = CounterEvidenceSupport.UNSUPPORTED
+            effective = effective_by_id.get(claim.claim_id)
+            if effective is None:
+                statuses[claim.claim_id] = (
+                    bulk_status
+                    if _claim_statement_precheck(claim.statement)
+                    else CounterEvidenceSupport.UNSUPPORTED
+                )
                 continue
             confirmation = confirmations.get(claim.claim_id)
             statuses[claim.claim_id] = (
-                _strict_claim_support_status(claim, confirmation)
+                _strict_claim_support_status(effective, confirmation)
                 if confirmation is not None
                 else CounterEvidenceSupport.UNCERTAIN
             )
         supported = [
-            item
+            effective_by_id[item.claim_id]
             for item in claim_candidates
             if statuses[item.claim_id] is CounterEvidenceSupport.SUPPORTED
+            and item.claim_id in effective_by_id
         ]
         unsupported_count = sum(
             status is CounterEvidenceSupport.UNSUPPORTED
@@ -1677,6 +1783,11 @@ class ResearchService:
             for status in statuses.values()
         )
         warnings: list[str] = []
+        if narrowed_by_id:
+            warnings.append(
+                f"Narrowed {len(narrowed_by_id)} Related Work limitation(s) to "
+                "atomic claims entailed by their source passages."
+            )
         if unsupported_count:
             warnings.append(
                 f"Excluded {unsupported_count} atomic Gap claim candidate(s) whose "
@@ -1698,6 +1809,12 @@ class ResearchService:
                 "Atomic Gap claim confirmation failed closed for "
                 f"{len(confirmation_failures)}/{len(confirmation_candidates)} claim(s): "
                 + " | ".join(confirmation_failures)
+            )
+        if narrowing_failures:
+            warnings.append(
+                "Gap claim narrowing failed closed for "
+                f"{len(narrowing_failures)}/{len(narrowing_candidates)} claim(s): "
+                + " | ".join(narrowing_failures)
             )
         return supported, warnings
 
@@ -4821,7 +4938,6 @@ def _fallback_gap_claims(
                 narrowed_scope_count += 1
             if _is_nonmention_inference(fragment):
                 nonmention_count += 1
-                continue
             claims.append(
                 _GapClaim(
                     claim_id=f"c{len(claims) + 1}",
@@ -4842,8 +4958,8 @@ def _fallback_gap_claims(
         )
     if nonmention_count:
         warnings.append(
-            f"Excluded {nonmention_count} Gap claim candidate(s) that inferred a "
-            "missing capability only from source non-mention."
+            f"Flagged {nonmention_count} Gap claim candidate(s) that inferred a "
+            "missing capability only from source non-mention for source-grounded narrowing."
         )
     if narrowed_scope_count:
         warnings.append(

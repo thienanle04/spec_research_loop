@@ -4,7 +4,11 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from app.adapters.llm import FitWebUiLlmPort
+from app.adapters.llm import (
+    FitWebUiLlmPort,
+    TracingLlm,
+    configure_llm_trace_logger,
+)
 from app.adapters.storage import MemoryObjectStorage, get_object_storage
 from app.core.config import get_settings
 from app.modules.research.adapters import (
@@ -87,20 +91,26 @@ def get_research_llm() -> LlmPort:
     settings = get_settings()
     provider = settings.research_llm_provider.casefold()
     if provider == "fake":
-        return FakeLlmPort()
-    if provider == "fit_webui":
+        llm: LlmPort = FakeLlmPort()
+    elif provider == "fit_webui":
         if not settings.fit_webui_api_key:
             raise RuntimeError(
                 "FIT_WEBUI_API_KEY is required when RESEARCH_LLM_PROVIDER=fit_webui"
             )
-        return FitWebUiLlmPort(
+        llm = FitWebUiLlmPort(
             api_key=settings.fit_webui_api_key,
             default_model=settings.research_llm_model,
             base_url=settings.fit_webui_base_url,
             timeout_seconds=settings.fit_webui_timeout_seconds,
             max_tokens=settings.fit_webui_max_tokens,
         )
-    raise RuntimeError(f"Unsupported research LLM provider: {provider}")
+    else:
+        raise RuntimeError(f"Unsupported research LLM provider: {provider}")
+
+    if settings.llm_trace:
+        configure_llm_trace_logger()
+        return TracingLlm(llm, node="research")
+    return llm
 
 
 def get_citation_verifier(

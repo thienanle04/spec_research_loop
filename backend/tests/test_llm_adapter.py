@@ -7,6 +7,7 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
+from app.adapters.llm import TracingLlm
 from app.adapters.llm.fit_webui import (
     FitWebUiLlmPort,
 )
@@ -174,10 +175,26 @@ def test_research_llm_binding_selects_fit_webui(
     monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "fit_webui")
     monkeypatch.setenv("RESEARCH_LLM_MODEL", "Qwen3.6-27B")
     monkeypatch.setenv("FIT_WEBUI_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_TRACE", "false")
     get_settings.cache_clear()
 
     try:
         assert isinstance(get_research_llm(), FitWebUiLlmPort)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_research_llm_binding_enables_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "fit_webui")
+    monkeypatch.setenv("RESEARCH_LLM_MODEL", "Qwen3.6-27B")
+    monkeypatch.setenv("FIT_WEBUI_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_TRACE", "true")
+    get_settings.cache_clear()
+
+    try:
+        assert isinstance(get_research_llm(), TracingLlm)
     finally:
         get_settings.cache_clear()
 
