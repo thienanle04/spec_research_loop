@@ -332,6 +332,10 @@ def _judge_label(node: WorkflowNode) -> str:
 def _judge_system(node: WorkflowNode) -> str:
     if node is WorkflowNode.EVIDENCE_JUDGE:
         return "judge-evidence"
+    if node is WorkflowNode.CONTRIBUTION_JUDGE:
+        return "judge-contribution"
+    if node is WorkflowNode.EXPERIMENT_JUDGE:
+        return "judge-experiment"
     return "judge-gap"
 
 

@@ -9,7 +9,12 @@ JUDGE_NODES: frozenset[WorkflowNode] = frozenset(
 )
 
 GENERATABLE_JUDGE_NODES: frozenset[WorkflowNode] = frozenset(
-    {WorkflowNode.GAP_JUDGE, WorkflowNode.EVIDENCE_JUDGE}
+    {
+        WorkflowNode.GAP_JUDGE,
+        WorkflowNode.CONTRIBUTION_JUDGE,
+        WorkflowNode.EVIDENCE_JUDGE,
+        WorkflowNode.EXPERIMENT_JUDGE,
+    }
 )
 
 

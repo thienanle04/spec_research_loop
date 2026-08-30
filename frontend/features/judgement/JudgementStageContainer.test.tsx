@@ -204,4 +204,90 @@ describe("JudgementStageContainer", () => {
       }),
     );
   });
+
+  it("shows Contribution Judge Issues and starts generate", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "contribution_judge",
+        issues: [
+          {
+            id: "issue-3",
+            finding_kind: "contribution_not_novel",
+            severity: "MAJOR",
+            reason: "Prior work already states this contribution.",
+            suggestion: "Narrow the novelty claim.",
+            target_card_id: null,
+          },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.contribution_judge)}
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Contribution not novel")).toBeInTheDocument();
+    expect(screen.getByText("MAJOR")).toBeInTheDocument();
+    expect(screen.getByText("Prior work already states this contribution.")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Regenerate Contribution Judge" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        node: "contribution_judge",
+        expectedVersion: 4,
+        staleReaccept: false,
+      }),
+    );
+  });
+
+  it("shows Experiment Judge Issues and starts generate", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "experiment_judge",
+        issues: [
+          {
+            id: "issue-4",
+            finding_kind: "claim_broader_than_experiment",
+            severity: "MAJOR",
+            reason: "The claim outruns the experiment plan.",
+            suggestion: "Narrow the claim.",
+            target_card_id: null,
+          },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.experiment_judge)}
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Claim broader than experiment")).toBeInTheDocument();
+    expect(screen.getByText("MAJOR")).toBeInTheDocument();
+    expect(screen.getByText("The claim outruns the experiment plan.")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Regenerate Experiment Judge" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        node: "experiment_judge",
+        expectedVersion: 4,
+        staleReaccept: false,
+      }),
+    );
+  });
 });

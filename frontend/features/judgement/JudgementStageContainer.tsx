@@ -17,6 +17,13 @@ import { JudgeIssueList } from "./JudgeIssueList";
 import type { JudgeIssue, JudgeNode, JudgeRun } from "./types";
 import { useJudgementStream } from "./useJudgementStream";
 
+const GENERATABLE_JUDGE_NODES = new Set<string>([
+  WorkflowNode.gap_judge,
+  WorkflowNode.contribution_judge,
+  WorkflowNode.evidence_judge,
+  WorkflowNode.experiment_judge,
+]);
+
 type Props = {
   sessionId: string;
   session: LoopSessionResponse;
@@ -43,8 +50,7 @@ export function JudgementStageContainer({
   const [issues, setIssues] = useState<JudgeIssue[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const node = session.working_draft_node as JudgeNode;
-  const canGenerate =
-    node === WorkflowNode.gap_judge || node === WorkflowNode.evidence_judge;
+  const canGenerate = GENERATABLE_JUDGE_NODES.has(node);
   const workingHead = session.node_heads.find((head) => head.node === session.working_draft_node);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;

@@ -207,6 +207,52 @@ def test_gap_judge_prompt_view_omits_sibling_judge_working_draft() -> None:
     assert view["working_draft"] == {"narrative": {}, "cards": []}
 
 
+def test_contribution_and_experiment_judge_prompt_views_drop_peer_judge_runs() -> None:
+    projection = _fat_projection(with_plan=True)
+    projection["valid_spec_version"] = {
+        "id": "spec-1",
+        "document": {"nodes": {}},
+    }
+    projection["upstream"][WorkflowNode.GAP_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {
+            "issues": [
+                {
+                    "finding_kind": "gap_unsupported_by_sources",
+                    "severity": "CRITICAL",
+                    "reason": "peer judge must not appear",
+                }
+            ]
+        },
+    }
+    projection["upstream"][WorkflowNode.EVIDENCE_JUDGE.value] = {
+        "card_snapshot": [],
+        "narrative": {},
+        "projected": {
+            "issues": [
+                {
+                    "finding_kind": "unsupported_citation",
+                    "severity": "CRITICAL",
+                    "reason": "evidence peer must not appear",
+                }
+            ]
+        },
+    }
+    for node in (WorkflowNode.CONTRIBUTION_JUDGE, WorkflowNode.EXPERIMENT_JUDGE):
+        view = prompt_view(node, projection)
+        assert view["node"] == node.value
+        assert view["valid_spec_version"]["id"] == "spec-1"
+        blob = str(view)
+        assert "peer judge must not appear" not in blob
+        assert "evidence peer must not appear" not in blob
+        assert "gap_unsupported_by_sources" not in blob
+        assert "unsupported_citation" not in blob
+        assert "gap_judge" not in blob
+        assert "evidence_judge" not in blob
+
+
+
 def test_evidence_judge_prompt_view_includes_claim_citation_passage_triples() -> None:
     projection = _fat_projection()
     projection["upstream"][WorkflowNode.CLAIMS.value] = {

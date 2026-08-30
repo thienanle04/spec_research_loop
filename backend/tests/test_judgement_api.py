@@ -657,3 +657,297 @@ async def test_evidence_judge_content_change_stales_aggregator(
         and item["severity"] == "CRITICAL"
         for item in listed.json()["issues"]
     )
+
+
+def _bind_contribution_judge_llm(payload: dict) -> FakeLlm:
+    fake = FakeLlm(response=json.dumps(payload))
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    ports[WorkflowNode.CONTRIBUTION_JUDGE.value] = fake
+    bind_llm_ports(ports)
+    return fake
+
+
+async def _generate_contribution_judge(
+    client: AsyncClient, session_id: str, expected_version: int, **extra: object
+) -> list[dict]:
+    body: dict = {"expected_version": expected_version, **extra}
+    response = await client.post(
+        f"/api/judgement/sessions/{session_id}/nodes/contribution_judge/generate",
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    events = _events(response.text)
+    assert events[-1]["type"] == "done"
+    return events
+
+
+@pytest.mark.asyncio
+async def test_contribution_judge_generate_runs_with_valid_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    events = await _generate_contribution_judge(
+        client, draft["id"], draft["version"]
+    )
+    assert events[0]["type"] == "progress"
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    listed = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/contribution_judge"
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["node"] == "contribution_judge"
+    assert patch["issues"] == listed.json()["issues"]
+
+
+def _bind_experiment_judge_llm(payload: dict) -> FakeLlm:
+    fake = FakeLlm(response=json.dumps(payload))
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    ports[WorkflowNode.EXPERIMENT_JUDGE.value] = fake
+    bind_llm_ports(ports)
+    return fake
+
+
+async def _generate_experiment_judge(
+    client: AsyncClient, session_id: str, expected_version: int, **extra: object
+) -> list[dict]:
+    body: dict = {"expected_version": expected_version, **extra}
+    response = await client.post(
+        f"/api/judgement/sessions/{session_id}/nodes/experiment_judge/generate",
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    events = _events(response.text)
+    assert events[-1]["type"] == "done"
+    return events
+
+
+@pytest.mark.asyncio
+async def test_experiment_judge_generate_runs_with_valid_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    events = await _generate_experiment_judge(client, draft["id"], draft["version"])
+    assert events[0]["type"] == "progress"
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    listed = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/experiment_judge"
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["node"] == "experiment_judge"
+    assert patch["issues"] == listed.json()["issues"]
+
+
+async def _prepare_contribution_judge(client: AsyncClient) -> dict:
+    draft = await _prepare_gap_judge(client)
+    session = await _confirm(client, draft["id"], "gap_judge", draft["version"])
+    session = await _prepare(
+        client, draft["id"], "independent_judges", session["version"]
+    )
+    assert session["working_draft_node"] == "contribution_judge"
+    return session
+
+
+async def _prepare_experiment_judge(client: AsyncClient) -> dict:
+    draft = await _prepare_evidence_judge(client)
+    session = await _confirm(
+        client, draft["id"], "evidence_judge", draft["version"]
+    )
+    session = await _prepare(
+        client, draft["id"], "independent_judges", session["version"]
+    )
+    assert session["working_draft_node"] == "experiment_judge"
+    return session
+
+
+@pytest.mark.asyncio
+async def test_contribution_judge_floors_llm_minor_overclaim_to_major(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_contribution_judge(client)
+    _bind_contribution_judge_llm(
+        {
+            "issues": [
+                {
+                    "finding_kind": "contribution_not_novel",
+                    "severity": "MAJOR",
+                    "reason": "Prior work already states this contribution.",
+                    "suggestion": "Narrow the novelty claim.",
+                },
+                {
+                    "finding_kind": "contribution_overclaimed",
+                    "severity": "MINOR",
+                    "reason": "The model tried to hide this.",
+                    "suggestion": "Ignore it.",
+                },
+                {
+                    "finding_kind": "invented_kind",
+                    "severity": "CRITICAL",
+                    "reason": "Should be dropped.",
+                    "suggestion": "",
+                },
+            ]
+        }
+    )
+    events = await _generate_contribution_judge(
+        client, draft["id"], draft["version"]
+    )
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    by_kind = {item["finding_kind"]: item for item in patch["issues"]}
+    assert "invented_kind" not in by_kind
+    assert by_kind["contribution_not_novel"]["severity"] == "MAJOR"
+    assert by_kind["contribution_overclaimed"]["severity"] == "MAJOR"
+
+
+@pytest.mark.asyncio
+async def test_experiment_judge_floors_llm_minor_broader_claim_to_major(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_experiment_judge(client)
+    _bind_experiment_judge_llm(
+        {
+            "issues": [
+                {
+                    "finding_kind": "experiment_insufficient_for_claim",
+                    "severity": "MAJOR",
+                    "reason": "The experiment cannot support the claim.",
+                    "suggestion": "Add a measurement that matches the claim.",
+                },
+                {
+                    "finding_kind": "claim_broader_than_experiment",
+                    "severity": "MINOR",
+                    "reason": "The model tried to hide this.",
+                    "suggestion": "Ignore it.",
+                },
+                {
+                    "finding_kind": "invented_kind",
+                    "severity": "CRITICAL",
+                    "reason": "Should be dropped.",
+                    "suggestion": "",
+                },
+            ]
+        }
+    )
+    events = await _generate_experiment_judge(client, draft["id"], draft["version"])
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    by_kind = {item["finding_kind"]: item for item in patch["issues"]}
+    assert "invented_kind" not in by_kind
+    assert by_kind["experiment_insufficient_for_claim"]["severity"] == "MAJOR"
+    assert by_kind["claim_broader_than_experiment"]["severity"] == "MAJOR"
+
+
+@pytest.mark.asyncio
+async def test_confirm_contribution_judge_with_major_keeps_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_contribution_judge(client)
+    _bind_contribution_judge_llm(
+        {
+            "issues": [
+                {
+                    "finding_kind": "contribution_not_novel",
+                    "severity": "MAJOR",
+                    "reason": "Prior work already states this contribution.",
+                    "suggestion": "Narrow the novelty claim.",
+                }
+            ]
+        }
+    )
+    events = await _generate_contribution_judge(
+        client, draft["id"], draft["version"]
+    )
+    confirmed = await _confirm(
+        client, draft["id"], "contribution_judge", events[-1]["version"]
+    )
+    assert _head(confirmed, "contribution_judge")["status"] == "current"
+    assert confirmed["valid_spec_version_id"] == confirmed["produced_spec_version"]["id"]
+    revision_id = _head(confirmed, "contribution_judge")["stage_revision_id"]
+    frozen = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/contribution_judge",
+        params={"stage_revision_id": revision_id},
+    )
+    assert frozen.status_code == 200, frozen.text
+    assert any(
+        item["finding_kind"] == "contribution_not_novel"
+        and item["severity"] == "MAJOR"
+        for item in frozen.json()["issues"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_confirm_experiment_judge_with_critical_keeps_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_experiment_judge(client)
+    _bind_experiment_judge_llm(
+        {
+            "issues": [
+                {
+                    "finding_kind": "claim_broader_than_experiment",
+                    "severity": "CRITICAL",
+                    "reason": "The claim outruns the experiment plan.",
+                    "suggestion": "Narrow the claim.",
+                }
+            ]
+        }
+    )
+    events = await _generate_experiment_judge(client, draft["id"], draft["version"])
+    confirmed = await _confirm(
+        client, draft["id"], "experiment_judge", events[-1]["version"]
+    )
+    assert _head(confirmed, "experiment_judge")["status"] == "current"
+    assert confirmed["valid_spec_version_id"] == confirmed["produced_spec_version"]["id"]
+    revision_id = _head(confirmed, "experiment_judge")["stage_revision_id"]
+    frozen = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/experiment_judge",
+        params={"stage_revision_id": revision_id},
+    )
+    assert frozen.status_code == 200, frozen.text
+    assert any(
+        item["finding_kind"] == "claim_broader_than_experiment"
+        and item["severity"] == "CRITICAL"
+        for item in frozen.json()["issues"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_contribution_judge_generate_payload_excludes_peer_judge_runs(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
+    events = await _generate_gap_judge(client, draft["id"], draft["version"])
+    confirmed = await _confirm(
+        client, draft["id"], "gap_judge", events[-1]["version"]
+    )
+    prepared = await _prepare(
+        client, draft["id"], "independent_judges", confirmed["version"]
+    )
+    fake = _bind_contribution_judge_llm({"issues": []})
+    await _generate_contribution_judge(client, draft["id"], prepared["version"])
+    assert fake.calls
+    prompt = fake.calls[0].prompt
+    assert "gap_unsupported_by_sources" not in prompt
+    assert "gap_judge" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_conference_judge_generate_remains_unavailable(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    response = await client.post(
+        f"/api/judgement/sessions/{draft['id']}/nodes/conference_judge/generate",
+        json={"expected_version": draft["version"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "judge_generate_unavailable"
+
+
+
