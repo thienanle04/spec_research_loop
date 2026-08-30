@@ -14,7 +14,7 @@ from sqlalchemy.orm import attributes, selectinload
 
 from app.core.errors import OperationalErrorException
 from app.modules.loop.catalog import (
-    CARD_KIND_OWNER,
+    CARD_KIND_OWNERS,
     LOOP_STAGE_NODES,
     WORKFLOW_NODES,
     CardKind,
@@ -50,6 +50,7 @@ from app.modules.loop.schemas import (
     LoopSessionSummary,
     NodeHeadResponse,
     SpecVersionResponse,
+    StageRevisionResponse,
 )
 from app.ports.stage import StagePort
 
@@ -715,8 +716,8 @@ class LoopService:
         }
 
     def _assert_card_owner(self, session: LoopSession, kind: CardKind) -> None:
-        owner = CARD_KIND_OWNER[kind]
-        if session.working_draft_node != owner.value:
+        owners = CARD_KIND_OWNERS[kind]
+        if session.working_draft_node not in [owner.value for owner in owners]:
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,
                 code="card_owner_mismatch",
@@ -814,6 +815,7 @@ class LoopService:
                 for head in heads
             ],
             cards=[CardResponse.model_validate(card) for card in session.cards],
+            stage_revisions=[StageRevisionResponse.model_validate(rev) for rev in session.stage_revisions],
             produced_spec_version=SpecVersionResponse.model_validate(produced)
             if produced
             else None,

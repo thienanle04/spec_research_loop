@@ -149,15 +149,15 @@ export function stageForWorkflowNode(node: WorkflowNode): LoopStage {
   return stage.id;
 }
 
-export const CARD_KIND_OWNER: Record<CardKind, WorkflowNode> = {
-  [CardKind.problem]: WorkflowNode.idea_decomposition,
-  [CardKind.research_question]: WorkflowNode.idea_decomposition,
-  [CardKind.constraint]: WorkflowNode.idea_decomposition,
-  [CardKind.open_question]: WorkflowNode.idea_decomposition,
-  [CardKind.gap]: WorkflowNode.gap,
-  [CardKind.contribution]: WorkflowNode.contribution,
-  [CardKind.claim]: WorkflowNode.claims,
-  [CardKind.evidence]: WorkflowNode.evidence,
+export const CARD_KIND_OWNERS: Record<CardKind, WorkflowNode[]> = {
+  [CardKind.problem]: [WorkflowNode.idea_decomposition],
+  [CardKind.research_question]: [WorkflowNode.idea_decomposition],
+  [CardKind.constraint]: [WorkflowNode.idea_decomposition],
+  [CardKind.open_question]: [WorkflowNode.idea_decomposition],
+  [CardKind.gap]: [WorkflowNode.gap],
+  [CardKind.contribution]: [WorkflowNode.contribution],
+  [CardKind.claim]: [WorkflowNode.claims, WorkflowNode.evidence],
+  [CardKind.evidence]: [WorkflowNode.evidence],
 };
 
 export const CARD_KIND_LABELS: Record<CardKind, string> = {
@@ -172,7 +172,7 @@ export const CARD_KIND_LABELS: Record<CardKind, string> = {
 };
 
 export function ownedCardKinds(node: WorkflowNode): CardKind[] {
-  return (Object.values(CardKind) as CardKind[]).filter((kind) => CARD_KIND_OWNER[kind] === node);
+  return (Object.values(CardKind) as CardKind[]).filter((kind) => CARD_KIND_OWNERS[kind].includes(node));
 }
 
 export function resolveSelectedStage(

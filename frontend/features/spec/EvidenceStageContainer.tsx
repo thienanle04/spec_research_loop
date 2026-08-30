@@ -7,6 +7,7 @@ import { getApiErrorMessage } from "@/lib/api/config";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
   usePatchCardApiLoopSessionsSessionIdCardsCardIdPatch,
+  usePatchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatch,
 } from "@/lib/api/generated/endpoints";
 import {
   CardKind,
@@ -29,6 +30,7 @@ export function EvidenceStageContainer({
 }) {
   const queryClient = useQueryClient();
   const patchCard = usePatchCardApiLoopSessionsSessionIdCardsCardIdPatch();
+  const patchWorkingDraft = usePatchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatch();
   const { queue, status } = useLoopSessionSave();
   const saving = status === "saving";
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
@@ -43,7 +45,7 @@ export function EvidenceStageContainer({
   const narrative = session.working_draft_narrative as any;
   const isSaved = narrative?.evidence_saved === true;
   
-  const running = saving || patchCard.isPending;
+  const running = saving || patchCard.isPending || patchWorkingDraft.isPending;
 
   useEffect(() => {
     onRunningChange?.(running);
@@ -67,6 +69,29 @@ export function EvidenceStageContainer({
       }
       return old;
     });
+  }
+
+  async function markAsVerified() {
+    setError(null);
+    try {
+      const response = await queue.enqueue(() => 
+        patchWorkingDraft.mutateAsync({
+          sessionId,
+          data: {
+            node: session.working_draft_node,
+            expected_version: currentSession().version,
+            narrative: { ...narrative, evidence_saved: true }
+          }
+        })
+      );
+      if (response.status === 200) {
+         updateSession(curr => ({ ...curr, version: response.data.version, working_draft_narrative: { ...curr.working_draft_narrative as any, evidence_saved: true }}));
+      } else {
+         throw new Error("Could not update working draft");
+      }
+    } catch (e) {
+      setError(getApiErrorMessage(e));
+    }
   }
 
   async function saveEdits() {
@@ -282,7 +307,7 @@ export function EvidenceStageContainer({
                 type="button"
                 variant="default"
                 disabled={running}
-                onClick={() => updateSession(curr => ({ ...curr, working_draft_narrative: { ...curr.working_draft_narrative as any, evidence_saved: true }}))}
+                onClick={markAsVerified}
               >
                 Mark as Verified
               </Button>

@@ -96,6 +96,18 @@ class DecisionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class StageRevisionResponse(BaseModel):
+    id: UUID
+    node: WorkflowNode
+    revision_n: int
+    narrative: dict[str, Any]
+    card_snapshot: list[dict[str, Any]]
+    freeze_hash: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class LoopSessionResponse(BaseModel):
     id: UUID
     title: str | None
@@ -104,6 +116,7 @@ class LoopSessionResponse(BaseModel):
     working_draft_narrative: dict[str, Any]
     node_heads: list[NodeHeadResponse]
     cards: list[CardResponse]
+    stage_revisions: list[StageRevisionResponse]
     produced_spec_version: SpecVersionResponse | None
     valid_spec_version_id: UUID | None
     created_at: datetime
