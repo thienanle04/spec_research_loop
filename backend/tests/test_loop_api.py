@@ -1254,7 +1254,12 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     assert payload["valid_spec_version_id"] == payload["produced_spec_version"]["id"]
     assert "idea_interpretation" in payload["produced_spec_version"]["document"]["nodes"]
     assert "feasibility" in payload["produced_spec_version"]["document"]["nodes"]
-    gap_document = payload["produced_spec_version"]["document"]["nodes"]["gap"]
+    nodes = payload["produced_spec_version"]["document"]["nodes"]
+    for node_name, node_document in nodes.items():
+        assert node_document["stage_revision_id"] == _head(payload, node_name)[
+            "stage_revision_id"
+        ]
+    gap_document = nodes["gap"]
     assert "candidate" not in gap_document["narrative"]
     assert gap_document["card_snapshot"] == [
         {
@@ -1263,6 +1268,19 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
             "body": candidate,
         }
     ]
+    related_revision_id = nodes["related_work"]["stage_revision_id"]
+    frozen_citations = await client.get(
+        f"/api/research/sessions/{session_id}/citations",
+        params={"stage_revision_id": related_revision_id},
+    )
+    assert frozen_citations.status_code == 200, frozen_citations.text
+    assert len(frozen_citations.json()) >= 1
+    frozen_findings = await client.get(
+        f"/api/research/sessions/{session_id}/findings",
+        params={"stage_revision_id": related_revision_id},
+    )
+    assert frozen_findings.status_code == 200, frozen_findings.text
+    assert len(frozen_findings.json()) >= 1
 
 
 async def _stale_decomposition_prepared(client: AsyncClient) -> dict:

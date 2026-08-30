@@ -890,6 +890,7 @@ class LoopService:
                     # same logical Gap twice in the assembled Spec Version document.
                     narrative.pop("candidate", None)
                 nodes[node.value] = {
+                    "stage_revision_id": str(rev.id),
                     "card_snapshot": rev.card_snapshot,
                     "narrative": narrative,
                 }

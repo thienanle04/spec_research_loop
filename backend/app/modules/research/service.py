@@ -246,9 +246,14 @@ class ResearchService:
         *,
         session_id: UUID,
         account_id: UUID,
+        stage_revision_id: UUID | None = None,
     ) -> list[CitationResponse]:
         await self._load_owned_session(session_id, account_id)
-        rows = await self._working_citations(session_id)
+        if stage_revision_id is None:
+            rows = await self._working_citations(session_id)
+        else:
+            await self._assert_session_revision(session_id, stage_revision_id)
+            rows = await self._revision_citations(session_id, stage_revision_id)
         return [self._citation_response(row) for row in rows]
 
     async def list_findings(
@@ -256,8 +261,21 @@ class ResearchService:
         *,
         session_id: UUID,
         account_id: UUID,
+        stage_revision_id: UUID | None = None,
     ) -> list[RelatedWorkFindingResponse]:
         await self._load_owned_session(session_id, account_id)
+        revision_filter = (
+            RelatedWorkFinding.stage_revision_id.is_(None)
+            if stage_revision_id is None
+            else RelatedWorkFinding.stage_revision_id == stage_revision_id
+        )
+        citation_revision_filter = (
+            Citation.stage_revision_id.is_(None)
+            if stage_revision_id is None
+            else Citation.stage_revision_id == stage_revision_id
+        )
+        if stage_revision_id is not None:
+            await self._assert_session_revision(session_id, stage_revision_id)
         rows = list(
             (
                 await self._db.scalars(
@@ -265,12 +283,12 @@ class ResearchService:
                     .join(
                         Citation,
                         (Citation.session_id == RelatedWorkFinding.session_id)
-                        & (Citation.stage_revision_id.is_(None))
+                        & citation_revision_filter
                         & (Citation.id == RelatedWorkFinding.citation_id),
                     )
                     .where(
                         RelatedWorkFinding.session_id == session_id,
-                        RelatedWorkFinding.stage_revision_id.is_(None),
+                        revision_filter,
                         Citation.is_active.is_(True),
                     )
                     .order_by(RelatedWorkFinding.created_at, RelatedWorkFinding.id)
@@ -3072,6 +3090,35 @@ class ResearchService:
             .order_by(Citation.created_at, Citation.id)
         )
         return list(rows.all())
+
+    async def _revision_citations(
+        self, session_id: UUID, stage_revision_id: UUID
+    ) -> list[Citation]:
+        rows = await self._db.scalars(
+            select(Citation)
+            .where(
+                Citation.session_id == session_id,
+                Citation.stage_revision_id == stage_revision_id,
+                Citation.is_active.is_(True),
+            )
+            .order_by(Citation.created_at, Citation.id)
+        )
+        return list(rows.all())
+
+    async def _assert_session_revision(
+        self, session_id: UUID, stage_revision_id: UUID
+    ) -> None:
+        revision = await self._db.scalar(
+            select(StageRevision.id).where(
+                StageRevision.id == stage_revision_id,
+                StageRevision.session_id == session_id,
+            )
+        )
+        if revision is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Stage Revision not found",
+            )
 
     async def _delete_working_related_work(self, session_id: UUID) -> None:
         object_keys = {

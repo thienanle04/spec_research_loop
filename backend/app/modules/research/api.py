@@ -80,12 +80,14 @@ async def list_citations(
     object_storage: Annotated[
         ObjectStoragePort | None, Depends(get_research_object_storage)
     ],
+    stage_revision_id: UUID | None = None,
 ) -> list[CitationResponse]:
     return await _service(
         db, source, verifier, llm, document_text_source, object_storage
     ).list_citations(
         session_id=session_id,
         account_id=account.id,
+        stage_revision_id=stage_revision_id,
     )
 
 
@@ -136,12 +138,14 @@ async def list_findings(
     object_storage: Annotated[
         ObjectStoragePort | None, Depends(get_research_object_storage)
     ],
+    stage_revision_id: UUID | None = None,
 ) -> list[RelatedWorkFindingResponse]:
     return await _service(
         db, source, verifier, llm, document_text_source, object_storage
     ).list_findings(
         session_id=session_id,
         account_id=account.id,
+        stage_revision_id=stage_revision_id,
     )
 
 
