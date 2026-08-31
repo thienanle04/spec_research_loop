@@ -1,7 +1,7 @@
 """Deterministic LLM port for judgement tests. Does not call a vendor."""
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from pydantic import TypeAdapter
@@ -20,7 +20,7 @@ class FakeJudgeLlmPort:
         system: str,
         prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         yield await self.complete(system=system, prompt=prompt, model=model)
 
     async def complete(

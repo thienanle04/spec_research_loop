@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import NoReturn
 
 from langchain_core.messages import AIMessage
@@ -154,7 +154,7 @@ class LangChainChatAdapter:
 
     async def stream(
         self, *, system: str, prompt: str, model: str | None = None
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         if not self._api_key:
             raise LlmCompleteError(f"{self._api_key_env} is not set")
         resolved = model or self.default_model
@@ -206,9 +206,9 @@ class LangChainChatAdapter:
         resolved = model or self.default_model
         if not resolved:
             raise LlmCompleteError("LLM model is not set")
-        # Custom base_url (FIT and other OpenAI-compatible gateways) often rejects
-        # tool calling and response_format=json_object. Mirror FitWebUi: plain
-        # completion + local schema validation.
+        # OpenAI-compatible gateways (including campus ai-fit) often reject
+        # tool calling and response_format=json_object. Use a plain completion
+        # plus local schema validation instead.
         if self._base_url:
             return await self._complete_structured_via_json(
                 system=system, prompt=prompt, schema=schema, model=model

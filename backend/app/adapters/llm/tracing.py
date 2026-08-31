@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 
 from app.core.config import get_settings
 from app.ports.llm import LlmCompleteError, LlmPort, LlmProviderError
@@ -71,7 +71,7 @@ class TracingLlm:
 
     async def stream(
         self, *, system: str, prompt: str, model: str | None = None
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         started = time.perf_counter()
         parts: list[str] = []
         outcome = "cancelled"

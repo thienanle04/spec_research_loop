@@ -1,6 +1,6 @@
 """In-memory LlmPort for tests and fake profiles. Does not call a vendor."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 
 from pydantic import TypeAdapter
@@ -22,7 +22,7 @@ class FakeLlm:
 
     async def stream(
         self, *, system: str, prompt: str, model: str | None = None
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         self.calls.append(LlmCall(system=system, prompt=prompt, model=model))
         if self.chunks is not None:
             for chunk in self.chunks:

@@ -1,6 +1,6 @@
 """LLM port — modules depend on this, not on vendor SDKs."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Protocol, TypeVar, runtime_checkable
 
 T = TypeVar("T")
@@ -31,7 +31,7 @@ class LlmCompleteError(Exception):
 class LlmPort(Protocol):
     def stream(
         self, *, system: str, prompt: str, model: str | None = None
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         """Yield completion text chunks."""
         ...
 

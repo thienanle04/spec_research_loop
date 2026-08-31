@@ -1,7 +1,7 @@
 """Spec module dependency bindings."""
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from pydantic import TypeAdapter
 
@@ -19,7 +19,7 @@ class FakeSpecLlmPort:
         system: str,
         prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         yield await self.complete(system=system, prompt=prompt, model=model)
 
     async def complete(

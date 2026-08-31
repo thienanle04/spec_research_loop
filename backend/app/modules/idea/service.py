@@ -128,7 +128,7 @@ class IdeaService:
                 )
             mode = "decomposition"
             normalized_answers: list[dict[str, str]] | None = None
-            note_text = note.strip() if (note or "").strip() else None
+            note_text = (note or "").strip() or None
             if node is WorkflowNode.IDEA_INTERPRETATION:
                 turns = turns_of(dict(session.working_draft_narrative))
                 cluster = unanswered_cluster(turns)
@@ -215,7 +215,7 @@ class IdeaService:
             return GenerateRun(
                 session=session,
                 context=context,
-                message=(message.strip() if (message or "").strip() else None),
+                message=((message or "").strip() or None),
                 answers=normalized_answers,
                 note=note_text,
                 mode=mode,
