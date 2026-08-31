@@ -148,6 +148,13 @@ export const WORKFLOW_NODE_LABELS: Record<WorkflowNode, string> = {
   [WorkflowNode.aggregator]: "Aggregator",
 };
 
+export function isIndependentJudgeNode(node: WorkflowNode): boolean {
+  return (
+    stageForWorkflowNode(node) === LoopStage.independent_judges &&
+    node !== WorkflowNode.aggregator
+  );
+}
+
 export function stagePathNodes(stage: LoopStage): readonly WorkflowNode[] {
   if (stage === LoopStage.independent_judges) {
     return [];

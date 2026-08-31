@@ -1,4 +1,4 @@
-"""Deterministic Aggregator composer: copy Severity, group, never majority-vote."""
+"""Deterministic Aggregator composer: copy Severity, group, never invent a verdict."""
 
 from __future__ import annotations
 

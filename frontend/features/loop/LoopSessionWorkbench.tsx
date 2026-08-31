@@ -33,7 +33,6 @@ import {
   ContributionStageContainer,
   ResearchStageContainer,
 } from "@/features/research";
-import { FIVE_JUDGE_NODES } from "@/features/judgement/types";
 import { JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
 import { ClaimsStageContainer } from "@/features/spec/ClaimsStageContainer";
 import { EvidenceStageContainer } from "@/features/spec/EvidenceStageContainer";
@@ -46,6 +45,7 @@ import {
   adjacentStop,
   ancestors,
   catalogStage,
+  isIndependentJudgeNode,
   railStop,
   resolveSelectedNode,
   resolveSelectedStage,
@@ -445,9 +445,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const draftConfirmable = editingStructuredDraft
     ? researchConfirmable
     : hasConfirmableWorkingDraft(session);
-  const workingDraftIsJudgeHead = (FIVE_JUDGE_NODES as readonly WorkflowNode[]).includes(
-    workingDraftNode,
-  );
+  const workingDraftIsJudgeHead = isIndependentJudgeNode(workingDraftNode);
   const showConfirm =
     viewingWorkingDraft &&
     selected.nodes.length > 0 &&
@@ -835,7 +833,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
-                generateRequestId={stagedGenerateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
                 onPicked={(next) => {
@@ -927,9 +924,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               refresh it from upstream, or Confirm anyway as a Stale re-accept.
             </p>
             <div className="mt-4 grid gap-2">
-              <Button type="button" disabled={confirmDisabled} onClick={confirmDialogGenerate}>
-                Generate
-              </Button>
+              {editingJudgementDraft ? null : (
+                <Button type="button" disabled={confirmDisabled} onClick={confirmDialogGenerate}>
+                  Generate
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"

@@ -613,6 +613,49 @@ describe("LoopSessionWorkbench", () => {
     expect(replace).toHaveBeenCalledWith(path(LoopStage.readiness), { scroll: false });
   });
 
+  it("does not offer Generate on the Independent judges Stale dialog", async () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+      [WorkflowNode.feasibility]: NodeHeadStatus.current,
+      [WorkflowNode.gap_judge]: NodeHeadStatus.current,
+      [WorkflowNode.contribution_judge]: NodeHeadStatus.current,
+      [WorkflowNode.evidence_judge]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_judge]: NodeHeadStatus.current,
+      [WorkflowNode.conference_judge]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads({
+            ...upstreamCurrent,
+            [WorkflowNode.aggregator]: NodeHeadStatus.stale,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    confirmHook.mockReturnValue({ mutateAsync: vi.fn(), error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    const dialog = screen.getByRole("dialog", { name: "Stale Workflow Node" });
+    expect(within(dialog).queryByRole("button", { name: "Generate" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Confirm anyway" })).toBeInTheDocument();
+  });
+
   it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });

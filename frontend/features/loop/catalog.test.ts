@@ -7,6 +7,7 @@ import {
   adjacentStop,
   ancestors,
   descendants,
+  isIndependentJudgeNode,
   navStops,
   ownedCardKinds,
   railStop,
@@ -57,6 +58,13 @@ describe("Loop Stage catalog", () => {
     expect(stageForWorkflowNode(WorkflowNode.gap)).toBe(LoopStage.gap);
     expect(stageForWorkflowNode(WorkflowNode.contribution)).toBe(LoopStage.contribution);
     expect(stageForWorkflowNode(WorkflowNode.aggregator)).toBe(LoopStage.independent_judges);
+  });
+
+  it("treats the five Judges as Independent judges Node Heads, not Aggregator", () => {
+    expect(isIndependentJudgeNode(WorkflowNode.gap_judge)).toBe(true);
+    expect(isIndependentJudgeNode(WorkflowNode.conference_judge)).toBe(true);
+    expect(isIndependentJudgeNode(WorkflowNode.aggregator)).toBe(false);
+    expect(isIndependentJudgeNode(WorkflowNode.feasibility)).toBe(false);
   });
 
   it("falls back to the Working Draft Loop Stage when the query is absent or invalid", () => {

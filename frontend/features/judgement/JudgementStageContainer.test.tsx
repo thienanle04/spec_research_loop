@@ -223,10 +223,82 @@ describe("JudgementStageContainer", () => {
     );
     expect(await screen.findByRole("list", { name: "Judge Node Heads" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Regenerate Aggregator" })).not.toBeInTheDocument();
-    expect(mocks.streamStart).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.streamStart).not.toHaveBeenCalled());
   });
 
-  it("sends stale re-accept only after the workbench Stale dialog requests generate", async () => {
+  it("starts Aggregator generate when five Judge heads are current and Aggregator is empty", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [],
+        handling_options: [],
+        scores: null,
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, currentIndependentJudgesHeads())}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(mocks.streamStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          node: WorkflowNode.aggregator,
+          staleReaccept: false,
+        }),
+      ),
+    );
+  });
+
+  it("starts Aggregator generate with Stale re-accept when five Judge heads are current and Aggregator is Stale", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [],
+        handling_options: [],
+        scores: null,
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const staleAggregatorHeads = currentIndependentJudgesHeads().map((head) =>
+      head.node === WorkflowNode.aggregator
+        ? {
+            ...head,
+            status: NodeHeadStatus.stale,
+            stage_revision_id: "rev-aggregator",
+            generated_since_prepare: false,
+          }
+        : head,
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, staleAggregatorHeads)}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(mocks.streamStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          node: WorkflowNode.aggregator,
+          staleReaccept: true,
+        }),
+      ),
+    );
+  });
+
+  it("does not start Aggregator generate when Judge heads are not current", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -239,27 +311,13 @@ describe("JudgementStageContainer", () => {
         head_revision: null,
       },
     ]);
-    const { rerender } = render(
+    render(
       <QueryClientProvider client={queryClient}>
         <JudgementStageContainer sessionId="session-1" session={staleSession} />
       </QueryClientProvider>,
     );
     expect(await screen.findByRole("list", { name: "Judge Node Heads" })).toBeInTheDocument();
-    expect(mocks.streamStart).not.toHaveBeenCalled();
-    rerender(
-      <QueryClientProvider client={queryClient}>
-        <JudgementStageContainer
-          sessionId="session-1"
-          session={staleSession}
-          generateRequestId={1}
-        />
-      </QueryClientProvider>,
-    );
-    await waitFor(() =>
-      expect(mocks.streamStart).toHaveBeenCalledWith(
-        expect.objectContaining({ staleReaccept: true }),
-      ),
-    );
+    await waitFor(() => expect(mocks.streamStart).not.toHaveBeenCalled());
   });
 
   it("shows Evidence Judge compact head on the Aggregator dashboard", async () => {

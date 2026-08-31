@@ -229,12 +229,12 @@ class LoopService:
                     )
             working = WorkflowNode(session.working_draft_node)
             independent_judges = LOOP_STAGE_NODES[LoopStage.INDEPENDENT_JUDGES]
-            sibling_independent_judges = (
+            independent_judges_dashboard = (
                 working in independent_judges and node in independent_judges
             )
             if (
                 heads[node].status_enum() != NodeHeadStatus.CURRENT
-                and not sibling_independent_judges
+                and not independent_judges_dashboard
             ):
                 raise OperationalErrorException(
                     status_code=status.HTTP_409_CONFLICT,

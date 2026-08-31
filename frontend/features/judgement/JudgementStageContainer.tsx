@@ -30,7 +30,6 @@ import { useJudgementStream } from "./useJudgementStream";
 type Props = {
   sessionId: string;
   session: LoopSessionResponse;
-  generateRequestId?: number;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
   onPicked?: (next: LoopSessionResponse) => void;
@@ -57,7 +56,6 @@ type HeadSummary = {
 export function JudgementStageContainer({
   sessionId,
   session,
-  generateRequestId = 0,
   onRunningChange,
   onConfirmabilityChange,
   onPicked,
@@ -65,7 +63,7 @@ export function JudgementStageContainer({
   const queryClient = useQueryClient();
   const { queue } = useLoopSessionSave();
   const stream = useJudgementStream();
-  const seenGenerateRequestIdRef = useRef(generateRequestId);
+  const startedAggregatorKeyRef = useRef<string | null>(null);
   const [issues, setIssues] = useState<JudgeIssue[]>([]);
   const [scores, setScores] = useState<ConferenceScores | null>(null);
   const [handlingOptions, setHandlingOptions] = useState<HandlingOption[]>([]);
@@ -92,6 +90,15 @@ export function JudgementStageContainer({
     return head?.status === NodeHeadStatus.stale && head.generated_since_prepare !== true;
   });
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
+  const fiveJudgeHeadsCurrent = FIVE_JUDGE_NODES.every((judge) => {
+    const head = session.node_heads.find((item) => item.node === judge);
+    return head?.status === NodeHeadStatus.current;
+  });
+  const aggregatorNeedsGenerate =
+    (workingHead?.status ?? NodeHeadStatus.empty) !== NodeHeadStatus.current;
+  const aggregatorStartKey = fiveJudgeHeadsCurrent
+    ? `${sessionId}:${workingHead?.status ?? NodeHeadStatus.empty}:${workingHead?.stage_revision_id ?? ""}`
+    : null;
 
   const runQuery = useQuery({
     queryKey: judgeRunQueryKey(sessionId, node),
@@ -347,13 +354,26 @@ export function JudgementStageContainer({
     }
   }
 
+  const loadedAggregatorOutput =
+    (runQuery.data?.issues?.length ?? 0) > 0 ||
+    runQuery.data?.scores != null ||
+    (runQuery.data?.handling_options?.length ?? 0) > 0;
+
   useEffect(() => {
-    const previous = seenGenerateRequestIdRef.current;
-    seenGenerateRequestIdRef.current = generateRequestId;
-    if (generateRequestId < 1 || generateRequestId <= previous) return;
+    if (aggregatorStartKey == null || !aggregatorNeedsGenerate) return;
+    if (runQuery.isPending || loadedAggregatorOutput || stream.running) return;
+    if (startedAggregatorKeyRef.current === aggregatorStartKey) return;
+    startedAggregatorKeyRef.current = aggregatorStartKey;
     void generate({ staleReaccept });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stale-dialog trigger only
-  }, [generateRequestId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- start once per empty/Stale Aggregator when five Judge heads are current
+  }, [
+    aggregatorStartKey,
+    aggregatorNeedsGenerate,
+    runQuery.isPending,
+    loadedAggregatorOutput,
+    stream.running,
+    staleReaccept,
+  ]);
 
   const title = WORKFLOW_NODE_LABELS[WorkflowNode.aggregator];
   const error = stream.error ?? saveError ?? (runQuery.isError ? "Could not load Judge Run." : null);
@@ -363,8 +383,8 @@ export function JudgementStageContainer({
       <CardHeader>
         <CardTitle className="font-serif text-navy">{title}</CardTitle>
         <CardDescription>
-          The Aggregator copies Judge Issues and scores. It does not majority-vote. Confirm freezes
-          the report even when CRITICAL Issues remain.
+          The Aggregator copies Judge Issues and scores. Confirm freezes the report even when
+          CRITICAL Issues remain.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
@@ -387,7 +407,7 @@ export function JudgementStageContainer({
             return (
               <li
                 key={judge}
-                className="rounded-md border border-border bg-card px-3 py-2"
+                className="flex h-full flex-col gap-2 rounded-md border border-border bg-card px-3 py-2"
               >
                 <p className="text-sm font-medium text-navy">{label}</p>
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">{displayStatus}</p>
@@ -418,7 +438,7 @@ export function JudgementStageContainer({
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="mt-2"
+                    className="mt-auto w-full"
                     onClick={() => void generateJudge(judge)}
                   >
                     {empty ? `Generate ${label}` : `Regenerate ${label}`}
