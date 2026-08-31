@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,6 +33,20 @@ function judgeRunQueryKey(sessionId: string, node: string, revisionId?: string |
   return ["/api/judgement/run", sessionId, node, revisionId ?? "working"] as const;
 }
 
+function severityCounts(issues: JudgeIssue[]) {
+  return {
+    CRITICAL: issues.filter((item) => item.severity === "CRITICAL").length,
+    MAJOR: issues.filter((item) => item.severity === "MAJOR").length,
+    MINOR: issues.filter((item) => item.severity === "MINOR").length,
+  };
+}
+
+type HeadSummary = {
+  status?: "running" | "current";
+  issues?: JudgeIssue[];
+  scores?: ConferenceScores | null;
+};
+
 export function JudgementStageContainer({
   sessionId,
   session,
@@ -50,6 +64,9 @@ export function JudgementStageContainer({
   const [handlingOptions, setHandlingOptions] = useState<HandlingOption[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [generatingNode, setGeneratingNode] = useState<JudgeNode | null>(null);
+  const [staleDialogJudge, setStaleDialogJudge] = useState<JudgeNode | null>(null);
+  const [headSummaries, setHeadSummaries] = useState<Partial<Record<JudgeNode, HeadSummary>>>({});
   const node = WorkflowNode.aggregator as JudgeNode;
   const canGenerate = true;
   const hasOutput = issues.length > 0 || scores != null || handlingOptions.length > 0;
@@ -77,6 +94,23 @@ export function JudgementStageContainer({
       );
       return response.data;
     },
+  });
+  const judgeRuns = useQueries({
+    queries: FIVE_JUDGE_NODES.map((judge) => {
+      const head = session.node_heads.find((item) => item.node === judge);
+      const empty = (head?.status ?? NodeHeadStatus.empty) === NodeHeadStatus.empty;
+      return {
+        queryKey: judgeRunQueryKey(sessionId, judge),
+        enabled: !empty,
+        queryFn: async () => {
+          const response = await customFetch<{ data: JudgeRun; status: number }>(
+            `/api/judgement/sessions/${sessionId}/nodes/${judge}`,
+            { method: "GET" },
+          );
+          return response.data;
+        },
+      };
+    }),
   });
 
   useEffect(() => {
@@ -177,6 +211,59 @@ export function JudgementStageContainer({
     }
   }
 
+  function judgeNeedsStaleReaccept(judge: JudgeNode): boolean {
+    const head = currentSession().node_heads.find((item) => item.node === judge);
+    return head?.status === NodeHeadStatus.stale && head.generated_since_prepare !== true;
+  }
+
+  async function generateJudge(judge: JudgeNode, options?: { staleReaccept?: boolean }) {
+    if (judgeNeedsStaleReaccept(judge) && options?.staleReaccept !== true) {
+      setStaleDialogJudge(judge);
+      return;
+    }
+    setStaleDialogJudge(null);
+    setSaveError(null);
+    setGeneratingNode(judge);
+    try {
+      await queue.flush();
+      await stream.start({
+        sessionId,
+        node: judge,
+        expectedVersion: expectedVersion(),
+        staleReaccept: options?.staleReaccept === true,
+        onEvent: (event) => {
+          if (event.node !== judge) return;
+          if (event.type === "draft_patch") {
+            setHeadSummaries((current) => ({
+              ...current,
+              [judge]: {
+                status: "running",
+                issues: event.issues,
+                scores: event.scores ?? null,
+              },
+            }));
+          } else if (event.type === "done") {
+            setHeadSummaries((current) => ({
+              ...current,
+              [judge]: { ...current[judge], status: "current" },
+            }));
+            void queryClient.invalidateQueries({ queryKey: sessionKey });
+          }
+        },
+      });
+      await queryClient.invalidateQueries({ queryKey: judgeRunQueryKey(sessionId, judge) });
+      await queryClient.invalidateQueries({ queryKey: sessionKey });
+    } catch (error) {
+      setSaveError(getApiErrorMessage(error));
+      setHeadSummaries((current) => ({
+        ...current,
+        [judge]: { ...current[judge], status: undefined },
+      }));
+    } finally {
+      setGeneratingNode((current) => (current === judge ? null : current));
+    }
+  }
+
   async function generatePending() {
     setSaveError(null);
     try {
@@ -240,16 +327,58 @@ export function JudgementStageContainer({
           aria-label="Judge Node Heads"
           className="grid gap-2 sm:grid-cols-5"
         >
-          {FIVE_JUDGE_NODES.map((judge) => {
+          {FIVE_JUDGE_NODES.map((judge, index) => {
             const head = session.node_heads.find((item) => item.node === judge);
             const status = head?.status ?? NodeHeadStatus.empty;
+            const summary = headSummaries[judge];
+            const displayStatus = generatingNode === judge ? "running" : (summary?.status ?? status);
+            const run = judgeRuns[index]?.data;
+            const issues = summary?.issues ?? run?.issues ?? [];
+            const scores = summary?.scores ?? run?.scores ?? null;
+            const counts = severityCounts(issues);
+            const empty = displayStatus === NodeHeadStatus.empty;
+            const label = WORKFLOW_NODE_LABELS[judge];
+            const canGenerateHead = generatingNode == null && !stream.running;
             return (
               <li
                 key={judge}
                 className="rounded-md border border-border bg-card px-3 py-2"
               >
-                <p className="text-sm font-medium text-navy">{WORKFLOW_NODE_LABELS[judge]}</p>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">{status}</p>
+                <p className="text-sm font-medium text-navy">{label}</p>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">{displayStatus}</p>
+                {displayStatus !== "running" && judge === WorkflowNode.conference_judge && scores != null ? (
+                  <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                    <span>{scores.originality}/10</span>
+                    {" · "}
+                    <span>{scores.significance}/10</span>
+                    {" · "}
+                    <span>{scores.soundness}/10</span>
+                    {" · "}
+                    <span>{scores.clarity}/10</span>
+                    {" · "}
+                    <span>{scores.reproducibility}/10</span>
+                  </p>
+                ) : null}
+                {displayStatus !== "running" && judge !== WorkflowNode.conference_judge ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {counts.CRITICAL > 0 ? `${counts.CRITICAL} CRITICAL` : null}
+                    {counts.CRITICAL > 0 && counts.MAJOR > 0 ? " " : null}
+                    {counts.MAJOR > 0 ? `${counts.MAJOR} MAJOR` : null}
+                    {counts.CRITICAL + counts.MAJOR > 0 && counts.MINOR > 0 ? " " : null}
+                    {counts.MINOR > 0 ? `${counts.MINOR} MINOR` : null}
+                  </p>
+                ) : null}
+                {canGenerateHead ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={() => void generateJudge(judge)}
+                  >
+                    {empty ? `Generate ${label}` : `Regenerate ${label}`}
+                  </Button>
+                ) : null}
               </li>
             );
           })}
@@ -292,6 +421,35 @@ export function JudgementStageContainer({
           <p role="alert" className="text-sm text-destructive">
             {error}
           </p>
+        ) : null}
+        {staleDialogJudge ? (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="judge-stale-reaccept-title"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          >
+            <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-lg">
+              <h2 id="judge-stale-reaccept-title" className="font-serif text-lg text-navy">
+                Stale Workflow Node
+              </h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                This Judge was restored from a Stale Stage Revision. Generate again to
+                refresh it from upstream, with Stale re-accept.
+              </p>
+              <div className="mt-4 grid gap-2">
+                <Button
+                  type="button"
+                  onClick={() => void generateJudge(staleDialogJudge, { staleReaccept: true })}
+                >
+                  Generate
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setStaleDialogJudge(null)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </div>
         ) : null}
       </CardContent>
     </Card>

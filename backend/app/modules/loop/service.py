@@ -15,6 +15,7 @@ from sqlalchemy.orm import attributes, selectinload
 from app.core.errors import OperationalErrorException
 from app.modules.loop.catalog import (
     CARD_KIND_OWNERS,
+    FIVE_JUDGE_NODES,
     HANDLING_OPTION_TARGETS,
     LOOP_STAGE_NODES,
     WORKFLOW_NODES,
@@ -688,6 +689,44 @@ class LoopService:
             expected_version=expected_version,
         )
 
+        minted = await self._freeze_working_node(session, node)
+        if minted:
+            if node is WorkflowNode.IDEA_INTERPRETATION:
+                saved_narratives = dict(session.working_draft_narratives)
+                saved_narratives[node.value] = dict(session.working_draft_narrative)
+                saved_narratives[WorkflowNode.IDEA_DECOMPOSITION.value] = {}
+                session.working_draft_narratives = saved_narratives
+                session.working_draft_node = WorkflowNode.IDEA_DECOMPOSITION.value
+                session.working_draft_narrative = {}
+
+            if node is WorkflowNode.FEASIBILITY:
+                document = await self._assemble_spec(session, heads)
+                spec = SpecVersion(session_id=session.id, document=document)
+                session.spec_versions.append(spec)
+                await self._db.flush()
+                session.produced_spec_version_id = spec.id
+                session.valid_spec_version_id = spec.id
+
+        await self._db.commit()
+        return await self.get_session(session_id=session_id, account_id=account_id)
+
+    async def confirm_generated_judge(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        node: WorkflowNode,
+    ) -> None:
+        if node not in FIVE_JUDGE_NODES:
+            return
+        session = await self._load_session(session_id, account_id)
+        await self._freeze_working_node(session, node)
+
+    async def _freeze_working_node(
+        self, session: LoopSession, node: WorkflowNode
+    ) -> bool:
+        heads = {head.node_enum(): head for head in session.node_heads}
+        head = heads[node]
         owned = set(owned_kinds(node))
         slice_cards = [card for card in session.cards if card.kind_enum() in owned]
         snapshot = _card_snapshot(slice_cards)
@@ -709,10 +748,7 @@ class LoopService:
                 if head.status_enum() is NodeHeadStatus.STALE:
                     head.status = NodeHeadStatus.CURRENT.value
                 head.generated_since_prepare = False
-                await self._db.commit()
-                return await self.get_session(
-                    session_id=session_id, account_id=account_id
-                )
+                return False
 
         next_n = 1 + max(
             (
@@ -759,25 +795,7 @@ class LoopService:
         await port.freeze(
             session_id=session.id, node=node.value, revision_id=revision.id
         )
-
-        if node is WorkflowNode.IDEA_INTERPRETATION:
-            saved_narratives = dict(session.working_draft_narratives)
-            saved_narratives[node.value] = dict(session.working_draft_narrative)
-            saved_narratives[WorkflowNode.IDEA_DECOMPOSITION.value] = {}
-            session.working_draft_narratives = saved_narratives
-            session.working_draft_node = WorkflowNode.IDEA_DECOMPOSITION.value
-            session.working_draft_narrative = {}
-
-        if node is WorkflowNode.FEASIBILITY:
-            document = await self._assemble_spec(session, heads)
-            spec = SpecVersion(session_id=session.id, document=document)
-            session.spec_versions.append(spec)
-            await self._db.flush()
-            session.produced_spec_version_id = spec.id
-            session.valid_spec_version_id = spec.id
-
-        await self._db.commit()
-        return await self.get_session(session_id=session_id, account_id=account_id)
+        return True
 
     async def recompute_prepare(
         self,

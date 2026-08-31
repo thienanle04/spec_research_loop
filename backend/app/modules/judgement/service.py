@@ -303,9 +303,7 @@ class JudgementService:
                     yield _failure_event(run, error)
                     continue
                 await self._persist_completed(run, parsed)
-                await self._mark_generated_since_prepare(
-                    run.session_id, run.node.value
-                )
+                await self._confirm_completed_judge(run)
                 await self._db.commit()
                 async for event in self._result_events(run):
                     yield event
@@ -365,7 +363,17 @@ class JudgementService:
     async def _complete_and_persist(self, run: GenerationRun, llm: LlmPort) -> None:
         parsed = await self._complete_llm(run, llm)
         await self._persist_completed(run, parsed)
-        await self._mark_generated_since_prepare(run.session_id, run.node.value)
+        await self._confirm_completed_judge(run)
+
+    async def _confirm_completed_judge(self, run: GenerationRun) -> None:
+        if run.node not in FIVE_JUDGE_NODES:
+            await self._mark_generated_since_prepare(run.session_id, run.node.value)
+            return
+        await LoopService(self._db).confirm_generated_judge(
+            session_id=run.session_id,
+            account_id=run.account_id,
+            node=run.node,
+        )
 
     async def _result_events(
         self, run: GenerationRun

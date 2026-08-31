@@ -33,6 +33,7 @@ import {
   ContributionStageContainer,
   ResearchStageContainer,
 } from "@/features/research";
+import { FIVE_JUDGE_NODES } from "@/features/judgement/types";
 import { JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
 import { ClaimsStageContainer } from "@/features/spec/ClaimsStageContainer";
 import { EvidenceStageContainer } from "@/features/spec/EvidenceStageContainer";
@@ -444,8 +445,14 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const draftConfirmable = editingStructuredDraft
     ? researchConfirmable
     : hasConfirmableWorkingDraft(session);
+  const workingDraftIsJudgeHead = (FIVE_JUDGE_NODES as readonly WorkflowNode[]).includes(
+    workingDraftNode,
+  );
   const showConfirm =
-    viewingWorkingDraft && selected.nodes.length > 0 && draftConfirmable;
+    viewingWorkingDraft &&
+    selected.nodes.length > 0 &&
+    draftConfirmable &&
+    !workingDraftIsJudgeHead;
   const confirmDisabled =
     generating ||
     grillEditing ||

@@ -535,4 +535,149 @@ describe("JudgementStageContainer", () => {
     await user.click(await screen.findByRole("button", { name: "Stop Judge" }));
     expect(mocks.abort).toHaveBeenCalled();
   });
+
+  it("generates one Judge from a compact head click and shows running then current counts", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    let finish: (() => void) | undefined;
+    mocks.streamStart.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, emptyIndependentJudgesHeads())}
+        />
+      </QueryClientProvider>,
+    );
+    expect(mocks.streamStart).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("button", { name: "Generate Gap Judge" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        node: "gap_judge",
+        expectedVersion: 4,
+        staleReaccept: false,
+      }),
+    );
+    const heads = screen.getByRole("list", { name: "Judge Node Heads" });
+    const gap = within(heads).getByText("Gap Judge").closest("li");
+    expect(gap).not.toBeNull();
+    expect(within(gap as HTMLElement).getByText("running")).toBeInTheDocument();
+    finish?.();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Generate Gap Judge" })).toBeInTheDocument(),
+    );
+
+    mocks.streamStart.mockImplementation(async (options: { onEvent?: (event: unknown) => void }) => {
+      options.onEvent?.({
+        type: "draft_patch",
+        node: "gap_judge",
+        issues: [
+          {
+            id: "issue-1",
+            finding_kind: "gap_unsupported_by_sources",
+            severity: "CRITICAL",
+            reason: "No cited passage supports the gap statement.",
+            suggestion: "Cite a supporting passage.",
+            target_card_id: null,
+          },
+          {
+            id: "issue-2",
+            finding_kind: "gap_untestable",
+            severity: "MAJOR",
+            reason: "No evaluation protocol exists.",
+            suggestion: "Add a measurable test.",
+            target_card_id: null,
+          },
+        ],
+      });
+      options.onEvent?.({ type: "done", node: "gap_judge", version: 5 });
+    });
+    await user.click(screen.getByRole("button", { name: "Generate Gap Judge" }));
+    const gapAfter = within(heads).getByText("Gap Judge").closest("li");
+    await waitFor(() =>
+      expect(within(gapAfter as HTMLElement).getByText("current")).toBeInTheDocument(),
+    );
+    expect(within(gapAfter as HTMLElement).getByText(/1 CRITICAL/)).toBeInTheDocument();
+    expect(within(gapAfter as HTMLElement).getByText(/1 MAJOR/)).toBeInTheDocument();
+  });
+
+  it("shows Conference criterion scores on the compact head after generate", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    mocks.streamStart.mockImplementation(async (options: { onEvent?: (event: unknown) => void }) => {
+      options.onEvent?.({
+        type: "draft_patch",
+        node: "conference_judge",
+        issues: [],
+        scores: {
+          originality: 7,
+          significance: 8,
+          soundness: 6,
+          clarity: 9,
+          reproducibility: 5,
+        },
+      });
+      options.onEvent?.({ type: "done", node: "conference_judge", version: 5 });
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, emptyIndependentJudgesHeads())}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Generate Conference Judge" }));
+    const heads = screen.getByRole("list", { name: "Judge Node Heads" });
+    const conference = within(heads).getByText("Conference Judge").closest("li");
+    expect(conference).not.toBeNull();
+    await waitFor(() => expect(within(conference as HTMLElement).getByText("current")).toBeInTheDocument());
+    expect(within(conference as HTMLElement).getByText("7/10")).toBeInTheDocument();
+    expect(within(conference as HTMLElement).queryByText("CRITICAL")).not.toBeInTheDocument();
+  });
+
+  it("asks for Stale re-accept when generating a Stale Judge", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const staleHeads: LoopSessionResponse["node_heads"] = emptyIndependentJudgesHeads().map((head) =>
+      head.node === WorkflowNode.gap_judge
+        ? {
+            ...head,
+            status: NodeHeadStatus.stale,
+            stage_revision_id: "rev-gap",
+            generated_since_prepare: false,
+          }
+        : head,
+    );
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, staleHeads)}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Regenerate Gap Judge" }));
+    expect(mocks.streamStart).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Stale Workflow Node" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        node: "gap_judge",
+        staleReaccept: true,
+      }),
+    );
+  });
 });
