@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   streamStartPending: vi.fn(),
   abort: vi.fn(),
   running: false,
+  progressMessage: null as string | null,
   customFetch: vi.fn(),
 }));
 
@@ -29,7 +30,7 @@ vi.mock("./useJudgementStream", () => ({
   useJudgementStream: () => ({
     running: mocks.running,
     progress: 0,
-    progressMessage: mocks.running ? "Starting Gap Judge" : null,
+    progressMessage: mocks.progressMessage,
     error: null,
     start: mocks.streamStart,
     startPending: mocks.streamStartPending,
@@ -100,6 +101,7 @@ describe("JudgementStageContainer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.running = false;
+    mocks.progressMessage = null;
     mocks.customFetch.mockResolvedValue({
       status: 200,
       data: {
@@ -167,29 +169,64 @@ describe("JudgementStageContainer", () => {
     expect(screen.queryByRole("textbox", { name: /Working Draft/i })).not.toBeInTheDocument();
   });
 
-  it("starts Aggregator generate from the dashboard", async () => {
-    const user = userEvent.setup();
-    const queryClient = new QueryClient({
+  it("does not offer Generate Aggregator or Regenerate Aggregator", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [],
+        handling_options: [],
+        scores: null,
+      },
+    });
+    const emptyClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const { unmount } = render(
+      <QueryClientProvider client={emptyClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, emptyIndependentJudgesHeads())}
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole("list", { name: "Judge Node Heads" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Generate Aggregator" })).not.toBeInTheDocument();
+    unmount();
+
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [
+          {
+            id: "issue-1",
+            finding_kind: "gap_unsupported_by_sources",
+            severity: "CRITICAL",
+            reason: "No cited passage supports the gap statement.",
+            suggestion: "Cite a supporting passage.",
+            target_card_id: null,
+          },
+        ],
+      },
+    });
+    const reportClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     render(
-      <QueryClientProvider client={queryClient}>
-        <JudgementStageContainer sessionId="session-1" session={session()} />
+      <QueryClientProvider client={reportClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, currentIndependentJudgesHeads())}
+        />
       </QueryClientProvider>,
     );
-    await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
-    expect(mocks.streamStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-1",
-        node: "aggregator",
-        expectedVersion: 4,
-        staleReaccept: false,
-      }),
-    );
+    expect(await screen.findByRole("list", { name: "Judge Node Heads" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Regenerate Aggregator" })).not.toBeInTheDocument();
+    expect(mocks.streamStart).not.toHaveBeenCalled();
   });
 
   it("sends stale re-accept only after the workbench Stale dialog requests generate", async () => {
-    const user = userEvent.setup();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -207,11 +244,8 @@ describe("JudgementStageContainer", () => {
         <JudgementStageContainer sessionId="session-1" session={staleSession} />
       </QueryClientProvider>,
     );
-    await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
-    expect(mocks.streamStart).toHaveBeenCalledWith(
-      expect.objectContaining({ staleReaccept: false }),
-    );
-    mocks.streamStart.mockClear();
+    expect(await screen.findByRole("list", { name: "Judge Node Heads" })).toBeInTheDocument();
+    expect(mocks.streamStart).not.toHaveBeenCalled();
     rerender(
       <QueryClientProvider client={queryClient}>
         <JudgementStageContainer
@@ -229,7 +263,6 @@ describe("JudgementStageContainer", () => {
   });
 
   it("shows Evidence Judge compact head on the Aggregator dashboard", async () => {
-    const user = userEvent.setup();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -243,19 +276,10 @@ describe("JudgementStageContainer", () => {
     );
     expect(await screen.findByText("Evidence Judge")).toBeInTheDocument();
     expect(screen.getByRole("list", { name: "Judge Node Heads" })).toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
-    expect(mocks.streamStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-1",
-        node: "aggregator",
-        expectedVersion: 4,
-        staleReaccept: false,
-      }),
-    );
+    expect(mocks.streamStart).not.toHaveBeenCalled();
   });
 
   it("shows Contribution Judge compact head on the Aggregator dashboard", async () => {
-    const user = userEvent.setup();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -268,19 +292,10 @@ describe("JudgementStageContainer", () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText("Contribution Judge")).toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
-    expect(mocks.streamStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-1",
-        node: "aggregator",
-        expectedVersion: 4,
-        staleReaccept: false,
-      }),
-    );
+    expect(mocks.streamStart).not.toHaveBeenCalled();
   });
 
   it("shows Experiment Judge compact head on the Aggregator dashboard", async () => {
-    const user = userEvent.setup();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -293,15 +308,7 @@ describe("JudgementStageContainer", () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText("Experiment Judge")).toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
-    expect(mocks.streamStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-1",
-        node: "aggregator",
-        expectedVersion: 4,
-        staleReaccept: false,
-      }),
-    );
+    expect(mocks.streamStart).not.toHaveBeenCalled();
   });
 
   it("shows Conference Judge criterion scores instead of Judge Issues", async () => {
@@ -319,7 +326,6 @@ describe("JudgementStageContainer", () => {
         },
       },
     });
-    const user = userEvent.setup();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -343,15 +349,7 @@ describe("JudgementStageContainer", () => {
     expect(screen.getByText("5/10")).toBeInTheDocument();
     expect(screen.queryByLabelText("Judge Issues")).not.toBeInTheDocument();
     expect(screen.queryByText("No Judge Issues on this Judge Run.")).not.toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
-    expect(mocks.streamStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-1",
-        node: "aggregator",
-        expectedVersion: 4,
-        staleReaccept: false,
-      }),
-    );
+    expect(mocks.streamStart).not.toHaveBeenCalled();
   });
 
   it("shows Aggregator Report issues, disagreement, scores, and pickable Handling Options", async () => {
@@ -414,16 +412,7 @@ describe("JudgementStageContainer", () => {
     expect(await screen.findByRole("button", { name: "Pick Revise the claim" })).toBeInTheDocument();
     expect(screen.getByLabelText("Other prose")).toBeInTheDocument();
     expect(screen.getAllByText("7/10").length).toBeGreaterThanOrEqual(1);
-    await user.click(await screen.findByRole("button", { name: "Regenerate Aggregator" }));
-    expect(mocks.streamStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-1",
-        node: "aggregator",
-        expectedVersion: 4,
-        staleReaccept: false,
-      }),
-    );
-    mocks.streamStart.mockClear();
+    expect(mocks.streamStart).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Pick Revise the claim" }));
     expect(mocks.customFetch).toHaveBeenCalledWith(
       "/api/loop/sessions/session-1/pick",
@@ -680,6 +669,22 @@ describe("JudgementStageContainer", () => {
     );
   });
 
+  it("does not call abort Stop Judge while generate is running", async () => {
+    mocks.running = true;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer sessionId="session-1" session={session()} />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Stop Judge" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop generation" })).toBeInTheDocument();
+    expect(screen.queryByText("Running Judge…")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Generating…");
+  });
+
   it("aborts run pending from Independent judges", async () => {
     mocks.running = true;
     const user = userEvent.setup();
@@ -691,7 +696,7 @@ describe("JudgementStageContainer", () => {
         <JudgementStageContainer sessionId="session-1" session={session()} />
       </QueryClientProvider>,
     );
-    await user.click(await screen.findByRole("button", { name: "Stop Judge" }));
+    await user.click(await screen.findByRole("button", { name: "Stop generation" }));
     expect(mocks.abort).toHaveBeenCalled();
   });
 

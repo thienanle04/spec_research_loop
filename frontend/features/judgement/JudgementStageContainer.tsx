@@ -75,7 +75,6 @@ export function JudgementStageContainer({
   const [staleDialogJudge, setStaleDialogJudge] = useState<JudgeNode | null>(null);
   const [headSummaries, setHeadSummaries] = useState<Partial<Record<JudgeNode, HeadSummary>>>({});
   const node = WorkflowNode.aggregator as JudgeNode;
-  const canGenerate = true;
   const hasOutput = issues.length > 0 || scores != null || handlingOptions.length > 0;
   const aggregatorConfirmable =
     session.working_draft_node === WorkflowNode.aggregator && hasOutput;
@@ -443,26 +442,19 @@ export function JudgementStageContainer({
         {stream.running ? (
           <div className="flex flex-wrap items-center gap-3">
             <Button type="button" variant="outline" onClick={stream.abort}>
-              Stop Judge
+              Stop generation
             </Button>
             <p role="status" className="text-sm text-muted-foreground">
-              {stream.progressMessage ?? "Running Judge…"}
+              {stream.progressMessage ?? "Generating…"}
             </p>
           </div>
-        ) : (
+        ) : canRunPending ? (
           <div className="flex flex-wrap items-center gap-3">
-            {canGenerate ? (
-              <Button type="button" variant="outline" onClick={() => void generate()}>
-                {hasOutput ? `Regenerate ${title}` : `Generate ${title}`}
-              </Button>
-            ) : null}
-            {canRunPending ? (
-              <Button type="button" variant="outline" onClick={() => void generatePending()}>
-                Run pending Judges
-              </Button>
-            ) : null}
+            <Button type="button" variant="outline" onClick={() => void generatePending()}>
+              Run pending Judges
+            </Button>
           </div>
-        )}
+        ) : null}
         {error ? (
           <p role="alert" className="text-sm text-destructive">
             {error}
