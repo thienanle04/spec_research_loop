@@ -17,6 +17,8 @@ from app.ports.llm import LlmCompleteError, LlmProviderError
 
 logger = logging.getLogger("app.adapters.llm")
 
+DEFAULT_MAX_TOKENS = 32768
+
 _PROMPT = ChatPromptTemplate.from_messages(
     [
         ("system", "{system}"),
@@ -45,6 +47,25 @@ def _message_text(content: object) -> str:
 
 def _strip_json_fence(raw: str) -> str:
     return re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE)
+
+
+def parse_structured_json[T](raw: str, schema: type[T]) -> T:
+    """Validate a model completion against a Pydantic schema."""
+    stripped = _strip_json_fence(raw)
+    try:
+        return TypeAdapter(schema).validate_json(stripped)
+    except Exception as exc:
+        logger.warning(
+            "LLM structured JSON validate failed schema=%s error=%s:%s raw_len=%s raw=%s",
+            getattr(schema, "__name__", str(schema)),
+            type(exc).__name__,
+            exc,
+            len(raw),
+            raw[:4000],
+        )
+        raise LlmCompleteError(
+            "LLM returned JSON that did not match the expected schema"
+        ) from exc
 
 
 def _http_status(exc: BaseException) -> int | None:
@@ -146,11 +167,27 @@ class LangChainChatAdapter:
         api_key_env: str = "LLM_API_KEY",
         base_url: str | None = None,
         default_model: str,
+        max_tokens: int | None = None,
     ) -> None:
         self._api_key = api_key
         self._api_key_env = api_key_env
         self._base_url = base_url
         self.default_model = default_model
+        self._max_tokens = (
+            max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS
+        )
+
+    def _chat(self, *, model: str, streaming: bool) -> ChatOpenAI:
+        api_key = self._api_key
+        if not api_key:
+            raise LlmCompleteError(f"{self._api_key_env} is not set")
+        return ChatOpenAI(
+            model=model,
+            api_key=SecretStr(api_key),
+            base_url=self._base_url or None,
+            streaming=streaming,
+            max_completion_tokens=self._max_tokens,
+        )
 
     async def stream(
         self, *, system: str, prompt: str, model: str | None = None
@@ -161,12 +198,7 @@ class LangChainChatAdapter:
         if not resolved:
             raise LlmCompleteError("LLM model is not set")
         try:
-            chat = ChatOpenAI(
-                model=resolved,
-                api_key=SecretStr(self._api_key),
-                base_url=self._base_url or None,
-                streaming=True,
-            )
+            chat = self._chat(model=resolved, streaming=True)
             chain = _PROMPT | chat
             async for message in chain.astream(
                 {
@@ -214,11 +246,7 @@ class LangChainChatAdapter:
                 system=system, prompt=prompt, schema=schema, model=model
             )
         try:
-            chat = ChatOpenAI(
-                model=resolved,
-                api_key=SecretStr(self._api_key),
-                base_url=None,
-            )
+            chat = self._chat(model=resolved, streaming=False)
             try:
                 structured_chat = chat.with_structured_output(
                     schema, method="json_mode"
@@ -263,14 +291,4 @@ class LangChainChatAdapter:
             prompt=prompt,
             model=model,
         )
-        try:
-            return TypeAdapter(schema).validate_json(_strip_json_fence(raw))
-        except Exception as exc:
-            logger.warning(
-                "LLM structured JSON validate failed schema=%s raw=%s",
-                getattr(schema, "__name__", str(schema)),
-                raw[:4000],
-            )
-            raise LlmCompleteError(
-                "LLM returned JSON that did not match the expected schema"
-            ) from exc
+        return parse_structured_json(raw, schema)

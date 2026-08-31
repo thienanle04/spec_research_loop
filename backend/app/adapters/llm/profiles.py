@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.adapters.llm.fake import FakeLlm
-from app.adapters.llm.langchain_chat import LangChainChatAdapter
+from app.adapters.llm.langchain_chat import DEFAULT_MAX_TOKENS, LangChainChatAdapter
 from app.core.config import Settings
 from app.modules.loop.catalog import WorkflowNode
 from app.ports.llm import LlmPort
@@ -104,6 +104,7 @@ def default_providers(settings: Settings) -> dict[str, Provider]:
             kind="langchain",
             api_key_env="LLM_API_KEY",
             base_url=settings.llm_base_url,
+            max_tokens=DEFAULT_MAX_TOKENS,
         ),
     }
 
@@ -212,6 +213,7 @@ def build_port_for_profile(
             api_key_env=provider.api_key_env or "LLM_API_KEY",
             base_url=_base_url(provider, settings),
             default_model=model,
+            max_tokens=provider.max_tokens,
         )
     raise RuntimeError(f"Unsupported provider kind: {provider.kind}")
 

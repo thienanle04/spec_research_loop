@@ -477,6 +477,41 @@ async def test_reopening_empty_workflow_node_is_invalid_working_draft_target(
 
 
 @pytest.mark.asyncio
+async def test_echoing_empty_working_draft_node_with_narrative_is_invalid_target(
+    client: AsyncClient,
+) -> None:
+    """Mark as Verified sent node=working_draft_node while Evidence was empty."""
+    await _auth_client(client)
+    created = await _create_session(client)
+    session_id = created["id"]
+    interpreted = await _interpret(client, session_id, created["version"])
+    assert interpreted["working_draft_node"] == "idea_decomposition"
+    assert _head(interpreted, "idea_decomposition")["status"] == "empty"
+    response = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=interpreted["version"],
+        node=interpreted["working_draft_node"],
+        narrative={"evidence_saved": True},
+    )
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "invalid_working_draft_target",
+        "detail": "Working Draft can only move to a current Workflow Node",
+        "current_version": None,
+    }
+    narrative_only = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=interpreted["version"],
+        narrative={"evidence_saved": True},
+    )
+    assert narrative_only.status_code == 200, narrative_only.text
+    assert narrative_only.json()["working_draft_node"] == "idea_decomposition"
+    assert narrative_only.json()["working_draft_narrative"]["evidence_saved"] is True
+
+
+@pytest.mark.asyncio
 async def test_reopening_without_current_upstream_is_upstream_not_current(
     client: AsyncClient,
 ) -> None:

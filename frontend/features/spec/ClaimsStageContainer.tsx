@@ -18,7 +18,7 @@ import {
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
 import { withGeneratedSincePrepare } from "../loop/stage-signals";
-import { MessageSquareQuote, CheckCircle2, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
 
 export function ClaimsStageContainer({
   sessionId,
@@ -176,7 +176,7 @@ export function ClaimsStageContainer({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <MessageSquareQuote className="w-5 h-5 text-indigo-600" /> {WORKFLOW_NODE_LABELS[WorkflowNode.claims]}
+              {WORKFLOW_NODE_LABELS[WorkflowNode.claims]}
             </CardTitle>
             <CardDescription>
               Generate claims and expected evidence to support your contribution.

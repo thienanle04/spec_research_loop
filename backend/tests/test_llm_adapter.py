@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from app.adapters.llm import bind_llm_ports, build_llm_ports, get_llm_port
-from app.adapters.llm.langchain_chat import LangChainChatAdapter
+from app.adapters.llm.langchain_chat import DEFAULT_MAX_TOKENS, LangChainChatAdapter
 from app.core.config import get_settings
 from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.spec.deps import FakeSpecLlmPort
@@ -39,6 +39,8 @@ def test_default_profiles_bind_ai_fit_langchain(
         assert isinstance(research, LangChainChatAdapter)
         assert research.default_model == "Qwen3.6-27B"
         assert research._base_url == "https://ai-fit.hcmus.edu.vn/openai"
+        assert research._max_tokens == DEFAULT_MAX_TOKENS
+        assert get_llm_port("experiment_plan") is research
         assert get_llm_port("related_work") is research
         assert get_llm_port("idea_interpretation") is research
     finally:

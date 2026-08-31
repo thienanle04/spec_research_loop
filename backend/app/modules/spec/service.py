@@ -319,12 +319,13 @@ class SpecService:
         prompt = f"""
         Dựa vào Prompt View sau của dự án (đặc biệt là các Claim đã chọn):
         {json.dumps(view, default=str, ensure_ascii=False)}
-        
-        Hãy lên kế hoạch thí nghiệm chi tiết. VỚI MỖI CLAIM, hãy tạo một thí nghiệm bao gồm:
-        1. claim: Nội dung của claim
-        2. action: Làm gì - bao nhiêu lần/mẫu/thời gian
-        3. objective: Mục tiêu của thí nghiệm này
-        4. significance: Ý nghĩa của thí nghiệm đối với claim
+
+        Hãy lên kế hoạch thí nghiệm. Với MỖI claim, tạo đúng một thí nghiệm với 4 trường chuỗi ngắn (2–4 câu mỗi trường):
+        1. claim: một câu tóm tắt claim. Không copy baseline, metric, evidence, hay rejection_condition vào trường này.
+        2. action: làm gì, bao nhiêu mẫu/lần/thời gian
+        3. objective: mục tiêu đo của thí nghiệm
+        4. significance: ý nghĩa của thí nghiệm đối với claim
+        Trả về JSON đầy đủ cho mọi claim; không cắt giữa chừng.
         """
         try:
             response_data = await self._llm.complete_structured(

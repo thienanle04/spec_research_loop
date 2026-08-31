@@ -14,6 +14,7 @@ from app.adapters.llm import (
     get_llm_port,
     traced_ports,
 )
+from app.adapters.llm.langchain_chat import DEFAULT_MAX_TOKENS
 from app.core.config import get_settings
 from app.modules.loop.catalog import WORKFLOW_NODES
 from app.ports.llm import LlmCompleteError, LlmProviderError
@@ -110,6 +111,53 @@ async def test_langchain_structured_uses_json_path_when_base_url_set(
 
 
 @pytest.mark.asyncio
+async def test_langchain_structured_json_path_requests_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Campus gateways default to a short completion cap; truncated JSON
+    surfaces as llm_complete_error on experiment-plan generate."""
+    from app.modules.spec.schemas import ExperimentPlan
+
+    captured: dict[str, object] = {}
+
+    def fake_chat(**kwargs: object) -> RunnableLambda:
+        captured.update(kwargs)
+
+        def _reply(_messages: object) -> AIMessage:
+            return AIMessage(content='{"experiments":[]}')
+
+        return RunnableLambda(_reply)
+
+    monkeypatch.setattr("app.adapters.llm.langchain_chat.ChatOpenAI", fake_chat)
+    adapter = LangChainChatAdapter(
+        api_key="sk-test",
+        base_url="https://ai-fit.hcmus.edu.vn/openai",
+        default_model="Qwen3.6-27B",
+    )
+    result = await adapter.complete_structured(
+        system="sys", prompt="go", schema=ExperimentPlan
+    )
+    assert result.experiments == []
+    assert captured.get("max_completion_tokens") == DEFAULT_MAX_TOKENS
+
+
+def test_parse_truncated_experiment_plan_json_matches_user_error() -> None:
+    from app.adapters.llm.langchain_chat import parse_structured_json
+    from app.modules.spec.schemas import ExperimentPlan
+
+    truncated = (
+        '{\n  "experiments": [\n'
+        '    {"claim": "c1", "action": "a1", "objective": "o1",'
+        ' "significance": "s1"},\n'
+        '    {"claim": "Giai doan 2 (Treatment - 4'
+    )
+    with pytest.raises(
+        LlmCompleteError, match="did not match the expected schema"
+    ):
+        parse_structured_json(truncated, ExperimentPlan)
+
+
+@pytest.mark.asyncio
 async def test_langchain_structured_falls_back_when_json_mode_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -203,7 +251,12 @@ async def test_langchain_complete_invokes_lcel_chain(
     text = await adapter.complete(system="sys", prompt="go {braces}")
     assert text == "done"
     assert captured["kwargs"]["model"] == "gpt-test"
-    assert captured["kwargs"]["api_key"] == "test-key"
+    api_key = captured["kwargs"]["api_key"]
+    if hasattr(api_key, "get_secret_value"):
+        assert api_key.get_secret_value() == "test-key"
+    else:
+        assert api_key == "test-key"
+    assert captured["kwargs"]["max_completion_tokens"] == DEFAULT_MAX_TOKENS
 
 
 def test_create_app_binds_ports_by_profile(

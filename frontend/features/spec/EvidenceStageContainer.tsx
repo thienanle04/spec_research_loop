@@ -80,7 +80,6 @@ export function EvidenceStageContainer({
         patchWorkingDraft.mutateAsync({
           sessionId,
           data: {
-            node: session.working_draft_node,
             expected_version: currentSession().version,
             narrative: { ...narrative, evidence_saved: true }
           }
@@ -158,7 +157,7 @@ export function EvidenceStageContainer({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <FileSearch className="w-5 h-5 text-indigo-600" /> {WORKFLOW_NODE_LABELS[WorkflowNode.evidence]}
+                {WORKFLOW_NODE_LABELS[WorkflowNode.evidence]}
             </CardTitle>
             <CardDescription>
               State the evidence that would support the confirmed claims.

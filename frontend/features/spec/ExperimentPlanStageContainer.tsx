@@ -14,7 +14,7 @@ import {
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
 import { withGeneratedSincePrepare } from "../loop/stage-signals";
-import { Target, Activity, FlaskConical, AlertTriangle, FileText } from "lucide-react";
+import { Target, Activity, AlertTriangle, FileText } from "lucide-react";
 
 type ExperimentItem = {
   claim: string;
@@ -162,7 +162,7 @@ export function ExperimentPlanStageContainer({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <FlaskConical className="w-5 h-5 text-indigo-600" /> {WORKFLOW_NODE_LABELS[WorkflowNode.experiment_plan]}
+              {WORKFLOW_NODE_LABELS[WorkflowNode.experiment_plan]}
             </CardTitle>
             <CardDescription>
               Plan tests that could confirm or refute the claims.
