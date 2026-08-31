@@ -1724,6 +1724,149 @@ async def test_run_pending_judges_allowed_when_working_draft_is_sibling_judge(
     assert fetched.json()["working_draft_node"] == "aggregator"
 
 
+def _judge_confirm_nodes(rows: list[dict]) -> set[str]:
+    return {
+        row["node"]
+        for row in rows
+        if row["kind"] == "confirm"
+        and row["node"] in {node.value for node in FIVE_JUDGE_NODES}
+    }
+
+
+async def _working_aggregator(client: AsyncClient, session_id: str) -> tuple[int, dict]:
+    response = await client.get(
+        f"/api/judgement/sessions/{session_id}/nodes/aggregator"
+    )
+    return response.status_code, response.json() if response.status_code == 200 else {}
+
+
+@pytest.mark.asyncio
+async def test_run_pending_five_empty_confirms_judges_without_composing_aggregator(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    assert draft["working_draft_node"] == "aggregator"
+    _bind_pending_judge_llms()
+    response, pending_events = await _run_pending(
+        client, draft["id"], draft["version"]
+    )
+    assert response.status_code == 200, response.text
+    assert _done_nodes(pending_events) == {
+        "gap_judge",
+        "contribution_judge",
+        "evidence_judge",
+        "experiment_judge",
+        "conference_judge",
+    }
+    assert all(event.get("node") != "aggregator" for event in pending_events)
+    assert not any(
+        event.get("type") in {"starting", "progress", "done"}
+        and event.get("node") == "aggregator"
+        for event in pending_events
+    )
+    session = await _session(client, draft["id"])
+    assert session["working_draft_node"] == "aggregator"
+    for node in FIVE_JUDGE_NODES:
+        assert _head(session, node.value)["status"] == "current"
+    assert _head(session, "aggregator")["status"] != "current"
+    confirms = _judge_confirm_nodes(await _decisions(client, draft["id"]))
+    assert confirms == {node.value for node in FIVE_JUDGE_NODES}
+    status, working = await _working_aggregator(client, draft["id"])
+    assert status in {200, 409}
+    if status == 200:
+        assert working.get("issues") in (None, [])
+        assert working.get("handling_options") in (None, [])
+        assert working.get("scores") is None
+    readiness = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/readiness"
+    )
+    assert readiness.status_code == 200, readiness.text
+    assert readiness.json()["state"] == "not_evaluated"
+
+
+@pytest.mark.asyncio
+async def test_run_pending_partial_fail_does_not_confirm_failed_judge_or_start_aggregator(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    fakes = _bind_pending_judge_llms()
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    for node in FIVE_JUDGE_NODES:
+        ports[node.value] = fakes[node.value]
+    ports[WorkflowNode.EVIDENCE_JUDGE.value] = FakeLlm(response="not-json")
+    bind_llm_ports(ports)
+    response, pending_events = await _run_pending(
+        client, draft["id"], draft["version"]
+    )
+    assert response.status_code == 200, response.text
+    done = _done_nodes(pending_events)
+    assert "evidence_judge" not in done
+    assert "aggregator" not in done
+    assert all(event.get("node") != "aggregator" for event in pending_events)
+    assert any(
+        event.get("type") == "error" and event.get("node") == "evidence_judge"
+        for event in pending_events
+    )
+    session = await _session(client, draft["id"])
+    assert session["working_draft_node"] == "aggregator"
+    assert _head(session, "evidence_judge")["status"] != "current"
+    for node in (
+        "gap_judge",
+        "contribution_judge",
+        "experiment_judge",
+        "conference_judge",
+    ):
+        assert _head(session, node)["status"] == "current"
+    confirms = _judge_confirm_nodes(await _decisions(client, draft["id"]))
+    assert "evidence_judge" not in confirms
+    assert confirms == {
+        "gap_judge",
+        "contribution_judge",
+        "experiment_judge",
+        "conference_judge",
+    }
+    assert _head(session, "aggregator")["status"] != "current"
+    status, working = await _working_aggregator(client, draft["id"])
+    assert status in {200, 409}
+    if status == 200:
+        assert working.get("handling_options") in (None, [])
+        assert working.get("scores") is None
+
+
+@pytest.mark.asyncio
+async def test_two_of_five_current_judges_does_not_compose_aggregator(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    _bind_gap_judge_llm({"issues": []})
+    await _generate_gap_judge(client, draft["id"], draft["version"])
+    session = await _session(client, draft["id"])
+    _bind_contribution_judge_llm({"issues": []})
+    await _generate_contribution_judge(client, session["id"], session["version"])
+    session = await _session(client, draft["id"])
+    assert _head(session, "gap_judge")["status"] == "current"
+    assert _head(session, "contribution_judge")["status"] == "current"
+    assert _head(session, "evidence_judge")["status"] != "current"
+    denied = await client.post(
+        f"/api/judgement/sessions/{draft['id']}/nodes/aggregator/generate",
+        json={"expected_version": session["version"]},
+    )
+    assert denied.status_code == 409
+    assert denied.json()["code"] == "judge_heads_not_current"
+    session = await _session(client, draft["id"])
+    assert session["working_draft_node"] == "aggregator"
+    assert _head(session, "aggregator")["status"] != "current"
+    status, working = await _working_aggregator(client, draft["id"])
+    assert status in {200, 409}
+    if status == 200:
+        assert working.get("issues") in (None, [])
+        assert working.get("handling_options") in (None, [])
+        assert working.get("scores") is None
+
+
 @pytest.mark.asyncio
 async def test_run_pending_judges_requires_valid_spec_version(
     client: AsyncClient,
@@ -1787,6 +1930,7 @@ async def test_run_pending_batch_ack_does_not_authorize_aggregator_or_confirm(
         "stale_reaccept_required",
         "judge_heads_not_current",
     }
+    assert all(event.get("node") != "aggregator" for event in pending_events)
 
     session = await _session(client, prepared["id"])
     session = await _prepare(

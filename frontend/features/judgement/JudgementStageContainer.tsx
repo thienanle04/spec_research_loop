@@ -16,7 +16,14 @@ import { withGeneratedSincePrepare } from "../loop/stage-signals";
 import { AggregatorReportView } from "./AggregatorReportView";
 import { ConferenceScoreList } from "./ConferenceScoreList";
 import { JudgeIssueList } from "./JudgeIssueList";
-import type { ConferenceScores, HandlingOption, JudgeIssue, JudgeNode, JudgeRun } from "./types";
+import type {
+  ConferenceScores,
+  HandlingOption,
+  JudgeIssue,
+  JudgeNode,
+  JudgeRun,
+  JudgementStreamEvent,
+} from "./types";
 import { FIVE_JUDGE_NODES } from "./types";
 import { useJudgementStream } from "./useJudgementStream";
 
@@ -216,6 +223,31 @@ export function JudgementStageContainer({
     return head?.status === NodeHeadStatus.stale && head.generated_since_prepare !== true;
   }
 
+  function applyJudgeHeadEvent(event: JudgementStreamEvent) {
+    if (!(FIVE_JUDGE_NODES as readonly string[]).includes(event.node)) return;
+    const judge = event.node as JudgeNode;
+    if (event.type === "progress" || event.type === "draft_patch") {
+      setHeadSummaries((current) => ({
+        ...current,
+        [judge]: {
+          status: "running",
+          issues: event.type === "draft_patch" ? event.issues : current[judge]?.issues,
+          scores: event.type === "draft_patch" ? (event.scores ?? null) : current[judge]?.scores,
+        },
+      }));
+    } else if (event.type === "done") {
+      setHeadSummaries((current) => ({
+        ...current,
+        [judge]: { ...current[judge], status: "current" },
+      }));
+    } else if (event.type === "error") {
+      setHeadSummaries((current) => ({
+        ...current,
+        [judge]: { ...current[judge], status: undefined },
+      }));
+    }
+  }
+
   async function generateJudge(judge: JudgeNode, options?: { staleReaccept?: boolean }) {
     if (judgeNeedsStaleReaccept(judge) && options?.staleReaccept !== true) {
       setStaleDialogJudge(judge);
@@ -273,6 +305,7 @@ export function JudgementStageContainer({
         expectedVersion: expectedVersion(),
         staleReaccept: pendingNeedsReaccept,
         onEvent: (event) => {
+          applyJudgeHeadEvent(event);
           if (event.type === "draft_patch") {
             if (event.node === node) {
               setIssues(event.issues);
@@ -293,10 +326,12 @@ export function JudgementStageContainer({
                 event.node as WorkflowNode,
               ),
             );
+            void queryClient.invalidateQueries({ queryKey: sessionKey });
           }
         },
       });
       await queryClient.invalidateQueries({ queryKey: ["/api/judgement/run", sessionId] });
+      await queryClient.invalidateQueries({ queryKey: sessionKey });
     } catch (error) {
       setSaveError(getApiErrorMessage(error));
     }

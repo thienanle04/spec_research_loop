@@ -473,6 +473,117 @@ describe("JudgementStageContainer", () => {
     expect(mocks.streamStart).not.toHaveBeenCalled();
   });
 
+  it("updates compact heads per run-pending SSE node then invalidates the session", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    let finish: (() => void) | undefined;
+    let emit: ((event: unknown) => void) | undefined;
+    mocks.streamStartPending.mockImplementation(
+      (options: { onEvent?: (event: unknown) => void }) => {
+        emit = options.onEvent;
+        return new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      },
+    );
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [],
+        handling_options: [],
+        scores: null,
+      },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, emptyIndependentJudgesHeads())}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Run pending Judges" }));
+    const heads = screen.getByRole("list", { name: "Judge Node Heads" });
+    emit?.({
+      type: "progress",
+      node: "gap_judge",
+      message: "Starting Gap Judge",
+      pct: 0,
+    });
+    const gap = within(heads).getByText("Gap Judge").closest("li");
+    await waitFor(() =>
+      expect(within(gap as HTMLElement).getByText("running")).toBeInTheDocument(),
+    );
+    emit?.({
+      type: "draft_patch",
+      node: "gap_judge",
+      issues: [
+        {
+          id: "issue-1",
+          finding_kind: "gap_unsupported_by_sources",
+          severity: "CRITICAL",
+          reason: "No cited passage supports the gap statement.",
+          suggestion: "Cite a supporting passage.",
+          target_card_id: null,
+        },
+      ],
+    });
+    emit?.({ type: "done", node: "gap_judge", version: 5 });
+    await waitFor(() =>
+      expect(within(gap as HTMLElement).getByText("current")).toBeInTheDocument(),
+    );
+    expect(within(gap as HTMLElement).getByText(/1 CRITICAL/)).toBeInTheDocument();
+    emit?.({
+      type: "progress",
+      node: "contribution_judge",
+      message: "Starting Contribution Judge",
+      pct: 0,
+    });
+    const contribution = within(heads).getByText("Contribution Judge").closest("li");
+    await waitFor(() =>
+      expect(within(contribution as HTMLElement).getByText("running")).toBeInTheDocument(),
+    );
+    emit?.({
+      type: "draft_patch",
+      node: "contribution_judge",
+      issues: [],
+    });
+    emit?.({ type: "done", node: "contribution_judge", version: 5 });
+    await waitFor(() =>
+      expect(within(contribution as HTMLElement).getByText("current")).toBeInTheDocument(),
+    );
+    emit?.({
+      type: "draft_patch",
+      node: "conference_judge",
+      issues: [],
+      scores: {
+        originality: 7,
+        significance: 8,
+        soundness: 6,
+        clarity: 9,
+        reproducibility: 5,
+      },
+    });
+    emit?.({ type: "done", node: "conference_judge", version: 5 });
+    const conference = within(heads).getByText("Conference Judge").closest("li");
+    await waitFor(() =>
+      expect(within(conference as HTMLElement).getByText("current")).toBeInTheDocument(),
+    );
+    expect(within(conference as HTMLElement).getByText("7/10")).toBeInTheDocument();
+    expect(within(gap as HTMLElement).getByText("current")).toBeInTheDocument();
+    finish?.();
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ["/api/loop/sessions", "session-1"] }),
+      ),
+    );
+    expect(mocks.streamStart).not.toHaveBeenCalled();
+  });
+
   it("sends batch Stale re-accept on run pending when a targeted Judge is Stale", async () => {
     const user = userEvent.setup();
     const queryClient = new QueryClient({
