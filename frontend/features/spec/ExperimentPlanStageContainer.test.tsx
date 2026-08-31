@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { WorkflowNode, type LoopSessionResponse } from "@/lib/api/generated/model";
 
-import { ExperimentPlanningStageContainer } from "./ExperimentPlanningStageContainer";
+import { ExperimentPlanStageContainer } from "./ExperimentPlanStageContainer";
+import { FeasibilityStageContainer } from "./FeasibilityStageContainer";
 
 vi.mock("../loop/loop-session-save", () => ({
   useLoopSessionSave: () => ({
@@ -57,12 +58,12 @@ function experimentSession(
   };
 }
 
-describe("ExperimentPlanningStageContainer", () => {
+describe("ExperimentPlanStageContainer", () => {
   it("titles the panel Experiment plan on the experiment_plan Workflow Node", () => {
     const session = experimentSession(WorkflowNode.experiment_plan);
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <ExperimentPlanningStageContainer sessionId={session.id} session={session} />
+        <ExperimentPlanStageContainer sessionId={session.id} session={session} />
       </QueryClientProvider>,
     );
     expect(screen.getByText("Experiment plan")).toBeInTheDocument();
@@ -71,12 +72,14 @@ describe("ExperimentPlanningStageContainer", () => {
     expect(objectiveBox).not.toBeNull();
     expect(objectiveBox?.className).not.toMatch(/\bh-full\b/);
   });
+});
 
+describe("FeasibilityStageContainer", () => {
   it("titles the panel Feasibility on the feasibility Workflow Node", () => {
     const session = experimentSession(WorkflowNode.feasibility);
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <ExperimentPlanningStageContainer sessionId={session.id} session={session} />
+        <FeasibilityStageContainer sessionId={session.id} session={session} />
       </QueryClientProvider>,
     );
     expect(screen.getByText("Feasibility")).toBeInTheDocument();

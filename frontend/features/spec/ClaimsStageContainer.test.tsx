@@ -10,7 +10,7 @@ import {
   type LoopSessionResponse,
 } from "@/lib/api/generated/model";
 
-import { ClaimsEvidenceStageContainer } from "./ClaimsEvidenceStageContainer";
+import { ClaimsStageContainer } from "./ClaimsStageContainer";
 
 const mocks = vi.hoisted(() => ({
   generate: vi.fn(),
@@ -120,28 +120,16 @@ function savedClaimTexts(cards: LoopSessionResponse["cards"]): string[] {
     });
 }
 
-describe("ClaimsEvidenceStageContainer", () => {
+describe("ClaimsStageContainer", () => {
   it("titles the panel Claims on the claims Workflow Node", () => {
     const queryClient = new QueryClient();
     const session = claimSession();
     render(
       <QueryClientProvider client={queryClient}>
-        <ClaimsEvidenceStageContainer sessionId={session.id} session={session} />
+        <ClaimsStageContainer sessionId={session.id} session={session} />
       </QueryClientProvider>,
     );
     expect(screen.getByText("Claims")).toBeInTheDocument();
-    expect(screen.queryByText("Claims & Evidence")).not.toBeInTheDocument();
-  });
-
-  it("titles the panel Evidence on the evidence Workflow Node", () => {
-    const queryClient = new QueryClient();
-    const session = claimSession({ working_draft_node: WorkflowNode.evidence });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ClaimsEvidenceStageContainer sessionId={session.id} session={session} />
-      </QueryClientProvider>,
-    );
-    expect(screen.getByText("Evidence")).toBeInTheDocument();
     expect(screen.queryByText("Claims & Evidence")).not.toBeInTheDocument();
   });
 
@@ -208,12 +196,12 @@ describe("ClaimsEvidenceStageContainer", () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <ClaimsEvidenceStageContainer sessionId={session.id} session={session} />
+        <ClaimsStageContainer sessionId={session.id} session={session} />
       </QueryClientProvider>,
     );
 
     expect(screen.getByText("New claim A after regenerate")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Saved 1 Claim Card(s) in project context");
+    expect(screen.getByRole("status")).toHaveTextContent("Saved 1 Claim(s) in project context");
     await user.click(screen.getByRole("button", { name: "Save Claims" }));
 
     await waitFor(() => {
@@ -267,7 +255,7 @@ describe("ClaimsEvidenceStageContainer", () => {
 
     const { rerender } = render(
       <QueryClientProvider client={queryClient}>
-        <ClaimsEvidenceStageContainer sessionId={session.id} session={session} />
+        <ClaimsStageContainer sessionId={session.id} session={session} />
       </QueryClientProvider>,
     );
 
@@ -279,7 +267,7 @@ describe("ClaimsEvidenceStageContainer", () => {
     };
     rerender(
       <QueryClientProvider client={queryClient}>
-        <ClaimsEvidenceStageContainer sessionId={session.id} session={generated.data} />
+        <ClaimsStageContainer sessionId={session.id} session={generated.data} />
       </QueryClientProvider>,
     );
     expect(screen.getByText("New claim A after regenerate")).toBeInTheDocument();

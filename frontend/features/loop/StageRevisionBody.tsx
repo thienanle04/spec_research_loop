@@ -229,7 +229,12 @@ export function StageRevisionBody({
         : unknownFields(narrative, knownNarrativeKeys)
     : null;
 
-  const unknownNode = unknownFields(payload, ["narrative", "card_snapshot", "stage_revision_id"]);
+  const unknownNode = unknownFields(payload, [
+    "narrative",
+    "card_snapshot",
+    "stage_revision_id",
+    "projection",
+  ]);
 
   return (
     <div className="grid min-w-0 grid-cols-1 gap-2">

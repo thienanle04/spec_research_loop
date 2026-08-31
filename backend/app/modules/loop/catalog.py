@@ -146,20 +146,21 @@ FIVE_JUDGE_NODES: tuple[WorkflowNode, ...] = (
     WorkflowNode.CONFERENCE_JUDGE,
 )
 
-CARD_KIND_OWNER: dict[CardKind, WorkflowNode] = {
-    CardKind.PROBLEM: WorkflowNode.IDEA_DECOMPOSITION,
-    CardKind.RESEARCH_QUESTION: WorkflowNode.IDEA_DECOMPOSITION,
-    CardKind.CONSTRAINT: WorkflowNode.IDEA_DECOMPOSITION,
-    CardKind.OPEN_QUESTION: WorkflowNode.IDEA_DECOMPOSITION,
-    CardKind.GAP: WorkflowNode.GAP,
-    CardKind.CONTRIBUTION: WorkflowNode.CONTRIBUTION,
-    CardKind.CLAIM: WorkflowNode.CLAIMS,
-    CardKind.EVIDENCE: WorkflowNode.EVIDENCE,
+CARD_KIND_OWNERS: dict[CardKind, tuple[WorkflowNode, ...]] = {
+    CardKind.PROBLEM: (WorkflowNode.IDEA_DECOMPOSITION,),
+    CardKind.RESEARCH_QUESTION: (WorkflowNode.IDEA_DECOMPOSITION,),
+    CardKind.CONSTRAINT: (WorkflowNode.IDEA_DECOMPOSITION,),
+    CardKind.OPEN_QUESTION: (WorkflowNode.IDEA_DECOMPOSITION,),
+    CardKind.GAP: (WorkflowNode.GAP,),
+    CardKind.CONTRIBUTION: (WorkflowNode.CONTRIBUTION,),
+    CardKind.CLAIM: (WorkflowNode.CLAIMS, WorkflowNode.EVIDENCE),
+    CardKind.EVIDENCE: (WorkflowNode.EVIDENCE,),
 }
 
 _OWNER_KINDS: dict[WorkflowNode, tuple[CardKind, ...]] = {}
-for _kind, _owner in CARD_KIND_OWNER.items():
-    _OWNER_KINDS[_owner] = (*_OWNER_KINDS.get(_owner, ()), _kind)
+for _kind, _owners in CARD_KIND_OWNERS.items():
+    for _owner in _owners:
+        _OWNER_KINDS[_owner] = (*_OWNER_KINDS.get(_owner, ()), _kind)
 
 
 def owned_kinds(node: WorkflowNode) -> tuple[CardKind, ...]:
