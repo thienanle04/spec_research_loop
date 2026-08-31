@@ -114,6 +114,22 @@ vi.mock("@/features/judgement", () => ({
   ),
 }));
 
+vi.mock("@/features/spec/FeasibilityStageContainer", () => ({
+  FeasibilityStageContainer: ({
+    onRunningChange,
+    onConfirmabilityChange,
+  }: {
+    onRunningChange?: (running: boolean) => void;
+    onConfirmabilityChange?: (confirmable: boolean) => void;
+  }) => {
+    React.useEffect(() => {
+      onRunningChange?.(false);
+      onConfirmabilityChange?.(true);
+    }, [onConfirmabilityChange, onRunningChange]);
+    return <p>Feasibility report</p>;
+  },
+}));
+
 vi.mock("@/features/research", () => ({
   ResearchStageContainer: ({
     sessionId,
@@ -917,6 +933,77 @@ describe("LoopSessionWorkbench", () => {
       path(LoopStage.claims_evidence, WorkflowNode.claims),
       { scroll: false },
     );
+  });
+
+  it("applies the minted Produced Spec Version and opens Spec Draft after confirming feasibility", async () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(
+      `stage=${LoopStage.experiment_planning}&node=${WorkflowNode.feasibility}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 30,
+          working_draft_node: WorkflowNode.feasibility,
+          node_heads: heads({
+            ...upstreamCurrent,
+            [WorkflowNode.feasibility]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 31,
+      working_draft_node: WorkflowNode.feasibility,
+      node_heads: heads({
+        ...upstreamCurrent,
+        [WorkflowNode.feasibility]: NodeHeadStatus.current,
+      }),
+      produced_spec_version: {
+        id: "spec-new",
+        created_at: "2026-08-31T12:00:00Z",
+        document: {
+          nodes: {
+            feasibility: {
+              narrative: { text: "Plan is feasible" },
+              card_snapshot: [],
+            },
+          },
+        },
+      },
+      valid_spec_version_id: "spec-new",
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(setQueryData).toHaveBeenCalledWith(
+      ["/sessions/session-1"],
+      expect.objectContaining({
+        status: 200,
+        data: expect.objectContaining({
+          produced_spec_version: expect.objectContaining({ id: "spec-new" }),
+          valid_spec_version_id: "spec-new",
+        }),
+      }),
+    );
+    expect(replace).toHaveBeenCalledWith(path(LoopStage.spec_draft), { scroll: false });
   });
 
   it("collapses to Stage Revision view after Confirm when there is nowhere to advance", async () => {

@@ -1347,6 +1347,14 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     fetched = await client.get(f"/api/loop/sessions/{session_id}")
     payload = fetched.json()
     assert payload["produced_spec_version"] is not None
+    assert confirmed["produced_spec_version"] is not None, (
+        "feasibility Confirm must return the minted Produced Spec Version; "
+        f"valid_spec_version_id={confirmed.get('valid_spec_version_id')!r}"
+    )
+    assert (
+        confirmed["valid_spec_version_id"]
+        == confirmed["produced_spec_version"]["id"]
+    )
     assert payload["valid_spec_version_id"] == payload["produced_spec_version"]["id"]
     assert (
         "idea_interpretation" in payload["produced_spec_version"]["document"]["nodes"]

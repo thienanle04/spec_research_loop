@@ -763,7 +763,7 @@ class LoopService:
         if node is WorkflowNode.FEASIBILITY:
             document = await self._assemble_spec(session, heads)
             spec = SpecVersion(session_id=session.id, document=document)
-            self._db.add(spec)
+            session.spec_versions.append(spec)
             await self._db.flush()
             session.produced_spec_version_id = spec.id
             session.valid_spec_version_id = spec.id
@@ -1076,6 +1076,12 @@ class LoopService:
                 ),
                 None,
             )
+            if produced is None:
+                # Same-request mint: spec_versions may still be the empty
+                # selectinload from _load_session (expire_on_commit=False).
+                produced = await self._db.get(
+                    SpecVersion, session.produced_spec_version_id
+                )
         heads = sorted(
             session.node_heads, key=lambda head: WORKFLOW_NODES.index(head.node_enum())
         )
