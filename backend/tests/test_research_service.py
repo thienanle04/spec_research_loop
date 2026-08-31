@@ -1051,6 +1051,128 @@ async def test_search_queries_use_english_while_outputs_follow_idea_language() -
 
 
 @pytest.mark.asyncio
+async def test_related_work_repairs_prose_that_does_not_match_idea_language() -> None:
+    source_passage = (
+        "The study compares prompt engineering, retrieval-augmented generation, "
+        "and self-consistency decoding on 7B-scale models."
+    )
+    llm = FakeLlmPort(
+        responses={
+            "research-analysis-language-repair": json.dumps(
+                {
+                    "what_was_done": (
+                        "Nghiên cứu thực hiện đánh giá so sánh các kỹ thuật giảm ảo giác."
+                    ),
+                    "method_or_feedback": (
+                        "Sử dụng một giao thức đánh giá thống nhất trên nhiều tiêu chí."
+                    ),
+                    "limitation": "Đánh giá chỉ giới hạn ở các mô hình quy mô 7B.",
+                    "relevance": "Có liên quan trực tiếp đến câu hỏi nghiên cứu.",
+                    "supporting_passage": source_passage,
+                    "evidence": {
+                        field: {"passage": source_passage, "location": "Abstract"}
+                        for field in (
+                            "what_was_done",
+                            "method_or_feedback",
+                            "limitation",
+                        )
+                    },
+                    "confidence": 0.8,
+                },
+                ensure_ascii=False,
+            ),
+            "research-analysis": json.dumps(
+                {
+                    "what_was_done": (
+                        "The paper conducted a comparative evaluation of hallucination "
+                        "mitigation strategies."
+                    ),
+                    "method_or_feedback": (
+                        "Uses a unified multi-dimensional evaluation protocol."
+                    ),
+                    "limitation": "The evaluation is limited to 7B-scale models.",
+                    "relevance": "The study is directly relevant to the research idea.",
+                    "supporting_passage": source_passage,
+                    "evidence": {
+                        field: {"passage": source_passage, "location": "Abstract"}
+                        for field in (
+                            "what_was_done",
+                            "method_or_feedback",
+                            "limitation",
+                        )
+                    },
+                    "confidence": 0.8,
+                }
+            ),
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    finding, warnings = await service._analyze(
+        ScholarlyRecord(
+            title="Benchmarking Hallucination Mitigation Techniques",
+            abstract=source_passage,
+        ),
+        uuid4(),
+        research_context={
+            "idea": {
+                "problems": ["Mô hình ngôn ngữ tạo ra thông tin không có căn cứ."],
+                "research_questions": [
+                    "Kỹ thuật nào giúp giảm lỗi bịa đặt trong trích xuất dữ liệu?"
+                ],
+            },
+            "research_inputs": {"keywords": ["hallucination mitigation"]},
+        },
+    )
+
+    assert finding.what_was_done.startswith("Nghiên cứu thực hiện")
+    assert finding.method_or_feedback.startswith("Sử dụng một giao thức")
+    assert finding.limitation.startswith("Đánh giá chỉ giới hạn")
+    assert finding.evidence["what_was_done"].passage == source_passage
+    assert warnings == []
+    assert len(llm.calls) == 2
+    assert "Required output language: Vietnamese (vi)" in llm.calls[0]["system"]
+    assert "research-analysis-language-repair" in llm.calls[1]["system"]
+
+
+@pytest.mark.asyncio
+async def test_related_work_fallback_uses_vietnamese_for_a_vietnamese_idea() -> None:
+    llm = FakeLlmPort(responses={"research-analysis": "not-json"})
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    finding, warnings = await service._analyze(
+        ScholarlyRecord(
+            title="An English Paper Title",
+            abstract="The source reports one bounded evaluation.",
+        ),
+        uuid4(),
+        research_context={
+            "idea": {
+                "problems": ["Kết quả trích xuất có thể chứa thông tin bịa đặt."],
+                "research_questions": ["Làm thế nào để giảm lỗi này?"],
+            }
+        },
+    )
+
+    assert finding.what_was_done == "Trình bày nghiên cứu An English Paper Title."
+    assert finding.method_or_feedback == (
+        "Nguồn không nêu rõ phương pháp hoặc hình thức phản hồi."
+    )
+    assert finding.limitation.startswith("Metadata nguồn chưa đủ")
+    assert warnings
+
+
+@pytest.mark.asyncio
 async def test_analysis_uses_research_context_and_separate_grounding_status() -> None:
     passage = "A verifier checks evidence for each claim."
     llm = FakeLlmPort(

@@ -510,7 +510,7 @@ class LoopService:
             session.working_draft_narrative = {}
 
         if node is WorkflowNode.FEASIBILITY:
-            document = self._assemble_spec(session, heads)
+            document = await self._assemble_spec(session, heads)
             spec = SpecVersion(session_id=session.id, document=document)
             self._db.add(spec)
             await self._db.flush()
@@ -824,7 +824,7 @@ class LoopService:
             updated_at=session.updated_at,
         )
 
-    def _assemble_spec(
+    async def _assemble_spec(
         self,
         session: LoopSession,
         heads: dict[WorkflowNode, NodeHead],
@@ -847,8 +847,16 @@ class LoopService:
                     # Keep it in the Stage Revision for history, but avoid storing the
                     # same logical Gap twice in the assembled Spec Version document.
                     narrative.pop("candidate", None)
-                nodes[node.value] = {
+                node_document = {
                     "card_snapshot": rev.card_snapshot,
                     "narrative": narrative,
                 }
+                projection = await self._ports[node.value].project(
+                    session_id=session.id,
+                    node=node.value,
+                    revision_id=rev.id,
+                )
+                if projection:
+                    node_document["projection"] = projection
+                nodes[node.value] = node_document
         return {"nodes": nodes}

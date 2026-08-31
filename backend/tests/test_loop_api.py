@@ -1233,6 +1233,19 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     assert payload["valid_spec_version_id"] == payload["produced_spec_version"]["id"]
     assert "idea_interpretation" in payload["produced_spec_version"]["document"]["nodes"]
     assert "feasibility" in payload["produced_spec_version"]["document"]["nodes"]
+    related_document = payload["produced_spec_version"]["document"]["nodes"][
+        "related_work"
+    ]
+    assert len(related_document["projection"]["citations"]) > 0
+    assert len(related_document["projection"]["related_work"]) > 0
+    assert all(
+        finding["citation_id"]
+        in {
+            citation["id"]
+            for citation in related_document["projection"]["citations"]
+        }
+        for finding in related_document["projection"]["related_work"]
+    )
     gap_document = payload["produced_spec_version"]["document"]["nodes"]["gap"]
     assert "candidate" not in gap_document["narrative"]
     assert gap_document["card_snapshot"] == [

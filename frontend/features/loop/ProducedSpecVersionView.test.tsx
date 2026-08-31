@@ -106,6 +106,132 @@ describe("ProducedSpecVersionView", () => {
     expect(spec.textContent).not.toMatch(/"candidate"\s*:/);
   });
 
+  it("presents Related Work and Gap as concise reader-facing sections", () => {
+    render(
+      <ProducedSpecVersionView
+        produced={produced({
+          document: {
+            nodes: {
+              related_work: {
+                narrative: {
+                  search_queries: ["internal query"],
+                  analyzed_result_count: 1,
+                  selection_rule: "internal_ranking_rule",
+                },
+                card_snapshot: [],
+                projection: {
+                  citations: [
+                    {
+                      id: "citation-1",
+                      citation_key: "smith2025",
+                      title: "Grounded Research Loops",
+                      year: 2025,
+                      url: "https://example.com/study",
+                      verification_status: "verified",
+                    },
+                  ],
+                  related_work: [
+                    {
+                      id: "finding-1",
+                      citation_id: "citation-1",
+                      what_was_done: "Built a source-grounded research workflow.",
+                      method_or_feedback: "Human confirmation after each stage.",
+                      limitation: "Did not audit counter-evidence.",
+                      evidence: {
+                        limitation: {
+                          passage: "The workflow did not include counter-evidence search.",
+                          location: "Discussion",
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+              gap: {
+                narrative: {},
+                card_snapshot: [
+                  {
+                    id: "gap-card",
+                    kind: CardKind.gap,
+                    body: {
+                      statement: "Research workflows need a verified counter-evidence audit.",
+                      supporting_citation_keys: ["smith2025"],
+                      status: "candidate",
+                      evidence_check: { ready: true },
+                      search_audit: {
+                        complete: true,
+                        related_work_analyzed_count: 1,
+                        counter_evidence_analyzed_count: 1,
+                        counter_evidence_assessment: "No direct counter-evidence was found.",
+                        claim_assessments: [
+                          {
+                            claim_id: "claim-1",
+                            statement: "Counter-evidence is not audited.",
+                            outcome: "no_direct_counter_evidence",
+                            assessment: "The limitation remains unresolved.",
+                            supporting_evidence: [],
+                          },
+                        ],
+                        counter_evidence_results: [
+                          {
+                            result_key: "hidden-result-key",
+                            title: "A Neighboring Workflow",
+                            year: 2024,
+                            impact: "no_direct_counter_evidence",
+                            rationale: "It does not cover counter-evidence auditing.",
+                            verification_status: "verified",
+                          },
+                        ],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        })}
+        validSpecVersionId="spec-valid"
+      />,
+    );
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+
+    expect(spec).toHaveTextContent("1 source-grounded study compared");
+    expect(spec).toHaveTextContent("Grounded Research Loops");
+    expect(spec).toHaveTextContent("What was done");
+    expect(spec).toHaveTextContent("Remaining limitation");
+    expect(spec).toHaveTextContent("Evidence-ready Gap");
+    expect(spec).toHaveTextContent("Research workflows need a verified counter-evidence audit");
+    expect(spec).toHaveTextContent("Counter-evidence assessment");
+    expect(spec).toHaveTextContent("Gap claims");
+    expect(spec).toHaveTextContent("Counter-evidence sources");
+    expect(spec).not.toHaveTextContent("internal query");
+    expect(spec).not.toHaveTextContent("internal_ranking_rule");
+    expect(spec).not.toHaveTextContent("hidden-result-key");
+    expect(spec).not.toHaveTextContent("verification_status");
+  });
+
+  it("explains when an older Spec Version has only a Related Work summary", () => {
+    render(
+      <ProducedSpecVersionView
+        produced={produced({
+          document: {
+            nodes: {
+              related_work: {
+                narrative: { analyzed_result_count: 3, search_queries: ["hidden"] },
+                card_snapshot: [],
+              },
+            },
+          },
+        })}
+        validSpecVersionId="spec-valid"
+      />,
+    );
+
+    expect(screen.getByText("3 sources were analyzed for this Spec Version.")).toBeInTheDocument();
+    expect(screen.getByText("The detailed comparison is unavailable in this older Spec Version.")).toBeInTheDocument();
+    expect(screen.queryByText("hidden")).not.toBeInTheDocument();
+  });
+
   it("keeps unknown Produced Spec Version fields visible as JSON", () => {
     render(
       <ProducedSpecVersionView
