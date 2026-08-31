@@ -65,6 +65,18 @@ function emptyIndependentJudgesHeads(): LoopSessionResponse["node_heads"] {
   }));
 }
 
+function currentIndependentJudgesHeads(): LoopSessionResponse["node_heads"] {
+  return emptyIndependentJudgesHeads().map((head) =>
+    head.node === WorkflowNode.aggregator
+      ? head
+      : {
+          ...head,
+          status: NodeHeadStatus.current,
+          stage_revision_id: `rev-${head.node}`,
+        },
+  );
+}
+
 function session(
   node: WorkflowNode = WorkflowNode.gap_judge,
   nodeHeads: LoopSessionResponse["node_heads"] = [],
@@ -791,6 +803,254 @@ describe("JudgementStageContainer", () => {
     await waitFor(() => expect(within(conference as HTMLElement).getByText("current")).toBeInTheDocument());
     expect(within(conference as HTMLElement).getByText("7/10")).toBeInTheDocument();
     expect(within(conference as HTMLElement).queryByText("CRITICAL")).not.toBeInTheDocument();
+  });
+
+  it("regenerates a current compact Judge without leaving Aggregator Working Draft and replaces the report", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    let workingReportReplaced = false;
+    mocks.customFetch.mockImplementation(async (path: unknown) => {
+      if (typeof path === "string" && path.endsWith("/nodes/aggregator")) {
+        if (workingReportReplaced) {
+          return {
+            status: 200,
+            data: {
+              node: "aggregator",
+              issues: [
+                {
+                  id: "issue-agg",
+                  finding_kind: "claim_broader_than_experiment",
+                  severity: "MAJOR",
+                  reason: "The claim outruns the experiment plan.",
+                  suggestion: "Narrow the claim.",
+                  target_card_id: null,
+                  source_node: "evidence_judge",
+                  cluster: "disagreement",
+                },
+              ],
+              handling_options: [
+                {
+                  id: "opt-2",
+                  finding_kind: "claim_broader_than_experiment",
+                  source_node: "evidence_judge",
+                  label: "Narrow the experiment",
+                  target_node: "experiment_plan",
+                  prose: "Match the experiment to the claim.",
+                },
+              ],
+              scores: {
+                originality: 7,
+                significance: 8,
+                soundness: 6,
+                clarity: 7,
+                reproducibility: 5,
+              },
+            },
+          };
+        }
+        return {
+          status: 200,
+          data: {
+            node: "aggregator",
+            issues: [
+              {
+                id: "issue-old",
+                finding_kind: "unsupported_citation",
+                severity: "CRITICAL",
+                reason: "The cited passage does not entail the claim.",
+                suggestion: "Cite a passage that entails the claim.",
+                target_card_id: null,
+                source_node: "evidence_judge",
+                cluster: "disagreement",
+              },
+            ],
+            handling_options: [
+              {
+                id: "opt-1",
+                finding_kind: "unsupported_citation",
+                source_node: "evidence_judge",
+                label: "Revise the claim",
+                target_node: "claims",
+                prose: "Cite a passage that entails the claim.",
+              },
+            ],
+            scores: {
+              originality: 7,
+              significance: 8,
+              soundness: 6,
+              clarity: 7,
+              reproducibility: 5,
+            },
+          },
+        };
+      }
+      if (typeof path === "string" && path.endsWith("/nodes/conference_judge")) {
+        return {
+          status: 200,
+          data: {
+            node: "conference_judge",
+            issues: [],
+            scores: {
+              originality: 7,
+              significance: 8,
+              soundness: 6,
+              clarity: 9,
+              reproducibility: 5,
+            },
+          },
+        };
+      }
+      return { status: 200, data: { node: "gap_judge", issues: [], scores: null } };
+    });
+    mocks.streamStart.mockImplementation(async (options: { onEvent?: (event: unknown) => void }) => {
+      options.onEvent?.({
+        type: "draft_patch",
+        node: "evidence_judge",
+        issues: [
+          {
+            id: "issue-new",
+            finding_kind: "claim_broader_than_experiment",
+            severity: "MAJOR",
+            reason: "The claim outruns the experiment plan.",
+            suggestion: "Narrow the claim.",
+            target_card_id: null,
+          },
+        ],
+      });
+      options.onEvent?.({ type: "done", node: "evidence_judge", version: 5 });
+      options.onEvent?.({
+        type: "draft_patch",
+        node: "aggregator",
+        issues: [
+          {
+            id: "issue-agg",
+            finding_kind: "claim_broader_than_experiment",
+            severity: "MAJOR",
+            reason: "The claim outruns the experiment plan.",
+            suggestion: "Narrow the claim.",
+            target_card_id: null,
+            source_node: "evidence_judge",
+            cluster: "disagreement",
+          },
+        ],
+        handling_options: [
+          {
+            id: "opt-2",
+            finding_kind: "claim_broader_than_experiment",
+            source_node: "evidence_judge",
+            label: "Narrow the experiment",
+            target_node: "experiment_plan",
+            prose: "Match the experiment to the claim.",
+          },
+        ],
+        scores: {
+          originality: 7,
+          significance: 8,
+          soundness: 6,
+          clarity: 7,
+          reproducibility: 5,
+        },
+      });
+      options.onEvent?.({ type: "done", node: "aggregator", version: 6 });
+      workingReportReplaced = true;
+    });
+    const dashboard = session(WorkflowNode.aggregator, currentIndependentJudgesHeads());
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer sessionId="session-1" session={dashboard} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Revise the claim")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Regenerate Evidence Judge" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Regenerate Gap Judge" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run pending Judges" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Regenerate Evidence Judge" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        node: "evidence_judge",
+        expectedVersion: 4,
+        staleReaccept: false,
+      }),
+    );
+    expect(dashboard.working_draft_node).toBe(WorkflowNode.aggregator);
+    await waitFor(() => expect(screen.getByText("Narrow the experiment")).toBeInTheDocument());
+    expect(screen.queryByText("Revise the claim")).not.toBeInTheDocument();
+    expect(screen.getByText("Claim broader than experiment")).toBeInTheDocument();
+  });
+
+  it("shows Conference criterion scores on the compact head after regenerate", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    mocks.customFetch.mockImplementation(async (path: unknown) => {
+      if (typeof path === "string" && path.endsWith("/nodes/conference_judge")) {
+        return {
+          status: 200,
+          data: {
+            node: "conference_judge",
+            issues: [],
+            scores: {
+              originality: 6,
+              significance: 6,
+              soundness: 6,
+              clarity: 6,
+              reproducibility: 6,
+            },
+          },
+        };
+      }
+      return { status: 200, data: { node: "aggregator", issues: [], handling_options: [], scores: null } };
+    });
+    mocks.streamStart.mockImplementation(async (options: { onEvent?: (event: unknown) => void }) => {
+      options.onEvent?.({
+        type: "draft_patch",
+        node: "conference_judge",
+        issues: [
+          {
+            id: "issue-noise",
+            finding_kind: "unsupported_citation",
+            severity: "CRITICAL",
+            reason: "Must not appear on the compact Conference head.",
+            suggestion: "Ignore.",
+            target_card_id: null,
+          },
+        ],
+        scores: {
+          originality: 7,
+          significance: 8,
+          soundness: 6,
+          clarity: 9,
+          reproducibility: 5,
+        },
+      });
+      options.onEvent?.({ type: "done", node: "conference_judge", version: 5 });
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, currentIndependentJudgesHeads())}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: "Regenerate Conference Judge" }));
+    expect(mocks.streamStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        node: "conference_judge",
+        staleReaccept: false,
+      }),
+    );
+    const heads = screen.getByRole("list", { name: "Judge Node Heads" });
+    const conference = within(heads).getByText("Conference Judge").closest("li");
+    expect(conference).not.toBeNull();
+    await waitFor(() => expect(within(conference as HTMLElement).getByText("7/10")).toBeInTheDocument());
+    expect(within(conference as HTMLElement).getByText("current")).toBeInTheDocument();
+    expect(within(conference as HTMLElement).queryByText("CRITICAL")).not.toBeInTheDocument();
+    expect(within(conference as HTMLElement).queryByText("Unsupported citation")).not.toBeInTheDocument();
   });
 
   it("asks for Stale re-accept when generating a Stale Judge", async () => {

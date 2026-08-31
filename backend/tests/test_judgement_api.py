@@ -2135,3 +2135,244 @@ async def test_failed_aggregator_generate_after_fifth_head_does_not_confirm(
     assert denied.json()["code"] == "stale_reaccept_required"
 
 
+_EVIDENCE_UNSUPPORTED_ISSUE = {
+    "finding_kind": "unsupported_citation",
+    "severity": "CRITICAL",
+    "reason": "The cited passage does not entail the claim.",
+    "suggestion": "Cite a passage that entails the claim.",
+}
+_EVIDENCE_BROADER_ISSUE = {
+    "finding_kind": "claim_broader_than_experiment",
+    "severity": "MAJOR",
+    "reason": "The claim outruns the experiment plan.",
+    "suggestion": "Narrow the claim.",
+}
+_AGGREGATOR_REVISE_OPTION = {
+    "finding_kind": "unsupported_citation",
+    "source_node": "evidence_judge",
+    "label": "Revise the claim",
+    "target_node": "claims",
+    "prose": "Cite a passage that entails the claim.",
+}
+_AGGREGATOR_NARROW_OPTION = {
+    "finding_kind": "claim_broader_than_experiment",
+    "source_node": "evidence_judge",
+    "label": "Narrow the experiment",
+    "target_node": "experiment_plan",
+    "prose": "Match the experiment to the claim.",
+}
+
+
+def _bind_evidence_and_aggregator_llms(
+    evidence: dict | str, aggregator: dict | str
+) -> None:
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    evidence_body = evidence if isinstance(evidence, str) else json.dumps(evidence)
+    aggregator_body = (
+        aggregator if isinstance(aggregator, str) else json.dumps(aggregator)
+    )
+    ports[WorkflowNode.EVIDENCE_JUDGE.value] = FakeLlm(response=evidence_body)
+    ports[WorkflowNode.AGGREGATOR.value] = FakeLlm(response=aggregator_body)
+    bind_llm_ports(ports)
+
+
+def _bind_pending_with_evidence_and_aggregator(
+    *, evidence: dict, aggregator: dict
+) -> None:
+    fakes = _bind_pending_judge_llms()
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    for node in FIVE_JUDGE_NODES:
+        ports[node.value] = fakes[node.value]
+    ports[WorkflowNode.EVIDENCE_JUDGE.value] = FakeLlm(
+        response=json.dumps(evidence)
+    )
+    ports[WorkflowNode.AGGREGATOR.value] = FakeLlm(
+        response=json.dumps(aggregator)
+    )
+    bind_llm_ports(ports)
+
+
+def _option_ids(working: dict) -> set[str]:
+    return {item["id"] for item in working.get("handling_options") or []}
+
+
+async def _five_current_with_working_aggregator(client: AsyncClient) -> dict:
+    draft = await _prepare_gap_judge(client)
+    _bind_pending_with_evidence_and_aggregator(
+        evidence={"issues": [_EVIDENCE_UNSUPPORTED_ISSUE]},
+        aggregator={"options": [_AGGREGATOR_REVISE_OPTION]},
+    )
+    response, events = await _run_pending(
+        client, draft["id"], draft["version"]
+    )
+    assert response.status_code == 200, response.text
+    assert "aggregator" in _done_nodes(events)
+    session = await _session(client, draft["id"])
+    assert session["working_draft_node"] == "aggregator"
+    for node in FIVE_JUDGE_NODES:
+        assert _head(session, node.value)["status"] == "current"
+    assert _head(session, "aggregator")["status"] != "current"
+    status, working = await _working_aggregator(client, draft["id"])
+    assert status == 200, working
+    assert _option_ids(working)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_regenerate_current_evidence_replaces_unconfirmed_aggregator_report(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    session = await _five_current_with_working_aggregator(client)
+    status, before = await _working_aggregator(client, session["id"])
+    assert status == 200, before
+    previous_ids = _option_ids(before)
+    assert previous_ids
+    evidence_confirms_before = [
+        row
+        for row in await _decisions(client, session["id"])
+        if row["kind"] == "confirm" and row["node"] == "evidence_judge"
+    ]
+    _bind_evidence_and_aggregator_llms(
+        {"issues": [_EVIDENCE_BROADER_ISSUE]},
+        {"options": [_AGGREGATOR_NARROW_OPTION]},
+    )
+    events = await _generate_evidence_judge(
+        client, session["id"], session["version"]
+    )
+    _aggregator_starts_after_judge_confirms(events)
+    regenerated = await _session(client, session["id"])
+    assert regenerated["working_draft_node"] == "aggregator"
+    assert _head(regenerated, "evidence_judge")["status"] == "current"
+    assert _head(regenerated, "aggregator")["status"] != "current"
+    evidence_confirms = [
+        row
+        for row in await _decisions(client, session["id"])
+        if row["kind"] == "confirm" and row["node"] == "evidence_judge"
+    ]
+    assert len(evidence_confirms) == len(evidence_confirms_before) + 1
+    status, working = await _working_aggregator(client, session["id"])
+    assert status == 200, working
+    replaced_ids = _option_ids(working)
+    assert replaced_ids
+    assert replaced_ids.isdisjoint(previous_ids)
+    assert any(
+        item["finding_kind"] == "claim_broader_than_experiment"
+        and item.get("source_node") == "evidence_judge"
+        for item in working["issues"]
+    )
+    assert all(
+        item["id"] not in previous_ids
+        for item in working.get("handling_options") or []
+    )
+
+
+@pytest.mark.asyncio
+async def test_regenerate_evidence_does_not_unfreeze_confirmed_aggregator_revision(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    session = await _five_current_with_working_aggregator(client)
+    confirmed = await _confirm(
+        client, session["id"], "aggregator", session["version"]
+    )
+    assert _head(confirmed, "aggregator")["status"] == "current"
+    frozen_id = _head(confirmed, "aggregator")["stage_revision_id"]
+    assert frozen_id is not None
+    frozen_before = await client.get(
+        f"/api/judgement/sessions/{confirmed['id']}/nodes/aggregator",
+        params={"stage_revision_id": frozen_id},
+    )
+    assert frozen_before.status_code == 200, frozen_before.text
+    frozen_payload = frozen_before.json()
+    frozen_option_ids = _option_ids(frozen_payload)
+    frozen_kinds = {item["finding_kind"] for item in frozen_payload["issues"]}
+    assert frozen_option_ids
+    assert "unsupported_citation" in frozen_kinds
+    _bind_evidence_and_aggregator_llms(
+        {"issues": [_EVIDENCE_BROADER_ISSUE]},
+        {"options": [_AGGREGATOR_NARROW_OPTION]},
+    )
+    events = await _generate_evidence_judge(
+        client, confirmed["id"], confirmed["version"]
+    )
+    _aggregator_starts_after_judge_confirms(events)
+    regenerated = await _session(client, confirmed["id"])
+    assert regenerated["working_draft_node"] == "aggregator"
+    assert _head(regenerated, "evidence_judge")["status"] == "current"
+    assert _head(regenerated, "aggregator")["status"] == "stale"
+    assert _head(regenerated, "aggregator")["stage_revision_id"] == frozen_id
+    status, working = await _working_aggregator(client, confirmed["id"])
+    assert status == 200, working
+    working_ids = _option_ids(working)
+    assert working_ids
+    assert working_ids.isdisjoint(frozen_option_ids)
+    assert any(
+        item["finding_kind"] == "claim_broader_than_experiment"
+        and item.get("source_node") == "evidence_judge"
+        for item in working["issues"]
+    )
+    frozen_after = await client.get(
+        f"/api/judgement/sessions/{confirmed['id']}/nodes/aggregator",
+        params={"stage_revision_id": frozen_id},
+    )
+    assert frozen_after.status_code == 200, frozen_after.text
+    still_frozen = frozen_after.json()
+    assert _option_ids(still_frozen) == frozen_option_ids
+    assert {item["finding_kind"] for item in still_frozen["issues"]} == frozen_kinds
+    assert any(
+        item["finding_kind"] == "unsupported_citation"
+        for item in still_frozen["issues"]
+    )
+    assert await _aggregator_confirm_nodes(client, confirmed["id"])
+
+
+@pytest.mark.asyncio
+async def test_failed_evidence_regenerate_does_not_confirm_or_replace_aggregator(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    session = await _five_current_with_working_aggregator(client)
+    status, before = await _working_aggregator(client, session["id"])
+    assert status == 200, before
+    previous_ids = _option_ids(before)
+    evidence_confirms_before = [
+        row
+        for row in await _decisions(client, session["id"])
+        if row["kind"] == "confirm" and row["node"] == "evidence_judge"
+    ]
+    _bind_evidence_and_aggregator_llms(
+        "not-json",
+        {"options": [_AGGREGATOR_NARROW_OPTION]},
+    )
+    response = await client.post(
+        f"/api/judgement/sessions/{session['id']}/nodes/evidence_judge/generate",
+        json={"expected_version": session["version"]},
+    )
+    assert response.status_code == 200, response.text
+    events = _events(response.text)
+    assert any(
+        event.get("type") == "error" and event.get("node") == "evidence_judge"
+        for event in events
+    )
+    assert "evidence_judge" not in _done_nodes(events)
+    assert all(event.get("node") != "aggregator" for event in events)
+    failed = await _session(client, session["id"])
+    assert failed["working_draft_node"] == "aggregator"
+    assert _head(failed, "evidence_judge")["status"] == "current"
+    assert _head(failed, "aggregator")["status"] != "current"
+    evidence_confirms = [
+        row
+        for row in await _decisions(client, session["id"])
+        if row["kind"] == "confirm" and row["node"] == "evidence_judge"
+    ]
+    assert evidence_confirms == evidence_confirms_before
+    status, working = await _working_aggregator(client, session["id"])
+    assert status == 200, working
+    assert _option_ids(working) == previous_ids
+    assert any(
+        item["finding_kind"] == "unsupported_citation"
+        for item in working["issues"]
+    )
+
+
