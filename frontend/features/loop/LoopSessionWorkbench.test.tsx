@@ -488,7 +488,7 @@ describe("LoopSessionWorkbench", () => {
       data: { stage: LoopStage.independent_judges, expected_version: 20 },
     });
     expect(replace).toHaveBeenCalledWith(
-      path(LoopStage.independent_judges, WorkflowNode.gap_judge),
+      path(LoopStage.independent_judges),
       { scroll: false },
     );
   });
@@ -524,6 +524,7 @@ describe("LoopSessionWorkbench", () => {
     expect(await screen.findByText("Gap Judge Issues for session-1")).toBeInTheDocument();
     expect(screen.queryByText("Working Draft narrative editor for session-1")).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Confirm" })).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Workflow Nodes" })).not.toBeInTheDocument();
   });
 
   it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {
@@ -614,17 +615,6 @@ describe("LoopSessionWorkbench", () => {
         stage: LoopStage.contribution,
         labels: ["Contribution direction"],
       },
-      {
-        stage: LoopStage.independent_judges,
-        labels: [
-          "Gap Judge",
-          "Contribution Judge",
-          "Evidence Judge",
-          "Experiment Judge",
-          "Conference Judge",
-          "Aggregator",
-        ],
-      },
     ];
 
     for (const { stage, labels } of stages) {
@@ -636,6 +626,49 @@ describe("LoopSessionWorkbench", () => {
       );
       view.unmount();
     }
+  });
+
+  it("does not expose six Independent judges Workflow Node sub-tabs", () => {
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.queryByRole("tablist", { name: "Workflow Nodes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Gap Judge/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Aggregator/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Stage path" })).toBeInTheDocument();
+  });
+
+  it("does not resurrect Independent judges tab navigation from a Judge node query", async () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.independent_judges}&node=${WorkflowNode.gap_judge}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.current,
+            [WorkflowNode.claims]: NodeHeadStatus.current,
+            [WorkflowNode.evidence]: NodeHeadStatus.current,
+            [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+            [WorkflowNode.feasibility]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(await screen.findByText("Gap Judge Issues for session-1")).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Workflow Nodes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Gap Judge/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Working Draft narrative editor for session-1")).not.toBeInTheDocument();
   });
 
   it("shows a Spec Draft tab on the stage path and no Workflow Node tabs on Readiness", () => {

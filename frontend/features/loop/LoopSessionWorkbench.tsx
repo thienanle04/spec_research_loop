@@ -33,7 +33,7 @@ import {
   ContributionStageContainer,
   ResearchStageContainer,
 } from "@/features/research";
-import { isJudgeNode, JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
+import { JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
 import { ClaimsStageContainer } from "@/features/spec/ClaimsStageContainer";
 import { EvidenceStageContainer } from "@/features/spec/EvidenceStageContainer";
 import { ExperimentPlanStageContainer } from "@/features/spec/ExperimentPlanStageContainer";
@@ -50,6 +50,7 @@ import {
   resolveSelectedStage,
   sessionHref,
   stageForWorkflowNode,
+  stagePathNodes,
   workingDraftStop,
   type NavStop,
 } from "./catalog";
@@ -322,12 +323,16 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!session || !selectedStage) return;
+    const canonicalStop =
+      selectedStage === LoopStage.independent_judges
+        ? { stage: selectedStage }
+        : { stage: selectedStage, node: selectedNode };
     const stageMatches = searchParams.get("stage") === selectedStage;
-    const nodeMatches = selectedNode
-      ? searchParams.get("node") === selectedNode
+    const nodeMatches = canonicalStop.node
+      ? searchParams.get("node") === canonicalStop.node
       : !searchParams.get("node");
     if (stageMatches && nodeMatches) return;
-    router.replace(sessionHref(sessionId, { stage: selectedStage, node: selectedNode }), {
+    router.replace(sessionHref(sessionId, canonicalStop), {
       scroll: false,
     });
   }, [router, searchParams, selectedNode, selectedStage, session, sessionId]);
@@ -421,7 +426,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     viewingWorkingDraft && workingDraftNode === WorkflowNode.experiment_plan;
   const editingFeasibilityDraft =
     viewingWorkingDraft && workingDraftNode === WorkflowNode.feasibility;
-  const editingJudgementDraft = viewingWorkingDraft && isJudgeNode(workingDraftNode);
+  const editingJudgementDraft = selectedStage === LoopStage.independent_judges;
   const editingStructuredDraft =
     editingResearchDraft ||
     editingContributionDraft ||
@@ -678,7 +683,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           emptyTabLabel={
             selectedStage === LoopStage.spec_draft ? selected.name : undefined
           }
-          nodes={selected.nodes}
+          nodes={stagePathNodes(selectedStage)}
           nodeHeads={session.node_heads}
           viewedNode={selectedNode}
           previous={previousStop}

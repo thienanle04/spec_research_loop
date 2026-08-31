@@ -1245,6 +1245,43 @@ async def test_prepare_contribution_only_considers_contribution(
 
 
 @pytest.mark.asyncio
+async def test_prepare_claims_evidence_still_lands_first_needs_work(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    related = await _confirm_through_related_work(client)
+    session_id = related["id"]
+    gap = await _prepare(client, session_id, "gap", related["version"])
+    gap_card = await _create_card(
+        client,
+        session_id,
+        kind="gap",
+        body={
+            "statement": "Claim-level feedback remains underexplored.",
+            "supporting_citation_keys": ["opro-2023"],
+            "status": "insufficient_evidence",
+        },
+        expected_version=gap["version"],
+    )
+    assert gap_card.status_code == 201, gap_card.text
+    gap_confirmed = await _confirm(
+        client, session_id, "gap", gap_card.json()["version"]
+    )
+    contribution = await _prepare(
+        client, session_id, "contribution", gap_confirmed["version"]
+    )
+    contribution_confirmed = await _confirm(
+        client, session_id, "contribution", contribution["version"]
+    )
+    payload = await _prepare(
+        client, session_id, "claims_evidence", contribution_confirmed["version"]
+    )
+    assert payload["working_draft_node"] == "claims"
+    assert _head(payload, "claims")["status"] == "empty"
+    assert _head(payload, "evidence")["status"] == "empty"
+
+
+@pytest.mark.asyncio
 async def test_prepare_gap_requires_related_work(client: AsyncClient) -> None:
     await _auth_client(client)
     created = await _create_session(client)

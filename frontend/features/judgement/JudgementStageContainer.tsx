@@ -20,15 +20,6 @@ import type { ConferenceScores, HandlingOption, JudgeIssue, JudgeNode, JudgeRun 
 import { FIVE_JUDGE_NODES } from "./types";
 import { useJudgementStream } from "./useJudgementStream";
 
-const GENERATABLE_JUDGE_NODES = new Set<string>([
-  WorkflowNode.gap_judge,
-  WorkflowNode.contribution_judge,
-  WorkflowNode.evidence_judge,
-  WorkflowNode.experiment_judge,
-  WorkflowNode.conference_judge,
-  WorkflowNode.aggregator,
-]);
-
 type Props = {
   sessionId: string;
   session: LoopSessionResponse;
@@ -59,16 +50,10 @@ export function JudgementStageContainer({
   const [handlingOptions, setHandlingOptions] = useState<HandlingOption[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
-  const node = session.working_draft_node as JudgeNode;
-  const isConference = node === WorkflowNode.conference_judge;
-  const isAggregator = node === WorkflowNode.aggregator;
-  const canGenerate = GENERATABLE_JUDGE_NODES.has(node);
-  const hasOutput = isConference
-    ? scores != null
-    : isAggregator
-      ? issues.length > 0 || scores != null || handlingOptions.length > 0
-      : issues.length > 0;
-  const workingHead = session.node_heads.find((head) => head.node === session.working_draft_node);
+  const node = WorkflowNode.aggregator as JudgeNode;
+  const canGenerate = true;
+  const hasOutput = issues.length > 0 || scores != null || handlingOptions.length > 0;
+  const workingHead = session.node_heads.find((head) => head.node === WorkflowNode.aggregator);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;
   const pendingJudges = FIVE_JUDGE_NODES.filter((judge) => {
@@ -238,7 +223,7 @@ export function JudgementStageContainer({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stale-dialog trigger only
   }, [generateRequestId]);
 
-  const title = WORKFLOW_NODE_LABELS[session.working_draft_node];
+  const title = WORKFLOW_NODE_LABELS[WorkflowNode.aggregator];
   const error = stream.error ?? saveError ?? (runQuery.isError ? "Could not load Judge Run." : null);
 
   return (
@@ -246,29 +231,40 @@ export function JudgementStageContainer({
       <CardHeader>
         <CardTitle className="font-serif text-navy">{title}</CardTitle>
         <CardDescription>
-          {isAggregator
-            ? "The Aggregator copies Judge Issues and scores. It does not majority-vote. Confirm freezes the report even when CRITICAL Issues remain."
-            : "Independent Judges evaluate the Valid Spec Version. Confirm freezes this Judge Run even when CRITICAL Issues remain."}
+          The Aggregator copies Judge Issues and scores. It does not majority-vote. Confirm freezes
+          the report even when CRITICAL Issues remain.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        {isAggregator ? (
-          <AggregatorReportView
-            issues={issues}
-            scores={scores}
-            handlingOptions={handlingOptions}
-            canPick
-            picking={picking}
-            onPick={(option) => void pick({ handling_option_id: option.id })}
-            onPickOther={(prose, targetNode) =>
-              void pick({ prose, target_node: targetNode })
-            }
-          />
-        ) : isConference ? (
-          <ConferenceScoreList scores={scores} />
-        ) : (
-          <JudgeIssueList issues={issues} />
-        )}
+        <ul
+          aria-label="Judge Node Heads"
+          className="grid gap-2 sm:grid-cols-5"
+        >
+          {FIVE_JUDGE_NODES.map((judge) => {
+            const head = session.node_heads.find((item) => item.node === judge);
+            const status = head?.status ?? NodeHeadStatus.empty;
+            return (
+              <li
+                key={judge}
+                className="rounded-md border border-border bg-card px-3 py-2"
+              >
+                <p className="text-sm font-medium text-navy">{WORKFLOW_NODE_LABELS[judge]}</p>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">{status}</p>
+              </li>
+            );
+          })}
+        </ul>
+        <AggregatorReportView
+          issues={issues}
+          scores={scores}
+          handlingOptions={handlingOptions}
+          canPick
+          picking={picking}
+          onPick={(option) => void pick({ handling_option_id: option.id })}
+          onPickOther={(prose, targetNode) =>
+            void pick({ prose, target_node: targetNode })
+          }
+        />
         {stream.running ? (
           <div className="flex flex-wrap items-center gap-3">
             <Button type="button" variant="outline" onClick={stream.abort}>

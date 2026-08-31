@@ -25,8 +25,8 @@ from app.modules.loop.catalog import (
     WorkflowNode,
     ancestors,
     descendants,
-    first_needs_work,
     owned_kinds,
+    prepare_landing,
     upstream_of_stage,
 )
 from app.modules.loop.deps import get_stage_ports
@@ -226,7 +226,15 @@ class LoopService:
                         code="upstream_not_current",
                         detail="Upstream Node Heads must be current",
                     )
-            if heads[node].status_enum() != NodeHeadStatus.CURRENT:
+            working = WorkflowNode(session.working_draft_node)
+            independent_judges = LOOP_STAGE_NODES[LoopStage.INDEPENDENT_JUDGES]
+            sibling_independent_judges = (
+                working in independent_judges and node in independent_judges
+            )
+            if (
+                heads[node].status_enum() != NodeHeadStatus.CURRENT
+                and not sibling_independent_judges
+            ):
                 raise OperationalErrorException(
                     status_code=status.HTTP_409_CONFLICT,
                     code="invalid_working_draft_target",
@@ -798,7 +806,7 @@ class LoopService:
         status_map = {
             node: heads[node].status_enum() for node in LOOP_STAGE_NODES[stage]
         }
-        landing = first_needs_work(stage, status_map)
+        landing = prepare_landing(stage, status_map)
         if landing is None:
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,

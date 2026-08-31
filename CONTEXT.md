@@ -25,8 +25,8 @@ An exported or stored binary/document produced from a Loop Session (for example 
 _Avoid_: file, blob, attachment (when you mean the domain export)
 
 **Decision**:
-A recorded Account choice that changes Loop Session history without being a generate: Confirm, reopen a current Workflow Node, revert, or picking a Handling Option. Choosing a Grilling Option, sending an Account note, and Send are generate input, not Decisions.
-_Avoid_: event, log entry, chat message, Grilling Option click
+A recorded Account choice that changes Loop Session history without being a generate: Confirm, reopen a current Workflow Node, revert, or picking a Handling Option. Choosing a Grilling Option, sending an Account note, and Send are generate input, not Decisions. Successful generate on a Judge records Confirm of that Judge even when Working Draft is not that Judge; Confirm of Aggregator still requires Working Draft Aggregator.
+_Avoid_: event, log entry, chat message, Grilling Option click, auto-Confirm
 
 **Stage Revision**:
 An immutable, user-confirmed snapshot of one Workflow Node's output.
@@ -45,12 +45,12 @@ The Produced Spec Version when it is not stale; otherwise the Loop Session has n
 _Avoid_: current spec, head
 
 **Working Draft**:
-The session's current editing Workflow Node plus narrative JSONB. In-progress typed attachments are working rows with no Stage Revision. Node-scoped narratives are retained while another Workflow Node is being edited, so navigating away and returning does not discard unconfirmed generated work. Navigating away or reopening a current Workflow Node keeps the last Stage Revision current; only a confirm whose content changed marks descendants Stale. Interpretation stores a structured turn list (the research idea, Grilling Question clusters, Account replies, Account notes) plus the latest Idea Frame. Grilling Questions are not Cards. Confirm is allowed once the Idea Frame's intent, problem, and research_question are all non-blank; unanswered Grilling Question clusters do not block Confirm. exhausted is a hint, not a gate. Confirm does not persist in-flight Grilling Option picks. Saving an earlier Account reply or note drops later turns.
+The session's current editing Workflow Node plus narrative JSONB. In-progress typed attachments are working rows with no Stage Revision. Node-scoped narratives are retained while another Workflow Node is being edited, so navigating away and returning does not discard unconfirmed generated work. Navigating away or reopening a current Workflow Node keeps the last Stage Revision current; only a confirm whose content changed marks descendants Stale. On Independent judges, Working Draft is Aggregator even when Aggregator is empty or Stale and even when a Judge is empty or Stale; generate on a Judge does not move it. Interpretation stores a structured turn list (the research idea, Grilling Question clusters, Account replies, Account notes) plus the latest Idea Frame. Grilling Questions are not Cards. Confirm is allowed once the Idea Frame's intent, problem, and research_question are all non-blank; unanswered Grilling Question clusters do not block Confirm. exhausted is a hint, not a gate. Confirm does not persist in-flight Grilling Option picks. Saving an earlier Account reply or note drops later turns.
 _Avoid_: temp, cache, unsaved changes
 
 **Loop Stage**:
-A user-facing group of Workflow Nodes the Account recomputes together by opening empty or Stale Workflow Nodes in that group: Grilling (interpretation, decomposition), Related work (research inputs, related work), Gap, Contribution, Claims/evidence, Experiment planning, Spec Draft, Independent judges, Readiness. Spec Draft and Readiness have no Workflow Nodes. Confirm is per Workflow Node.
-_Avoid_: step, bước, pipeline stage (when you mean this UI unit), Nav Unit
+A user-facing group of Workflow Nodes the Account recomputes together by opening empty or Stale Workflow Nodes in that group: Grilling (interpretation, decomposition), Related work (research inputs, related work), Gap, Contribution, Claims/evidence, Experiment planning, Spec Draft, Independent judges, Readiness. Spec Draft and Readiness have no Workflow Nodes. Confirm is per Workflow Node. Independent judges is one dashboard: five compact Judge Node Heads plus the Aggregator Report; it is not six destinations. Prepare of Independent judges still resets empty or Stale nodes in that group and lands Working Draft on Aggregator.
+_Avoid_: step, bước, pipeline stage (when you mean this UI unit), Nav Unit, Judge tab
 
 **Readiness**:
 The Loop Stage with no Workflow Node that shows readiness criteria for the Valid Spec Version, derived from the current Aggregator Report. It is not conference acceptance. CRITICAL Judge Issues fail it; Conference Judge criterion scores are displayed and do not by themselves fail it or block Spec Artifact export.
@@ -97,8 +97,8 @@ A stored source record in a Loop Session, optionally linked to Cards. It is not 
 _Avoid_: paper (when you mean this record), source (alone), blob
 
 **Judge Run**:
-One Judge's immutable evaluation of a Spec Version, stored as typed rows on that Judge's Stage Revision. It is a list of Judge Issues plus, for Conference Judge, criterion scores (originality, significance, soundness, clarity, reproducibility). ACCEPT/REJECT is derived: any CRITICAL Judge Issue means not ACCEPT. Judges evaluate independently; a Judge Run must not include another Judge's output. Generate on a Judge or the Aggregator requires a Valid Spec Version. Confirm freezes the evaluation even when it contains CRITICAL Issues.
-_Avoid_: review, score, feedback (when you mean this stored run), verdict (alone), majority vote
+One Judge's immutable evaluation of a Spec Version, stored as typed rows on that Judge's Stage Revision. It is a list of Judge Issues plus, for Conference Judge, criterion scores (originality, significance, soundness, clarity, reproducibility). ACCEPT/REJECT is derived: any CRITICAL Judge Issue means not ACCEPT. Judges evaluate independently; a Judge Run must not include another Judge's output. Generate on a Judge or the Aggregator requires a Valid Spec Version. Successful generate on a Judge is Confirm of that Judge, including when Working Draft is Aggregator; a failed or aborted generate is not. Confirm freezes the evaluation even when it contains CRITICAL Issues. Opening Independent judges does not generate Judges.
+_Avoid_: review, score, feedback (when you mean this stored run), verdict (alone), majority vote, auto-Confirm
 
 **Judge Issue**:
 A typed finding on a Judge Run: Finding Kind, Severity, reason, and suggestion. Not a Card. Not a Decision. Rule-based verifiers in `judgement` read Context Projection (not another module's tables). Evidence: citation passage does not entail the claim → `unsupported_citation`. Gap: no cited passage supports the gap statement → `gap_unsupported_by_sources` only. `gap_already_addressed` and `gap_untestable` are LLM-emitted. The LLM may add Issues and may raise Severity; it must not drop or lower a verifier-emitted Issue.
@@ -113,11 +113,11 @@ CRITICAL, MAJOR, or MINOR on a Judge Issue. Each Finding Kind has a floor. CRITI
 _Avoid_: priority, score, verdict, vote
 
 **Handling Option**:
-A proposed way to address a Judge Issue or disagreement cluster on the Aggregator Report. Offered for CRITICAL and MAJOR; MINOR Issues are listed without Handling Options. Choosing one is a Decision (PICK). If the target Node Head is current, PICK reopens it (same idea as EDIT) and does not mark it Stale. It writes a prose suggested patch (and target Card ids) onto that node's Working Draft narrative; it does not patch Card bodies, the Spec Version, Severity, or Judge Runs. Several Handling Options may share one Judge Issue and target different Workflow Nodes. Other is a Handling Option whose prose and target Workflow Node are supplied by the Account (gap, contribution, claims, evidence, experiment_plan, or idea_decomposition); the Aggregator LLM does not invent Other. Generate, Confirm, Stale, and related Judge re-runs follow the existing loop; Judges do not auto-run. MAJOR Handling Options are skippable for Spec Artifact export; CRITICAL are not.
+A proposed way to address a Judge Issue or disagreement cluster on the Aggregator Report. Offered for CRITICAL and MAJOR; MINOR Issues are listed without Handling Options. Choosing one is a Decision (PICK). If the target Node Head is current, PICK reopens it (same idea as EDIT) and does not mark it Stale; the Account leaves Independent judges. It writes a prose suggested patch (and target Card ids) onto that node's Working Draft narrative; it does not patch Card bodies, the Spec Version, Severity, or Judge Runs. Several Handling Options may share one Judge Issue and target different Workflow Nodes. Other is a Handling Option whose prose and target Workflow Node are supplied by the Account (gap, contribution, claims, evidence, experiment_plan, or idea_decomposition); the Aggregator LLM does not invent Other. Generate, Confirm, Stale, and related Judge re-runs follow the existing loop; Judges do not auto-run. PICK is offered on the working Aggregator Report, before Confirm Aggregator. MAJOR Handling Options are skippable for Spec Artifact export; CRITICAL are not.
 _Avoid_: Grilling Option, override, export anyway, patch (when you mean the Decision), Apply suggestion
 
 **Aggregator Report**:
-The Aggregator's composed output from the five current Judge Runs: grouped Judge Issues, consensus vs disagreement, Readiness flags, and Handling Options. It copies Severity from Judge Runs and must not rewrite it. LLM copy may phrase Handling Options; it must not change Severity or invent a majority verdict.
+The Aggregator's composed output from the five current Judge Runs: grouped Judge Issues, consensus vs disagreement, Readiness flags, and Handling Options. It copies Severity from Judge Runs and must not rewrite it. LLM copy may phrase Handling Options; it must not change Severity or invent a majority verdict. Independent judges shows Judge Issues and Handling Options here, not as five full Judge lists. Generate starts when all five Judge heads are current; Confirm Aggregator is still an Account Decision and advances to Readiness.
 _Avoid_: verdict, majority vote, final score, Judge (the Aggregator is not a sixth Judge)
 
 **Stale**:
@@ -125,7 +125,7 @@ A Stage Revision or Spec Version whose upstream inputs have changed via a confir
 _Avoid_: deleted, invalid, outdated (when you mean this state)
 
 **Stale re-accept**:
-An explicit ack that the Account accepts proceeding on a Stale Workflow Node without a successful generate or Judge Run since prepare. Required for Confirm and for generate (ADR 0036). A “run pending Judges” request may carry one ack covering generate on every Stale Judge in that batch. That ack does not cover Aggregator generate, Confirm, or other Loop Stages. The acknowledgement is not a separate Decision.
+An explicit ack that the Account accepts proceeding on a Stale Workflow Node without a successful generate or Judge Run since prepare. Required for Confirm and for generate (ADR 0036). A “run pending Judges” request may carry one ack covering generate on every Stale Judge in that batch. That ack does not cover Aggregator generate, Confirm, or other Loop Stages. When the five Judge heads are current, Aggregator generate may carry Stale re-accept for Aggregator; that ack does not cover Confirm Aggregator. The acknowledgement is not a separate Decision.
 _Avoid_: force confirm, skip regenerate, override stale, Confirm anyway (UI copy only)
 
 **Context Projection**:
@@ -133,5 +133,5 @@ The payload assembled for a generate or Judge run from valid upstream Stage Revi
 _Avoid_: context (alone), prompt, Prompt View (when you mean the full assembly), RAG dump
 
 **Prompt View**:
-A Workflow-Node-scoped, prompt-ready slice derived from a Context Projection for an LLM generate or Judge call. It does not replace Context Projection. A Judge's Prompt View must not include another Judge Run; the Aggregator's Prompt View is the five current Judge Runs. The Account may start remaining empty or Stale Judges in parallel (“run pending Judges”); that action does not start the Aggregator. Stale Judges in the batch require the request's batch Stale re-accept.
+A Workflow-Node-scoped, prompt-ready slice derived from a Context Projection for an LLM generate or Judge call. It does not replace Context Projection. A Judge's Prompt View must not include another Judge Run; the Aggregator's Prompt View is the five current Judge Runs. The Account may start remaining empty or Stale Judges in parallel (“run pending Judges”); that action does not start the Aggregator. Stale Judges in the batch require the request's batch Stale re-accept. When all five Judge heads are current, Aggregator generate starts; a later successful Judge generate that leaves five heads current starts it again and replaces an unconfirmed Aggregator Report.
 _Avoid_: context (alone), prompt context, Prompt Projection, RAG dump

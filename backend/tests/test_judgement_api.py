@@ -162,6 +162,41 @@ async def _prepare_gap_judge(
     )
 
 
+async def _open_independent_judges_node(
+    client: AsyncClient, session: dict, node: str
+) -> dict:
+    if session["working_draft_node"] == node:
+        return session
+    patched = await _patch_working_draft(
+        client,
+        session["id"],
+        expected_version=session["version"],
+        node=node,
+    )
+    assert patched.status_code == 200, patched.text
+    return patched.json()
+
+
+async def _confirm_independent_judges_node(
+    client: AsyncClient,
+    session: dict,
+    node: str,
+    expected_version: int | None = None,
+    *,
+    stale_reaccept: bool = False,
+) -> dict:
+    if expected_version is not None:
+        session = {**session, "version": expected_version}
+    session = await _open_independent_judges_node(client, session, node)
+    return await _confirm(
+        client,
+        session["id"],
+        node,
+        session["version"],
+        stale_reaccept=stale_reaccept,
+    )
+
+
 async def _prepare_evidence_judge(
     client: AsyncClient,
     *,
@@ -171,18 +206,7 @@ async def _prepare_evidence_judge(
     draft = await _prepare_gap_judge(
         client, gap_statement=gap_statement, claim_statement=claim_statement
     )
-    session = await _confirm(client, draft["id"], "gap_judge", draft["version"])
-    session = await _prepare(
-        client, draft["id"], "independent_judges", session["version"]
-    )
-    session = await _confirm(
-        client, draft["id"], session["working_draft_node"], session["version"]
-    )
-    session = await _prepare(
-        client, draft["id"], "independent_judges", session["version"]
-    )
-    assert session["working_draft_node"] == "evidence_judge"
-    return session
+    return await _open_independent_judges_node(client, draft, "evidence_judge")
 
 
 async def _generate_gap_judge(
@@ -340,8 +364,8 @@ async def test_confirm_gap_judge_with_critical_keeps_spec_version(
     await _auth_client(client)
     draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    confirmed = await _confirm(
-        client, draft["id"], "gap_judge", events[-1]["version"]
+    confirmed = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
     )
     assert _head(confirmed, "gap_judge")["status"] == "current"
     assert confirmed["valid_spec_version_id"] == confirmed["produced_spec_version"]["id"]
@@ -358,21 +382,43 @@ async def test_confirm_gap_judge_with_critical_keeps_spec_version(
     )
 
 
+INDEPENDENT_JUDGES_NODES = (*FIVE_JUDGE_NODES, WorkflowNode.AGGREGATOR)
+
+
+@pytest.mark.asyncio
+async def test_prepare_independent_judges_lands_working_draft_on_aggregator_when_all_empty(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    assert draft["working_draft_node"] == "aggregator"
+    for node in INDEPENDENT_JUDGES_NODES:
+        head = _head(draft, node.value)
+        assert head["status"] == "empty"
+        listed = await client.get(
+            f"/api/judgement/sessions/{draft['id']}/nodes/{node.value}"
+        )
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["issues"] == []
+        assert listed.json().get("scores") is None
+
+
 @pytest.mark.asyncio
 async def test_prepare_independent_judges_does_not_wipe_current_gap_judge(
     client: AsyncClient,
 ) -> None:
     await _auth_client(client)
     draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
+    draft = await _open_independent_judges_node(client, draft, "gap_judge")
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    confirmed = await _confirm(
-        client, draft["id"], "gap_judge", events[-1]["version"]
+    confirmed = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
     )
     revision_id = _head(confirmed, "gap_judge")["stage_revision_id"]
     prepared = await _prepare(
         client, draft["id"], "independent_judges", confirmed["version"]
     )
-    assert prepared["working_draft_node"] == "contribution_judge"
+    assert prepared["working_draft_node"] == "aggregator"
     assert _head(prepared, "gap_judge")["status"] == "current"
     assert _head(prepared, "gap_judge")["stage_revision_id"] == revision_id
     frozen = await client.get(
@@ -386,19 +432,57 @@ async def test_prepare_independent_judges_does_not_wipe_current_gap_judge(
 
 
 @pytest.mark.asyncio
+async def test_prepare_independent_judges_lands_aggregator_when_current_judges_and_stale_aggregator(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    prepared = await _stale_experiment_and_conference(client)
+    gap_revision = _head(prepared, "gap_judge")["stage_revision_id"]
+    assert prepared["working_draft_node"] == "aggregator"
+    assert _head(prepared, "gap_judge")["status"] == "current"
+    assert _head(prepared, "aggregator")["status"] == "stale"
+    assert _head(prepared, "gap_judge")["stage_revision_id"] == gap_revision
+
+
+@pytest.mark.asyncio
+async def test_prepare_independent_judges_conflicts_when_all_six_heads_current(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_aggregator(client)
+    _bind_aggregator_llm({"options": []})
+    generated = await _generate_aggregator(client, draft["id"], draft["version"])
+    confirmed = await _confirm(
+        client, draft["id"], "aggregator", generated[-1]["version"]
+    )
+    response = await client.post(
+        f"/api/loop/sessions/{confirmed['id']}/recompute-prepare",
+        json={
+            "stage": "independent_judges",
+            "expected_version": confirmed["version"],
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "stage_already_current"
+    fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
+    assert fetched.json()["working_draft_node"] == "aggregator"
+    assert fetched.json()["version"] == confirmed["version"]
+
+
+@pytest.mark.asyncio
 async def test_gap_judge_generate_allowed_when_working_draft_is_sibling_judge(
     client: AsyncClient,
 ) -> None:
     await _auth_client(client)
     draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    confirmed = await _confirm(
-        client, draft["id"], "gap_judge", events[-1]["version"]
+    confirmed = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
     )
     prepared = await _prepare(
         client, draft["id"], "independent_judges", confirmed["version"]
     )
-    assert prepared["working_draft_node"] == "contribution_judge"
+    assert prepared["working_draft_node"] == "aggregator"
     sibling = await _generate_gap_judge(
         client, draft["id"], prepared["version"]
     )
@@ -416,14 +500,13 @@ async def test_gap_judge_content_change_stales_aggregator(
     await _auth_client(client)
     draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    session = await _confirm(client, draft["id"], "gap_judge", events[-1]["version"])
-    for _ in range(5):
-        session = await _prepare(
-            client, draft["id"], "independent_judges", session["version"]
-        )
-        session = await _confirm(
-            client, draft["id"], session["working_draft_node"], session["version"]
-        )
+    session = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
+    )
+    session = await _advance_to_aggregator(client, session)
+    session = await _confirm(
+        client, draft["id"], "aggregator", session["version"]
+    )
     assert _head(session, "aggregator")["status"] == "current"
 
     reopened = await _patch_working_draft(
@@ -591,13 +674,13 @@ async def test_evidence_judge_generate_allowed_when_working_draft_is_sibling_jud
     await _auth_client(client)
     draft = await _prepare_gap_judge(client, claim_statement=UNSUPPORTED_CLAIM)
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    confirmed = await _confirm(
-        client, draft["id"], "gap_judge", events[-1]["version"]
+    confirmed = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
     )
     prepared = await _prepare(
         client, draft["id"], "independent_judges", confirmed["version"]
     )
-    assert prepared["working_draft_node"] == "contribution_judge"
+    assert prepared["working_draft_node"] == "aggregator"
     sibling = await _generate_evidence_judge(
         client, draft["id"], prepared["version"]
     )
@@ -618,13 +701,10 @@ async def test_evidence_judge_content_change_stales_aggregator(
     session = await _confirm(
         client, draft["id"], "evidence_judge", events[-1]["version"]
     )
-    for _ in range(3):
-        session = await _prepare(
-            client, draft["id"], "independent_judges", session["version"]
-        )
-        session = await _confirm(
-            client, draft["id"], session["working_draft_node"], session["version"]
-        )
+    session = await _advance_to_aggregator(client, session)
+    session = await _confirm(
+        client, draft["id"], "aggregator", session["version"]
+    )
     assert _head(session, "aggregator")["status"] == "current"
 
     reopened = await _patch_working_draft(
@@ -746,12 +826,7 @@ async def test_experiment_judge_generate_runs_with_valid_spec_version(
 
 async def _prepare_contribution_judge(client: AsyncClient) -> dict:
     draft = await _prepare_gap_judge(client)
-    session = await _confirm(client, draft["id"], "gap_judge", draft["version"])
-    session = await _prepare(
-        client, draft["id"], "independent_judges", session["version"]
-    )
-    assert session["working_draft_node"] == "contribution_judge"
-    return session
+    return await _open_independent_judges_node(client, draft, "contribution_judge")
 
 
 async def _prepare_experiment_judge(
@@ -765,15 +840,8 @@ async def _prepare_experiment_judge(
         kwargs["gap_statement"] = gap_statement
     if claim_statement is not None:
         kwargs["claim_statement"] = claim_statement
-    draft = await _prepare_evidence_judge(client, **kwargs)
-    session = await _confirm(
-        client, draft["id"], "evidence_judge", draft["version"]
-    )
-    session = await _prepare(
-        client, draft["id"], "independent_judges", session["version"]
-    )
-    assert session["working_draft_node"] == "experiment_judge"
-    return session
+    draft = await _prepare_gap_judge(client, **kwargs)
+    return await _open_independent_judges_node(client, draft, "experiment_judge")
 
 
 @pytest.mark.asyncio
@@ -937,8 +1005,8 @@ async def test_contribution_judge_generate_payload_excludes_peer_judge_runs(
     await _auth_client(client)
     draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    confirmed = await _confirm(
-        client, draft["id"], "gap_judge", events[-1]["version"]
+    confirmed = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
     )
     prepared = await _prepare(
         client, draft["id"], "independent_judges", confirmed["version"]
@@ -988,17 +1056,10 @@ async def _prepare_conference_judge(
     gap_statement: str | None = None,
     claim_statement: str | None = None,
 ) -> dict:
-    draft = await _prepare_experiment_judge(
+    draft = await _prepare_gap_judge(
         client, gap_statement=gap_statement, claim_statement=claim_statement
     )
-    session = await _confirm(
-        client, draft["id"], "experiment_judge", draft["version"]
-    )
-    session = await _prepare(
-        client, draft["id"], "independent_judges", session["version"]
-    )
-    assert session["working_draft_node"] == "conference_judge"
-    return session
+    return await _open_independent_judges_node(client, draft, "conference_judge")
 
 
 @pytest.mark.asyncio
@@ -1083,8 +1144,8 @@ async def test_conference_judge_generate_payload_excludes_peer_judge_runs(
     await _auth_client(client)
     draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    confirmed = await _confirm(
-        client, draft["id"], "gap_judge", events[-1]["version"]
+    confirmed = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
     )
     prepared = await _prepare(
         client, draft["id"], "independent_judges", confirmed["version"]
@@ -1157,23 +1218,33 @@ async def _generate_aggregator(
     return events
 
 
-async def _advance_to_aggregator(client: AsyncClient, session: dict) -> dict:
-    while session["working_draft_node"] != "aggregator":
-        node = session["working_draft_node"]
-        if node == "conference_judge":
+async def _confirm_five_judge_heads(client: AsyncClient, session: dict) -> dict:
+    for node in FIVE_JUDGE_NODES:
+        if _head(session, node.value)["status"] == "current":
+            continue
+        session = await _open_independent_judges_node(client, session, node.value)
+        if node is WorkflowNode.CONFERENCE_JUDGE:
             _bind_conference_judge_llm({"scores": CONFERENCE_SCORES})
             generated = await _generate_conference_judge(
                 client, session["id"], session["version"]
             )
             session = await _confirm(
-                client, session["id"], node, generated[-1]["version"]
+                client, session["id"], node.value, generated[-1]["version"]
             )
         else:
-            session = await _confirm(client, session["id"], node, session["version"])
-        session = await _prepare(
-            client, session["id"], "independent_judges", session["version"]
-        )
+            session = await _confirm(
+                client, session["id"], node.value, session["version"]
+            )
     return session
+
+
+async def _advance_to_aggregator(client: AsyncClient, session: dict) -> dict:
+    session = await _confirm_five_judge_heads(client, session)
+    if session["working_draft_node"] == "aggregator":
+        return session
+    return await _prepare(
+        client, session["id"], "independent_judges", session["version"]
+    )
 
 
 async def _prepare_aggregator(
@@ -1209,31 +1280,10 @@ async def test_aggregator_generate_prompt_view_is_five_current_judge_runs(
     await _auth_client(client)
     draft = await _prepare_gap_judge(client, gap_statement=UNSUPPORTED_GAP)
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    session = await _confirm(
-        client, draft["id"], "gap_judge", events[-1]["version"]
+    session = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
     )
-    for _ in range(4):
-        session = await _prepare(
-            client, draft["id"], "independent_judges", session["version"]
-        )
-        if session["working_draft_node"] == "conference_judge":
-            _bind_conference_judge_llm({"scores": CONFERENCE_SCORES})
-            generated = await _generate_conference_judge(
-                client, draft["id"], session["version"]
-            )
-            session = await _confirm(
-                client,
-                draft["id"],
-                "conference_judge",
-                generated[-1]["version"],
-            )
-        else:
-            session = await _confirm(
-                client, draft["id"], session["working_draft_node"], session["version"]
-            )
-    session = await _prepare(
-        client, draft["id"], "independent_judges", session["version"]
-    )
+    session = await _advance_to_aggregator(client, session)
     assert session["working_draft_node"] == "aggregator"
     fake = _bind_aggregator_llm({"options": []})
     await _generate_aggregator(client, draft["id"], session["version"])
@@ -1358,8 +1408,8 @@ async def test_aggregator_handling_options_skip_minor_and_other(
     generated = await _generate_experiment_judge(
         client, session["id"], session["version"]
     )
-    session = await _confirm(
-        client, session["id"], "experiment_judge", generated[-1]["version"]
+    session = await _confirm_independent_judges_node(
+        client, session, "experiment_judge", generated[-1]["version"]
     )
     session = await _prepare(
         client, session["id"], "independent_judges", session["version"]
@@ -1603,13 +1653,13 @@ async def test_run_pending_judges_skips_current_heads_and_does_not_start_aggrega
     await _auth_client(client)
     draft = await _prepare_gap_judge(client)
     events = await _generate_gap_judge(client, draft["id"], draft["version"])
-    confirmed = await _confirm(
-        client, draft["id"], "gap_judge", events[-1]["version"]
+    confirmed = await _confirm_independent_judges_node(
+        client, draft, "gap_judge", events[-1]["version"]
     )
     prepared = await _prepare(
         client, draft["id"], "independent_judges", confirmed["version"]
     )
-    assert prepared["working_draft_node"] == "contribution_judge"
+    assert prepared["working_draft_node"] == "aggregator"
     _bind_pending_judge_llms()
     response, pending_events = await _run_pending(
         client, draft["id"], prepared["version"]
@@ -1637,7 +1687,7 @@ async def test_run_pending_judges_allowed_when_working_draft_is_sibling_judge(
 ) -> None:
     await _auth_client(client)
     draft = await _prepare_gap_judge(client)
-    assert draft["working_draft_node"] == "gap_judge"
+    assert draft["working_draft_node"] == "aggregator"
     _bind_pending_judge_llms()
     response, pending_events = await _run_pending(
         client, draft["id"], draft["version"]
@@ -1652,7 +1702,7 @@ async def test_run_pending_judges_allowed_when_working_draft_is_sibling_judge(
     }
     assert all(event.get("node") != "aggregator" for event in pending_events)
     fetched = await client.get(f"/api/loop/sessions/{draft['id']}")
-    assert fetched.json()["working_draft_node"] == "gap_judge"
+    assert fetched.json()["working_draft_node"] == "aggregator"
 
 
 @pytest.mark.asyncio
@@ -1719,18 +1769,13 @@ async def test_run_pending_batch_ack_does_not_authorize_aggregator_or_confirm(
         "judge_heads_not_current",
     }
 
-    session = await _confirm(
-        client, prepared["id"], prepared["working_draft_node"], version
-    )
-    session = await _prepare(
-        client, prepared["id"], "independent_judges", session["version"]
-    )
-    session = await _confirm(
+    session = await _confirm_independent_judges_node(
         client,
-        prepared["id"],
-        session["working_draft_node"],
-        session["version"],
-        stale_reaccept=True,
+        {**prepared, "version": version},
+        "experiment_judge",
+    )
+    session = await _confirm_independent_judges_node(
+        client, session, "conference_judge"
     )
     session = await _prepare(
         client, prepared["id"], "independent_judges", session["version"]
