@@ -1,22 +1,36 @@
-"use client";
-
-import { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Activity, Beaker, CheckCircle2, ChevronRight, FlaskConical, Lightbulb, Target, FileText } from "lucide-react";
-
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getApiErrorMessage } from "@/lib/api/config";
 import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
   useCheckFeasibilityApiSpecSessionsSessionIdFeasibilityCheckPost,
-  useGenerateExperimentApiSpecSessionsSessionIdExperimentPlanGeneratePost,
 } from "@/lib/api/generated/endpoints";
 import {
   type LoopSessionResponse,
-  WorkflowNode,
 } from "@/lib/api/generated/model";
 import { useLoopSessionSave } from "../loop/loop-session-save";
+import { Beaker, CheckCircle2, ChevronRight, AlertTriangle } from "lucide-react";
+
+type ExperimentItem = {
+  claim: string;
+  action: string;
+  objective: string;
+  significance: string;
+};
+
+type ExperimentPlan = {
+  experiments: ExperimentItem[];
+};
+
+type FeasibilityReport = {
+  is_feasible: boolean;
+  required_resources: string[];
+  potential_bottlenecks: string[];
+  mitigation_strategies: string[];
+  conclusion: string;
+};
 
 function FormattedText({ text }: { text: string }) {
   if (!text) return null;
@@ -26,15 +40,15 @@ function FormattedText({ text }: { text: string }) {
         const trimmed = line.trim();
         const bulletMatch = trimmed.match(/^[-*]\s+(.*)$/);
         const numberMatch = trimmed.match(/^(\d+\.)\s+(.*)$/);
-        
+
         let prefix = null;
         let contentStr = trimmed;
-        
+
         if (bulletMatch) {
-          prefix = <span className="text-slate-400 font-bold mt-0.5 w-4 shrink-0 flex justify-center">•</span>;
+          prefix = <span className="text-slate-400 font-bold w-4 inline-block mt-0.5 shrink-0">•</span>;
           contentStr = bulletMatch[1];
         } else if (numberMatch) {
-          prefix = <span className="text-slate-500 font-semibold mt-0.5 w-5 shrink-0 text-sm">{numberMatch[1]}</span>;
+          prefix = <span className="text-slate-500 font-medium w-6 inline-block shrink-0 mt-0.5">{numberMatch[1]}</span>;
           contentStr = numberMatch[2];
         }
 
@@ -61,28 +75,9 @@ function FormattedText({ text }: { text: string }) {
       })}
     </div>
   );
-};
+}
 
-type ExperimentItem = {
-  claim: string;
-  action: string;
-  objective: string;
-  significance: string;
-};
-
-type ExperimentPlan = {
-  experiments: ExperimentItem[];
-};
-
-type FeasibilityReport = {
-  is_feasible: boolean;
-  required_resources: string[];
-  potential_bottlenecks: string[];
-  mitigation_strategies: string[];
-  conclusion: string;
-};
-
-export function ExperimentPlanningStageContainer({
+export function FeasibilityStageContainer({
   sessionId,
   session,
   onRunningChange,
@@ -94,75 +89,45 @@ export function ExperimentPlanningStageContainer({
   onConfirmabilityChange?: (confirmable: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const generateExperiment = useGenerateExperimentApiSpecSessionsSessionIdExperimentPlanGeneratePost();
   const checkFeasibility = useCheckFeasibilityApiSpecSessionsSessionIdFeasibilityCheckPost();
   const { queue, status } = useLoopSessionSave();
   const saving = status === "saving";
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const [error, setError] = useState<string | null>(null);
-  
-  const expHead = session.node_heads.find(h => h.node === "experiment_plan");
+
+  const narrative = session.working_draft_narrative as any;
+  const expHead = session.node_heads?.find(h => h.node === "experiment_plan");
   const expRev = expHead?.stage_revision_id ? (session as any).stage_revisions?.find((r: any) => r.id === expHead.stage_revision_id) : null;
   const committedNarrative = expRev?.narrative as any;
 
-  const narrative = session.working_draft_narrative as any;
   const experimentPlan = (narrative?.plan || committedNarrative?.plan) as ExperimentPlan | undefined;
   const feasibilityReport = narrative?.feasibility_report as FeasibilityReport | undefined;
-  
-  const running = generateExperiment.isPending || checkFeasibility.isPending || saving;
 
-  const currentSession = () => {
-    const cached = queryClient.getQueryData(sessionKey) as { status: number; data: LoopSessionResponse } | undefined;
+  const running = checkFeasibility.isPending || saving;
+
+  function currentSession(): LoopSessionResponse {
+    const cached = queryClient.getQueryData(sessionKey) as any;
     return cached?.status === 200 ? cached.data : session;
-  };
+  }
 
-  const updateSession = (updater: (prev: LoopSessionResponse) => LoopSessionResponse) => {
+  function updateSession(updater: (prev: LoopSessionResponse) => LoopSessionResponse) {
     queryClient.setQueryData(sessionKey, (old: any) => {
       if (old?.status === 200) {
         return { ...old, data: updater(old.data) };
       }
       return old;
     });
-  };
-
-  const isExperimentPlanNode = session.working_draft_node === WorkflowNode.experiment_plan;
-  const isFeasibilityNode = session.working_draft_node === WorkflowNode.feasibility;
+  }
 
   useEffect(() => {
     onRunningChange?.(running);
   }, [running, onRunningChange]);
 
   useEffect(() => {
-    if (isExperimentPlanNode) {
-      onConfirmabilityChange?.(!!experimentPlan);
-    } else if (isFeasibilityNode) {
-      onConfirmabilityChange?.(!!feasibilityReport);
-    } else {
-      onConfirmabilityChange?.(false);
-    }
+    onConfirmabilityChange?.(!!feasibilityReport);
     return () => onConfirmabilityChange?.(false);
-  }, [isExperimentPlanNode, isFeasibilityNode, !!experimentPlan, !!feasibilityReport, onConfirmabilityChange]);
-
-  async function loadExperimentPlan() {
-    setError(null);
-    try {
-      const response: any = await queue.enqueue(() =>
-        generateExperiment.mutateAsync({
-          sessionId,
-          data: { expected_version: currentSession().version },
-        })
-      );
-      if (response.status !== 200) throw new Error("Could not generate experiment plan");
-      updateSession((current) => ({
-        ...current,
-        version: response.data.version,
-        working_draft_narrative: { ...current.working_draft_narrative as object, plan: response.data.plan },
-      }));
-    } catch (caught) {
-      setError(getApiErrorMessage(caught));
-    }
-  }
+  }, [!!feasibilityReport, onConfirmabilityChange]);
 
   async function runFeasibilityCheck() {
     setError(null);
@@ -170,7 +135,7 @@ export function ExperimentPlanningStageContainer({
       const response: any = await queue.enqueue(() =>
         checkFeasibility.mutateAsync({
           sessionId,
-          data: { expected_version: currentSession().version },
+          data: { expected_version: currentSession().version, plan: experimentPlan as any },
         })
       );
       if (response.status !== 200) throw new Error("Could not check feasibility");
@@ -190,34 +155,21 @@ export function ExperimentPlanningStageContainer({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <FlaskConical className="w-5 h-5 text-indigo-600" /> Experiment Planning & Feasibility
+              <Beaker className="w-5 h-5 text-indigo-600" /> Feasibility Assessment
             </CardTitle>
             <CardDescription>
-              Plan your experiments and verify their feasibility.
+              Check the feasibility of your experiment plan.
             </CardDescription>
           </div>
           <div className="flex gap-2">
-            {isExperimentPlanNode && (
-              <Button
-                type="button"
-                variant="default"
-                disabled={saving || running}
-                onClick={() => void loadExperimentPlan()}
-              >
-                {experimentPlan ? "Regenerate Plan" : "Generate Plan"}
-              </Button>
-            )}
-            
-            {isFeasibilityNode && (
-              <Button
-                type="button"
-                variant="default"
-                disabled={saving || running}
-                onClick={() => void runFeasibilityCheck()}
-              >
-                {feasibilityReport ? "Re-check Feasibility" : "Check Feasibility"}
-              </Button>
-            )}
+            <Button
+              type="button"
+              variant="default"
+              disabled={saving || running || !experimentPlan}
+              onClick={() => void runFeasibilityCheck()}
+            >
+              {feasibilityReport ? "Re-check Feasibility" : "Check Feasibility"}
+            </Button>
           </div>
         </div>
       </CardHeader>
@@ -229,56 +181,14 @@ export function ExperimentPlanningStageContainer({
           </div>
         ) : null}
 
-        {(experimentPlan?.experiments?.length ?? 0) > 0 && (
-          <div className="space-y-6">
-            {experimentPlan?.experiments?.map((exp: ExperimentItem, idx: number) => (
-              <div key={idx} className="bg-white border rounded-lg shadow-sm overflow-hidden">
-                <div className="bg-slate-50 border-b px-5 py-3">
-                  <h4 className="flex items-start gap-2 font-semibold text-slate-800 text-sm">
-                    <FileText className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
-                    <span className="leading-snug">{exp.claim}</span>
-                  </h4>
-                </div>
-                <div className="p-6 space-y-6">
-                  <div>
-                    <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
-                      <Target className="w-4 h-4 text-indigo-500" /> Action (Làm gì - Thời gian/Mẫu)
-                    </h5>
-                    <div className="text-sm text-slate-800 bg-indigo-50/40 p-4 rounded-md border border-indigo-100/60 shadow-sm">
-                      <FormattedText text={exp.action} />
-                    </div>
-                  </div>
-                  
-                  <div className="grid md:grid-cols-2 gap-6">
-                    <div>
-                      <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
-                        <Activity className="w-4 h-4 text-emerald-500" /> Objective (Mục tiêu)
-                      </h5>
-                      <div className="text-sm text-slate-800 bg-emerald-50/40 p-4 rounded-md border border-emerald-100/60 h-full shadow-sm">
-                        <FormattedText text={exp.objective} />
-                      </div>
-                    </div>
-                    <div>
-                      <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
-                        <Lightbulb className="w-4 h-4 text-amber-500" /> Significance (Ý nghĩa)
-                      </h5>
-                      <div className="text-sm text-slate-800 bg-amber-50/40 p-4 rounded-md border border-amber-100/60 h-full shadow-sm">
-                        <FormattedText text={exp.significance} />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
+        {!experimentPlan && !error ? (
+          <div className="p-4 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" /> No experiment plan found. Please go back to the Experiment Plan stage to generate it.
           </div>
-        )}
+        ) : null}
 
         {feasibilityReport && (
-          <div className="mt-8 border-t pt-8">
-            <h4 className="flex items-center gap-2 font-serif text-lg text-navy mb-5">
-              <Beaker className="w-5 h-5 text-emerald-600" /> Feasibility Assessment
-            </h4>
-            
+          <div className="mt-4">
             <div className={`p-4 rounded-lg mb-6 flex items-start gap-3 shadow-sm ${feasibilityReport.is_feasible ? 'bg-emerald-50 border border-emerald-200' : 'bg-destructive/10 border border-destructive/20'}`}>
               {feasibilityReport.is_feasible ? (
                 <CheckCircle2 className="w-6 h-6 text-emerald-600 mt-0.5 shrink-0" />
@@ -307,7 +217,7 @@ export function ExperimentPlanningStageContainer({
                   ))}
                 </ul>
               </div>
-              
+
               <div className="bg-white border rounded-lg p-5 shadow-sm">
                 <h5 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5 mb-3">
                   <AlertTriangle className="w-4 h-4 text-amber-500" /> Potential Bottlenecks
@@ -324,14 +234,14 @@ export function ExperimentPlanningStageContainer({
             </div>
 
             {feasibilityReport.mitigation_strategies?.length > 0 && (
-              <div className="bg-amber-50/50 border border-amber-100 rounded-lg p-5 shadow-sm">
-                <h5 className="text-sm font-semibold text-amber-800 flex items-center gap-1.5 mb-3">
-                  <Lightbulb className="w-4 h-4 text-amber-600" /> Mitigation Strategies
+              <div className="bg-white border rounded-lg p-5 shadow-sm">
+                <h5 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5 mb-3">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Mitigation Strategies
                 </h5>
-                <ul className="text-sm text-slate-700 space-y-2 list-none">
+                <ul className="text-sm text-slate-600 space-y-2 list-none">
                   {feasibilityReport.mitigation_strategies.map((item: string, idx: number) => (
                     <li key={idx} className="flex gap-2">
-                      <span className="text-amber-500 font-bold mt-0.5">•</span>
+                      <span className="text-emerald-500 font-bold mt-0.5">✓</span>
                       <span className="leading-snug"><FormattedText text={item} /></span>
                     </li>
                   ))}

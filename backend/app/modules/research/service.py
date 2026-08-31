@@ -451,6 +451,7 @@ class ResearchService:
             )
 
         idea = _idea_context(run.context)
+        output_language = _idea_output_language(idea)
         queries, query_warnings = await self._generate_queries(inputs, idea)
         for warning in query_warnings:
             yield self._warning(run.node, "llm_fallback", warning)
@@ -613,6 +614,7 @@ class ResearchService:
                 research_context={
                     "idea": idea,
                     "research_inputs": inputs.model_dump(mode="json"),
+                    "output_language": output_language,
                 },
                 document=document,
                 source_object_key=citation.text_object_key,
@@ -638,6 +640,7 @@ class ResearchService:
         narrative = {
             "search_queries": queries,
             "query_language": "en",
+            "output_language": output_language,
             "query_plan": _query_plan(queries),
             "citation_count": len(unique_records),
             "candidate_count": len(records),
@@ -1036,47 +1039,96 @@ class ResearchService:
         )
         citation_payload["retrieved_text_location"] = source_location
         idea = research_context.get("idea", {})
+        configured_output_language = research_context.get("output_language")
+        output_language: Literal["en", "vi"] = (
+            configured_output_language
+            if configured_output_language in {"en", "vi"}
+            else _idea_output_language(idea)
+        )
+        analysis_prompt = json.dumps(
+            {**research_context, "citation": citation_payload},
+            default=str,
+            ensure_ascii=False,
+        )
+        analysis_contract = (
+            "research-analysis: return only one flat JSON object with exactly "
+            "these keys: what_was_done (non-empty string), "
+            "method_or_feedback (non-empty string describing the method, "
+            "feedback, or evaluation type), limitation (non-empty string), "
+            "relevance (non-empty string), supporting_passage (non-empty "
+            "verbatim span from the supplied retrieved_text), evidence "
+            "(an object with what_was_done, method_or_feedback, and limitation; "
+            "each value contains passage and location), and confidence "
+            "(number from 0 to 1). Do not rename or nest the keys. "
+            "Use only retrieved_text for source assertions. For every evidence "
+            "item, passage must be a concise verbatim sentence or paragraph "
+            "that separately supports that assertion. Never use a document "
+            "type, section heading, navigation text, or the whole HTML/PDF as "
+            "evidence. The limitation must contain exactly one atomic, "
+            "source-stated limitation, and evidence.limitation.passage must "
+            "entail every asserted clause. Do not combine a supported limitation "
+            "with another cost, mechanism, scope, metric, or application unless "
+            "the same passage explicitly supports it. Never infer that a method "
+            "lacks a feature merely because the source does not mention that "
+            "feature. If the source states several limitations, select the single "
+            "most relevant one. Assess relevance "
+            "and limitation against the supplied Problem, Research "
+            "Questions, and Research Inputs. If the source does not state a "
+            "method or feedback type, say so in the required output language."
+        )
         try:
             raw = await self._llm.complete(
-                system=(
-                    _idea_language_instruction(idea)
-                    + "research-analysis: return only one flat JSON object with exactly "
-                    "these keys: what_was_done (non-empty string), "
-                    "method_or_feedback (non-empty string describing the method, "
-                    "feedback, or evaluation type), limitation (non-empty string), "
-                    "relevance (non-empty string), supporting_passage (non-empty "
-                    "verbatim span from the supplied retrieved_text), evidence "
-                    "(an object with what_was_done, method_or_feedback, and limitation; "
-                    "each value contains passage and location), and confidence "
-                    "(number from 0 to 1). Do not rename or nest the keys. "
-                    "Use only retrieved_text for source assertions. For every evidence "
-                     "item, passage must be a concise verbatim sentence or paragraph "
-                     "that separately supports that assertion. Never use a document "
-                     "type, section heading, navigation text, or the whole HTML/PDF as "
-                     "evidence. The limitation must contain exactly one atomic, "
-                     "source-stated limitation, and evidence.limitation.passage must "
-                     "entail every asserted clause. Do not combine a supported limitation "
-                     "with another cost, mechanism, scope, metric, or application unless "
-                     "the same passage explicitly supports it. Never infer that a method "
-                     "lacks a feature merely because the source does not mention that "
-                     "feature. If the source states several limitations, select the single "
-                     "most relevant one. Assess relevance "
-                     "and limitation against the supplied Problem, Research "
-                    "Questions, and Research Inputs. If the source does not state a "
-                    "method or feedback type, use 'Not stated in the source metadata'."
-                ),
-                prompt=json.dumps(
-                    {**research_context, "citation": citation_payload},
-                    default=str,
-                    ensure_ascii=False,
-                ),
+                system=_idea_language_instruction(idea) + analysis_contract,
+                prompt=analysis_prompt,
             )
             payload = _normalize_finding_payload(
                 _json_value(raw, dict),
                 record,
                 source_text=source_text,
                 source_location=source_location,
+                output_language=output_language,
             )
+            mismatched_fields = _finding_language_mismatches(
+                payload,
+                output_language=output_language,
+            )
+            if mismatched_fields:
+                raw = await self._llm.complete(
+                    system=(
+                        _idea_language_instruction(idea)
+                        + "research-analysis-language-repair: The previous response used "
+                        "the wrong language in these user-facing fields: "
+                        f"{', '.join(mismatched_fields)}. Rewrite all user-facing prose "
+                        "in the required output language. Keep the paper title, technical "
+                        "terms, acronyms, JSON keys, and every verbatim evidence passage "
+                        "unchanged. "
+                        + analysis_contract
+                    ),
+                    prompt=json.dumps(
+                        {
+                            **research_context,
+                            "citation": citation_payload,
+                            "previous_finding": payload,
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    ),
+                )
+                payload = _normalize_finding_payload(
+                    _json_value(raw, dict),
+                    record,
+                    source_text=source_text,
+                    source_location=source_location,
+                    output_language=output_language,
+                )
+                remaining_mismatches = _finding_language_mismatches(
+                    payload,
+                    output_language=output_language,
+                )
+                if remaining_mismatches:
+                    raise ValueError(
+                        "The model did not follow the required output language"
+                    )
             for key, item in payload["evidence"].items():
                 item["passage"] = _verbatim_source_passage(
                     source_text,
@@ -1124,13 +1176,16 @@ class ResearchService:
                 passage=passage,
                 location=fallback_location,
             )
+            fallback = _finding_fallback_text(output_language)
             return (
                 RelatedWorkFindingCreate(
                     citation_id=citation_id,
-                    what_was_done=f"Presents {record.title}.",
-                    method_or_feedback="Not stated in the source metadata.",
-                    limitation="The available metadata is insufficient for a detailed limitation analysis.",
-                    relevance="Included by the configured scholarly search.",
+                    what_was_done=fallback["what_was_done"].format(
+                        title=record.title
+                    ),
+                    method_or_feedback=fallback["method_or_feedback"],
+                    limitation=fallback["limitation"],
+                    relevance=fallback["relevance"],
                     supporting_passage=passage,
                     source_object_key=source_object_key,
                     source_location=fallback_location,
@@ -4250,8 +4305,10 @@ def _normalize_finding_payload(
     *,
     source_text: str | None = None,
     source_location: str | None = None,
+    output_language: Literal["en", "vi"] = "en",
 ) -> dict[str, Any]:
     """Map common provider aliases and fill conservative source-backed defaults."""
+    fallback = _finding_fallback_text(output_language)
     passage = (
         _first_text(
             payload,
@@ -4283,7 +4340,7 @@ def _normalize_finding_payload(
             "work_done",
             "contribution",
         )
-        or f"Presents {record.title}.",
+        or fallback["what_was_done"].format(title=record.title),
         "method_or_feedback": _first_text(
             payload,
             "method_or_feedback",
@@ -4292,7 +4349,7 @@ def _normalize_finding_payload(
             "method",
             "evaluation_method",
         )
-        or "Not stated in the source metadata.",
+        or fallback["method_or_feedback"],
         "limitation": _first_text(
             payload,
             "limitation",
@@ -4300,9 +4357,9 @@ def _normalize_finding_payload(
             "weakness",
             "gap",
         )
-        or "The source metadata does not state a detailed limitation.",
+        or fallback["limitation"],
         "relevance": _first_text(payload, "relevance", "why_relevant")
-        or "Included by the configured scholarly search.",
+        or fallback["relevance"],
         "supporting_passage": passage,
         "confidence": confidence,
     }
@@ -4808,8 +4865,7 @@ def _two_sentence_gap_fallback(
     claims: list[_GapClaim],
     related_work: list[dict[str, Any]],
 ) -> str:
-    text = json.dumps(idea, ensure_ascii=False).casefold()
-    vietnamese = bool(re.search(r"[ăâđêôơưáàảãạấầẩẫậắằẳẵặếềểễệ]", text))
+    vietnamese = _idea_output_language(idea) == "vi"
     limitations = [claim.statement.strip().rstrip(".!?") for claim in claims]
     if limitations:
         if len(limitations) == 1:
@@ -5260,12 +5316,169 @@ def _idea_context(context: dict[str, Any]) -> dict[str, Any]:
 def _idea_language_instruction(idea: object) -> str:
     """Keep generated Research content in the confirmed idea's language."""
 
+    output_language = _idea_output_language(idea)
+    language_name = "Vietnamese" if output_language == "vi" else "English"
     return (
-        "Infer the primary language from the supplied idea and write every generated "
-        "user-facing value in that same language. Preserve technical terms and verbatim "
-        "source passages in their original language when translating them would reduce "
-        "precision. JSON field names must remain exactly as specified. "
+        "The supplied Research Idea's primary language has already been determined. "
+        f"Required output language: {language_name} ({output_language}). Do not infer "
+        "the output language again from paper titles, abstracts, retrieved source text, "
+        "or English search keywords. Treat this as a hard constraint and write every "
+        "generated user-facing value in that same language. Keep paper titles, technical "
+        "terms, acronyms, and verbatim evidence passages in their original language. "
+        "JSON field names must remain exactly as specified. "
     )
+
+
+_VIETNAMESE_CHARACTERS = frozenset(
+    "ăằắặẳẵâầấậẩẫđêềếệểễôồốộổỗơờớợởỡưừứựửữ"
+    "àáạảãèéẹẻẽìíịỉĩòóọỏõùúụủũỳýỵỷỹ"
+)
+_VIETNAMESE_LANGUAGE_WORDS = frozenset(
+    {
+        "các",
+        "cho",
+        "chưa",
+        "có",
+        "của",
+        "đánh",
+        "để",
+        "được",
+        "giá",
+        "không",
+        "một",
+        "nghiên",
+        "những",
+        "phương",
+        "quả",
+        "sử",
+        "thống",
+        "trong",
+        "từ",
+        "và",
+        "với",
+        # Common unaccented forms from manually entered Research Ideas.
+        "cac",
+        "chua",
+        "co",
+        "cua",
+        "danh",
+        "de",
+        "duoc",
+        "gia",
+        "khong",
+        "mot",
+        "nghien",
+        "nhung",
+        "phuong",
+        "qua",
+        "su",
+        "thong",
+        "tu",
+        "va",
+        "voi",
+    }
+)
+_ENGLISH_LANGUAGE_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "uses",
+        "was",
+        "were",
+        "with",
+    }
+)
+
+
+def _language_tokens(value: str) -> list[str]:
+    return re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
+
+
+def _idea_output_language(idea: object) -> Literal["en", "vi"]:
+    """Determine one stable output language from confirmed Research Idea text only."""
+
+    text = " ".join(_text_values(idea)).casefold()
+    tokens = _language_tokens(text)
+    vietnamese_word_count = sum(
+        token in _VIETNAMESE_LANGUAGE_WORDS for token in tokens
+    )
+    if any(character in _VIETNAMESE_CHARACTERS for character in text):
+        return "vi"
+    if vietnamese_word_count >= 2:
+        return "vi"
+    return "en"
+
+
+def _text_uses_wrong_language(
+    value: str,
+    *,
+    output_language: Literal["en", "vi"],
+) -> bool:
+    """Flag clear prose mismatches without rejecting titles or technical phrases."""
+
+    tokens = _language_tokens(value)
+    if len(tokens) < 4:
+        return False
+    folded = value.casefold()
+    vietnamese_characters = any(
+        character in _VIETNAMESE_CHARACTERS for character in folded
+    )
+    vietnamese_words = sum(
+        token in _VIETNAMESE_LANGUAGE_WORDS for token in tokens
+    )
+    english_words = sum(token in _ENGLISH_LANGUAGE_WORDS for token in tokens)
+    if output_language == "vi":
+        return not vietnamese_characters and vietnamese_words < 2 and english_words >= 2
+    return vietnamese_characters or (vietnamese_words >= 3 and english_words < 2)
+
+
+def _finding_language_mismatches(
+    payload: dict[str, Any],
+    *,
+    output_language: Literal["en", "vi"],
+) -> list[str]:
+    return [
+        field
+        for field in ("what_was_done", "method_or_feedback", "limitation", "relevance")
+        if _text_uses_wrong_language(
+            str(payload.get(field) or ""),
+            output_language=output_language,
+        )
+    ]
+
+
+def _finding_fallback_text(
+    output_language: Literal["en", "vi"],
+) -> dict[str, str]:
+    if output_language == "vi":
+        return {
+            "what_was_done": "Trình bày nghiên cứu {title}.",
+            "method_or_feedback": "Nguồn không nêu rõ phương pháp hoặc hình thức phản hồi.",
+            "limitation": "Metadata nguồn chưa đủ để phân tích chi tiết một hạn chế.",
+            "relevance": "Được chọn bởi quy trình tìm kiếm học thuật đã cấu hình.",
+        }
+    return {
+        "what_was_done": "Presents {title}.",
+        "method_or_feedback": "Not stated in the source metadata.",
+        "limitation": "The source metadata is insufficient for a detailed limitation analysis.",
+        "relevance": "Included by the configured scholarly search.",
+    }
 
 
 _KEYWORD_STOPWORDS = {

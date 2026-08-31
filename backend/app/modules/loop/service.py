@@ -14,7 +14,7 @@ from sqlalchemy.orm import attributes, selectinload
 
 from app.core.errors import OperationalErrorException
 from app.modules.loop.catalog import (
-    CARD_KIND_OWNER,
+    CARD_KIND_OWNERS,
     LOOP_STAGE_NODES,
     WORKFLOW_NODES,
     CardKind,
@@ -50,6 +50,7 @@ from app.modules.loop.schemas import (
     LoopSessionSummary,
     NodeHeadResponse,
     SpecVersionResponse,
+    StageRevisionResponse,
 )
 from app.ports.stage import StagePort
 
@@ -509,7 +510,7 @@ class LoopService:
             session.working_draft_narrative = {}
 
         if node is WorkflowNode.FEASIBILITY:
-            document = self._assemble_spec(session, heads)
+            document = await self._assemble_spec(session, heads)
             spec = SpecVersion(session_id=session.id, document=document)
             self._db.add(spec)
             await self._db.flush()
@@ -715,8 +716,8 @@ class LoopService:
         }
 
     def _assert_card_owner(self, session: LoopSession, kind: CardKind) -> None:
-        owner = CARD_KIND_OWNER[kind]
-        if session.working_draft_node != owner.value:
+        owners = CARD_KIND_OWNERS[kind]
+        if session.working_draft_node not in [owner.value for owner in owners]:
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,
                 code="card_owner_mismatch",
@@ -814,6 +815,7 @@ class LoopService:
                 for head in heads
             ],
             cards=[CardResponse.model_validate(card) for card in session.cards],
+            stage_revisions=[StageRevisionResponse.model_validate(rev) for rev in session.stage_revisions],
             produced_spec_version=SpecVersionResponse.model_validate(produced)
             if produced
             else None,
@@ -822,7 +824,7 @@ class LoopService:
             updated_at=session.updated_at,
         )
 
-    def _assemble_spec(
+    async def _assemble_spec(
         self,
         session: LoopSession,
         heads: dict[WorkflowNode, NodeHead],
@@ -845,8 +847,16 @@ class LoopService:
                     # Keep it in the Stage Revision for history, but avoid storing the
                     # same logical Gap twice in the assembled Spec Version document.
                     narrative.pop("candidate", None)
-                nodes[node.value] = {
+                node_document = {
                     "card_snapshot": rev.card_snapshot,
                     "narrative": narrative,
                 }
+                projection = await self._ports[node.value].project(
+                    session_id=session.id,
+                    node=node.value,
+                    revision_id=rev.id,
+                )
+                if projection:
+                    node_document["projection"] = projection
+                nodes[node.value] = node_document
         return {"nodes": nodes}
