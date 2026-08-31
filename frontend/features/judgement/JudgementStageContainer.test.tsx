@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NodeHeadStatus, WorkflowNode, type LoopSessionResponse } from "@/lib/api/generated/model";
 
-import { JudgementStageContainer } from "./JudgementStageContainer";
+import { JudgementStageContainer, JudgeRunRevisionView } from "./JudgementStageContainer";
 
 const mocks = vi.hoisted(() => ({
   streamStart: vi.fn(),
@@ -575,6 +575,42 @@ describe("JudgementStageContainer", () => {
     );
     expect(within(conference as HTMLElement).getByText("7/10")).toBeInTheDocument();
     expect(within(gap as HTMLElement).getByText("current")).toBeInTheDocument();
+    emit?.({
+      type: "draft_patch",
+      node: "aggregator",
+      issues: [
+        {
+          id: "issue-agg",
+          finding_kind: "unsupported_citation",
+          severity: "CRITICAL",
+          reason: "The cited passage does not entail the claim.",
+          suggestion: "Cite a passage that entails the claim.",
+          target_card_id: null,
+          source_node: "evidence_judge",
+          cluster: "disagreement",
+        },
+      ],
+      scores: {
+        originality: 7,
+        significance: 8,
+        soundness: 6,
+        clarity: 9,
+        reproducibility: 5,
+      },
+      handling_options: [
+        {
+          id: "opt-1",
+          finding_kind: "unsupported_citation",
+          source_node: "evidence_judge",
+          label: "Revise the claim",
+          target_node: "claims",
+          prose: "Cite a passage that entails the claim.",
+        },
+      ],
+    });
+    emit?.({ type: "done", node: "aggregator", version: 6 });
+    expect(await screen.findByText("Unsupported citation")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pick Revise the claim" })).toBeInTheDocument();
     finish?.();
     await waitFor(() =>
       expect(invalidate).toHaveBeenCalledWith(
@@ -790,5 +826,109 @@ describe("JudgementStageContainer", () => {
         staleReaccept: true,
       }),
     );
+  });
+
+  it("signals Confirm only when Working Draft Aggregator has a working report", async () => {
+    const onConfirmabilityChange = vi.fn();
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [],
+        handling_options: [],
+        scores: null,
+      },
+    });
+    const user = userEvent.setup();
+    let emit: ((event: unknown) => void) | undefined;
+    mocks.streamStartPending.mockImplementation(
+      (options: { onEvent?: (event: unknown) => void }) => {
+        emit = options.onEvent;
+        return Promise.resolve();
+      },
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, emptyIndependentJudgesHeads())}
+          onConfirmabilityChange={onConfirmabilityChange}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(onConfirmabilityChange).toHaveBeenCalledWith(false));
+    await user.click(await screen.findByRole("button", { name: "Run pending Judges" }));
+    emit?.({
+      type: "draft_patch",
+      node: "aggregator",
+      issues: [
+        {
+          id: "issue-1",
+          finding_kind: "unsupported_citation",
+          severity: "CRITICAL",
+          reason: "The cited passage does not entail the claim.",
+          suggestion: "Cite a passage that entails the claim.",
+          target_card_id: null,
+        },
+      ],
+      handling_options: [],
+      scores: {
+        originality: 7,
+        significance: 8,
+        soundness: 6,
+        clarity: 7,
+        reproducibility: 5,
+      },
+    });
+    await waitFor(() => expect(onConfirmabilityChange).toHaveBeenCalledWith(true));
+  });
+
+  it("does not offer PICK on a frozen Aggregator Head Revision view", async () => {
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [
+          {
+            id: "issue-1",
+            finding_kind: "unsupported_citation",
+            severity: "CRITICAL",
+            reason: "The cited passage does not entail the claim.",
+            suggestion: "Cite a passage that entails the claim.",
+            target_card_id: null,
+            source_node: "evidence_judge",
+            cluster: "disagreement",
+          },
+        ],
+        handling_options: [
+          {
+            id: "opt-1",
+            finding_kind: "unsupported_citation",
+            source_node: "evidence_judge",
+            label: "Revise the claim",
+            target_node: "claims",
+            prose: "Cite a passage that entails the claim.",
+          },
+        ],
+        scores: null,
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgeRunRevisionView
+          sessionId="session-1"
+          node={WorkflowNode.aggregator}
+          stageRevisionId="rev-agg"
+        />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Unsupported citation")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pick/i })).not.toBeInTheDocument();
   });
 });

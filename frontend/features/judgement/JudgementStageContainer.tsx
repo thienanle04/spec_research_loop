@@ -77,6 +77,8 @@ export function JudgementStageContainer({
   const node = WorkflowNode.aggregator as JudgeNode;
   const canGenerate = true;
   const hasOutput = issues.length > 0 || scores != null || handlingOptions.length > 0;
+  const aggregatorConfirmable =
+    session.working_draft_node === WorkflowNode.aggregator && hasOutput;
   const workingHead = session.node_heads.find((head) => head.node === WorkflowNode.aggregator);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;
@@ -131,8 +133,9 @@ export function JudgementStageContainer({
   }, [runQuery.data]);
 
   useEffect(() => {
-    onConfirmabilityChange?.(true);
-  }, [onConfirmabilityChange]);
+    onConfirmabilityChange?.(aggregatorConfirmable);
+    return () => onConfirmabilityChange?.(false);
+  }, [aggregatorConfirmable, onConfirmabilityChange]);
 
   useEffect(() => {
     onRunningChange?.(stream.running);
@@ -223,6 +226,15 @@ export function JudgementStageContainer({
     return head?.status === NodeHeadStatus.stale && head.generated_since_prepare !== true;
   }
 
+  function applyAggregatorReportEvent(event: JudgementStreamEvent) {
+    if (event.node !== WorkflowNode.aggregator) return;
+    if (event.type === "draft_patch") {
+      setIssues(event.issues);
+      setScores(event.scores ?? null);
+      setHandlingOptions(event.handling_options ?? []);
+    }
+  }
+
   function applyJudgeHeadEvent(event: JudgementStreamEvent) {
     if (!(FIVE_JUDGE_NODES as readonly string[]).includes(event.node)) return;
     const judge = event.node as JudgeNode;
@@ -264,22 +276,25 @@ export function JudgementStageContainer({
         expectedVersion: expectedVersion(),
         staleReaccept: options?.staleReaccept === true,
         onEvent: (event) => {
-          if (event.node !== judge) return;
-          if (event.type === "draft_patch") {
-            setHeadSummaries((current) => ({
-              ...current,
-              [judge]: {
-                status: "running",
-                issues: event.issues,
-                scores: event.scores ?? null,
-              },
-            }));
-          } else if (event.type === "done") {
-            setHeadSummaries((current) => ({
-              ...current,
-              [judge]: { ...current[judge], status: "current" },
-            }));
+          applyJudgeHeadEvent(event);
+          applyAggregatorReportEvent(event);
+          if (event.type === "done") {
+            const latest = currentSession();
+            updateSession(
+              withGeneratedSincePrepare(
+                {
+                  ...latest,
+                  version: event.version,
+                },
+                event.node as WorkflowNode,
+              ),
+            );
             void queryClient.invalidateQueries({ queryKey: sessionKey });
+            if (event.node === WorkflowNode.aggregator) {
+              void queryClient.invalidateQueries({
+                queryKey: judgeRunQueryKey(sessionId, node),
+              });
+            }
           }
         },
       });
@@ -306,12 +321,8 @@ export function JudgementStageContainer({
         staleReaccept: pendingNeedsReaccept,
         onEvent: (event) => {
           applyJudgeHeadEvent(event);
+          applyAggregatorReportEvent(event);
           if (event.type === "draft_patch") {
-            if (event.node === node) {
-              setIssues(event.issues);
-              setScores(event.scores ?? null);
-              setHandlingOptions(event.handling_options ?? []);
-            }
             void queryClient.invalidateQueries({
               queryKey: judgeRunQueryKey(sessionId, event.node),
             });
@@ -422,7 +433,7 @@ export function JudgementStageContainer({
           issues={issues}
           scores={scores}
           handlingOptions={handlingOptions}
-          canPick
+          canPick={hasOutput}
           picking={picking}
           onPick={(option) => void pick({ handling_option_id: option.id })}
           onPickOther={(prose, targetNode) =>

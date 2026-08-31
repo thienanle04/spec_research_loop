@@ -556,6 +556,63 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
   });
 
+  it("continues to Readiness after Confirm Aggregator", async () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+      [WorkflowNode.feasibility]: NodeHeadStatus.current,
+      [WorkflowNode.gap_judge]: NodeHeadStatus.current,
+      [WorkflowNode.contribution_judge]: NodeHeadStatus.current,
+      [WorkflowNode.evidence_judge]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_judge]: NodeHeadStatus.current,
+      [WorkflowNode.conference_judge]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 40,
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads({
+            ...upstreamCurrent,
+            [WorkflowNode.aggregator]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 41,
+      working_draft_node: WorkflowNode.aggregator,
+      node_heads: heads({
+        ...upstreamCurrent,
+        [WorkflowNode.aggregator]: NodeHeadStatus.current,
+      }),
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(confirmMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { node: WorkflowNode.aggregator, expected_version: 40 },
+    });
+    expect(replace).toHaveBeenCalledWith(path(LoopStage.readiness), { scroll: false });
+  });
+
   it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     const nav = screen.getByRole("navigation", { name: "Loop Stages" });

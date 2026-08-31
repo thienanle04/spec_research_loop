@@ -280,6 +280,10 @@ class JudgementService:
         except Exception as exc:  # noqa: BLE001 - stream converts failures to typed events
             await self._db.rollback()
             yield _failure_event(run, exc)
+            return
+        if run.node in FIVE_JUDGE_NODES:
+            async for event in self._generate_aggregator_if_five_current(run):
+                yield event
 
     async def generate_pending(
         self, runs: list[GenerationRun]
@@ -298,6 +302,7 @@ class JudgementService:
 
         try:
             completed = await asyncio.gather(*[_invoke(run) for run in runs])
+            last_success: GenerationRun | None = None
             for run, parsed, error in completed:
                 if error is not None:
                     yield _failure_event(run, error)
@@ -307,9 +312,14 @@ class JudgementService:
                 await self._db.commit()
                 async for event in self._result_events(run):
                     yield event
+                last_success = run
         except Exception as exc:  # noqa: BLE001 - stream converts failures to typed events
             await self._db.rollback()
             yield _failure_event(runs[0], exc)
+            return
+        if last_success is not None:
+            async for event in self._generate_aggregator_if_five_current(last_success):
+                yield event
 
     def _port_for(self, node: WorkflowNode) -> LlmPort:
         return get_llm_port(node.value)
@@ -374,6 +384,54 @@ class JudgementService:
             account_id=run.account_id,
             node=run.node,
         )
+
+    async def _generate_aggregator_if_five_current(
+        self, source: GenerationRun
+    ) -> AsyncIterator[dict[str, Any]]:
+        agg_run: GenerationRun | None = None
+        try:
+            if not await self._five_judge_heads_are_current(source.session_id):
+                return
+            session = await self._load_owned_session(
+                source.session_id, source.account_id
+            )
+            await self._assert_upstream_current(
+                source.session_id, WorkflowNode.AGGREGATOR
+            )
+            view = await LoopService(self._db).project_prompt_view(
+                session_id=source.session_id,
+                account_id=source.account_id,
+                node=WorkflowNode.AGGREGATOR,
+            )
+            version = await self._claim_version(
+                session=session,
+                account_id=source.account_id,
+                expected_version=session.version,
+            )
+            agg_run = GenerationRun(
+                session_id=source.session_id,
+                account_id=source.account_id,
+                node=WorkflowNode.AGGREGATOR,
+                version=version,
+                view=view,
+            )
+            yield _starting_event(agg_run)
+            await self._complete_and_persist(
+                agg_run, self._port_for(WorkflowNode.AGGREGATOR)
+            )
+            await self._db.commit()
+            async for event in self._result_events(agg_run):
+                yield event
+        except Exception as exc:  # noqa: BLE001 - Aggregator failure is not Confirm
+            await self._db.rollback()
+            failed = agg_run or GenerationRun(
+                session_id=source.session_id,
+                account_id=source.account_id,
+                node=WorkflowNode.AGGREGATOR,
+                version=source.version,
+                view={},
+            )
+            yield _failure_event(failed, exc)
 
     async def _result_events(
         self, run: GenerationRun
@@ -546,19 +604,22 @@ class JudgementService:
             )
         return session
 
+    async def _five_judge_heads_are_current(self, session_id: UUID) -> bool:
+        rows = await self._db.scalars(
+            select(NodeHead).where(NodeHead.session_id == session_id)
+        )
+        heads = {WorkflowNode(row.node): row for row in rows.all()}
+        return all(
+            heads[judge].status == NodeHeadStatus.CURRENT.value
+            for judge in FIVE_JUDGE_NODES
+        )
+
     async def _assert_five_judge_heads_current(
         self, session_id: UUID, node: WorkflowNode
     ) -> None:
         if node is not WorkflowNode.AGGREGATOR:
             return
-        rows = await self._db.scalars(
-            select(NodeHead).where(NodeHead.session_id == session_id)
-        )
-        heads = {WorkflowNode(row.node): row for row in rows.all()}
-        if any(
-            heads[judge].status != NodeHeadStatus.CURRENT.value
-            for judge in FIVE_JUDGE_NODES
-        ):
+        if not await self._five_judge_heads_are_current(session_id):
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,
                 code="judge_heads_not_current",
