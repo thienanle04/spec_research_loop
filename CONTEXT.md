@@ -21,12 +21,16 @@ A signed-in person who owns Loop Sessions.
 _Avoid_: user (when you mean the persisted identity), client, profile
 
 **Spec Artifact**:
-An exported or stored binary/document produced from a Loop Session (for example a Final Spec export), kept in object storage and referenced from Postgres. Export is blocked while the current Aggregator Report still has any CRITICAL Judge Issue. Choosing a Handling Option does not clear that gate; the related Judge must run again and the CRITICAL Issue must be gone. A Judge Run never un-mints a Spec Version.
-_Avoid_: file, blob, attachment (when you mean the domain export)
+An exported or stored binary/document of the unedited Valid Spec Version, kept in object storage and referenced from Postgres. It is not an Export Scratch. CRITICAL Judge Issues fail Readiness; they do not block this export. When the current Aggregator Report still has any CRITICAL Issue, each Spec Artifact export requires a Critical Export Confirmation. Choosing a Handling Option does not clear the Readiness fail; the related Judge must run again and the CRITICAL Issue must be gone. A Judge Run never un-mints a Spec Version.
+_Avoid_: file, blob, attachment (when you mean the domain export), Export Scratch
 
 **Decision**:
-A recorded Account choice that changes Loop Session history without being a generate: Confirm, reopen a current Workflow Node, revert, or picking a Handling Option. Choosing a Grilling Option, sending an Account note, and Send are generate input, not Decisions. Successful generate on a Judge records Confirm of that Judge even when Working Draft is not that Judge; Confirm of Aggregator still requires Working Draft Aggregator.
+A recorded Account choice that changes Loop Session history without being a generate: Confirm, reopen a current Workflow Node, revert, picking a Handling Option, or a Critical Export Confirmation. Choosing a Grilling Option, sending an Account note, and Send are generate input, not Decisions. Saving an Export Scratch Snapshot is not a Decision. Successful generate on a Judge records Confirm of that Judge even when Working Draft is not that Judge; Confirm of Aggregator still requires Working Draft Aggregator.
 _Avoid_: event, log entry, chat message, Grilling Option click, auto-Confirm
+
+**Critical Export Confirmation**:
+A Decision recorded each time the Account confirms Spec Artifact export or Export Scratch download while the current Aggregator Report still has any CRITICAL Judge Issue. It does not make Readiness pass, does not mint a Spec Version, and does not clear Judge Issues. There is no session- or Spec-Version-scoped skip; each download is its own Decision.
+_Avoid_: Handling Option, export anyway (as UI-only, unrecorded), override
 
 **Stage Revision**:
 An immutable, user-confirmed snapshot of one Workflow Node's output.
@@ -53,12 +57,24 @@ A user-facing group of Workflow Nodes the Account recomputes together by opening
 _Avoid_: step, bước, pipeline stage (when you mean this UI unit), Nav Unit, Judge tab
 
 **Readiness**:
-The Loop Stage with no Workflow Node that shows readiness criteria for the Valid Spec Version, derived from the current Aggregator Report. It is not conference acceptance. CRITICAL Judge Issues fail it; Conference Judge criterion scores are displayed and do not by themselves fail it or block Spec Artifact export.
-_Avoid_: acceptance, conference acceptance, score (alone), Conference Judge (that is a Workflow Node)
+The Loop Stage with no Workflow Node that shows readiness criteria for the Valid Spec Version, derived from the current Aggregator Report. It is not conference acceptance. CRITICAL Judge Issues fail it; Conference Judge criterion scores are displayed and do not by themselves fail it. Spec Artifact export and Export Scratch download are not blocked by CRITICAL; each requires a Critical Export Confirmation while any CRITICAL remains. The same stage shows a paper-shaped projection of a selected Spec Version, Clarification Review, and the Export Scratch editor; choosing an older Spec Version does not change the criteria, which always follow the current Valid Spec Version and Aggregator Report.
+_Avoid_: acceptance, conference acceptance, score (alone), Conference Judge (that is a Workflow Node), Spec Draft
+
+**Export Scratch**:
+A session-owned, paper-shaped projection of one Spec Version that the Account may edit and download. One last-write-wins Export Scratch exists per Spec Version; it is not a Working Draft. Overlay edits do not change Cards, Stage Revisions, Produced Spec Version, or Valid Spec Version. Changing the loop still means reopening a Workflow Node. Download (markdown or PDF) uses the current Export Scratch, including unsaved edits. Download while any CRITICAL remains on the current Aggregator Report requires a Critical Export Confirmation. It is not a Spec Version, Spec Artifact, Working Draft, or Card.
+_Avoid_: Spec Version, Spec Artifact, Working Draft, fork (as the canonical name), scratch (alone)
+
+**Export Scratch Snapshot**:
+An immutable saved copy of an Export Scratch, bound to the Spec Version it was projected from. The first snapshot for a Spec Version is created when the Account Confirms Aggregator if that Spec Version has none (deterministic projection, no generate). Later snapshots are explicit Save. Diff is against the previous snapshot of the same Spec Version and against that Spec Version's original projection.
+_Avoid_: Spec Version, Stage Revision, version (alone)
+
+**Clarification Review**:
+A read-only Readiness panel: the original research idea versus the gap, contribution, and claims of the Spec Version being viewed. Derived from stored Stage Revisions; not a generate, not Idea Frame, not a Card. Not a picker; those Cards are the ones already Confirmed on that Spec Version.
+_Avoid_: restatement, Idea Frame, summary, generate
 
 **Spec Draft**:
-The Loop Stage whose UI shows the Produced Spec Version (and whether it is Valid or Stale). It is not a Workflow Node and has no Working Draft; confirming feasibility mints the Spec Version the Account reads here. For idea interpretation, Spec Draft shows the Idea Frame only—not the turn list (Node Head browse still shows turns). Product copy may say Spec Draft; glossary terms for the document remain Spec Version / Produced / Valid.
-_Avoid_: Working Draft, Spec Version (as the stage name), spec construction stage
+The Loop Stage whose UI shows the Produced Spec Version (and whether it is Valid or Stale). It is not a Workflow Node and has no Working Draft; confirming feasibility mints the Spec Version the Account reads here. For idea interpretation, Spec Draft shows the Idea Frame only—not the turn list (Node Head browse still shows turns). Product copy may say Spec Draft; glossary terms for the document remain Spec Version / Produced / Valid. Spec Draft is not the Export Scratch editor.
+_Avoid_: Working Draft, Spec Version (as the stage name), spec construction stage, Export Scratch
 
 **Workflow Node**:
 A confirmable unit in a Loop Session's invalidation graph (for example idea interpretation, contribution, or a Judge). A Loop Stage groups zero or more Workflow Nodes. Spec Draft and Readiness have none. A Spec Version is not a Workflow Node; confirming feasibility mints it.
@@ -109,11 +125,11 @@ A closed tag on a Judge Issue that selects the Severity floor. Day-one catalog: 
 _Avoid_: verdict, category (alone), issue type (when you mean this tag), other (as a Finding Kind)
 
 **Severity**:
-CRITICAL, MAJOR, or MINOR on a Judge Issue. Each Finding Kind has a floor. CRITICAL fails Readiness and blocks Spec Artifact export until that Issue is gone from the current Aggregator Report. MAJOR and MINOR do not. Conference criterion scores are not Severity.
+CRITICAL, MAJOR, or MINOR on a Judge Issue. Each Finding Kind has a floor. CRITICAL fails Readiness until that Issue is gone from the current Aggregator Report. It does not block Spec Artifact export or Export Scratch download; a Critical Export Confirmation is required while any CRITICAL remains. MAJOR and MINOR do not fail Readiness. Conference criterion scores are not Severity.
 _Avoid_: priority, score, verdict, vote
 
 **Handling Option**:
-A proposed way to address a Judge Issue or disagreement cluster on the Aggregator Report. Offered for CRITICAL and MAJOR; MINOR Issues are listed without Handling Options. Choosing one is a Decision (PICK). If the target Node Head is current, PICK reopens it (same idea as EDIT) and does not mark it Stale; the Account leaves Independent judges. It writes a prose suggested patch (and target Card ids) onto that node's Working Draft narrative; it does not patch Card bodies, the Spec Version, Severity, or Judge Runs. Several Handling Options may share one Judge Issue and target different Workflow Nodes. Other is a Handling Option whose prose and target Workflow Node are supplied by the Account (gap, contribution, claims, evidence, experiment_plan, or idea_decomposition); the Aggregator LLM does not invent Other. Generate, Confirm, Stale, and related Judge re-runs follow the existing loop; Judges do not auto-run. PICK is offered on the working Aggregator Report, before Confirm Aggregator. MAJOR Handling Options are skippable for Spec Artifact export; CRITICAL are not.
+A proposed way to address a Judge Issue or disagreement cluster on the Aggregator Report. Offered for CRITICAL and MAJOR; MINOR Issues are listed without Handling Options. Choosing one is a Decision (PICK). If the target Node Head is current, PICK reopens it (same idea as EDIT) and does not mark it Stale; the Account leaves Independent judges. It writes a prose suggested patch (and target Card ids) onto that node's Working Draft narrative; it does not patch Card bodies, the Spec Version, Severity, or Judge Runs. Several Handling Options may share one Judge Issue and target different Workflow Nodes. Other is a Handling Option whose prose and target Workflow Node are supplied by the Account (gap, contribution, claims, evidence, experiment_plan, or idea_decomposition); the Aggregator LLM does not invent Other. Generate, Confirm, Stale, and related Judge re-runs follow the existing loop; Judges do not auto-run. PICK is offered on the working Aggregator Report, before Confirm Aggregator. Handling Options may be skipped for Spec Artifact export; skipping CRITICAL does not make Readiness pass.
 _Avoid_: Grilling Option, override, export anyway, patch (when you mean the Decision), Apply suggestion
 
 **Aggregator Report**:
