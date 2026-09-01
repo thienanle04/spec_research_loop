@@ -62,7 +62,31 @@ function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionRespo
       created_at: "2026-08-30T00:00:00Z",
       updated_at: "2026-08-30T00:00:00Z",
     },
-    export_scratch_snapshots: [],
+    export_scratch_snapshots: [
+      {
+        id: "snap-1",
+        spec_version_id: "spec-1",
+        snapshot_n: 1,
+        document: {
+          sections: [
+            { id: "problem_statement", title: "Problem Statement", body: "Original projection" },
+            { id: "research_question", title: "Research Question", body: "" },
+            { id: "related_work", title: "Related Work", body: "" },
+            { id: "research_gap", title: "Research Gap", body: "" },
+            { id: "contribution", title: "Proposed Approach & Contribution", body: "" },
+            { id: "claims", title: "Claims", body: "" },
+            { id: "evidence", title: "Evidence", body: "" },
+            { id: "experiment_plan", title: "Experiment Plan", body: "" },
+            { id: "constraints", title: "Constraints", body: "" },
+            { id: "required_resources", title: "Required Resources", body: "" },
+            { id: "potential_bottlenecks", title: "Potential Bottlenecks", body: "" },
+            { id: "mitigation_strategies", title: "Mitigation Strategies", body: "" },
+            { id: "open_issues", title: "Open Issues", body: "" },
+          ],
+        },
+        created_at: "2026-08-30T00:00:00Z",
+      },
+    ],
     spec_versions: [
       {
         id: "spec-1",
@@ -264,5 +288,122 @@ describe("ReadinessStageView", () => {
     expect(panel).toHaveTextContent("A tiling schedule that cuts DRAM traffic");
     expect(panel).toHaveTextContent("Tiling cuts DRAM traffic by at least 20%");
     expect(screen.queryByRole("combobox", { name: "Claims" })).not.toBeInTheDocument();
+  });
+
+  it("lists Export Scratch Snapshots and loads one into the buffer", async () => {
+    const user = userEvent.setup();
+    const draft = session("ready");
+    const restored = {
+      ...draft,
+      version: 5,
+      export_scratch: {
+        ...draft.export_scratch!,
+        document: {
+          sections: draft.export_scratch!.document.sections.map((section) =>
+            section.id === "problem_statement"
+              ? { ...section, body: "Original projection" }
+              : section,
+          ),
+        },
+      },
+    };
+    mocks.customFetch.mockResolvedValue({ status: 200, data: restored });
+    renderView(<ReadinessStageView session={draft} sessionId="session-1" />);
+    const list = screen.getByRole("list", { name: "Export Scratch Snapshots" });
+    expect(list).toHaveTextContent("Snapshot 1");
+    await user.click(screen.getByRole("button", { name: "Load Snapshot 1" }));
+    await waitFor(() => {
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch/snapshots/snap-1/restore",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(screen.getByRole("textbox", { name: "Problem Statement" })).toHaveValue(
+      "Original projection",
+    );
+  });
+
+  it("saves a Snapshot and shows diffs against previous and original", async () => {
+    const user = userEvent.setup();
+    const draft = session("ready");
+    mocks.customFetch.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (typeof url === "string" && url.includes("/export-scratch/diff?against=previous")) {
+        return {
+          status: 200,
+          data: {
+            spec_version_id: "spec-1",
+            against: "previous",
+            sections: [
+              {
+                id: "problem_statement",
+                title: "Problem Statement",
+                before: "Original projection",
+                after: "Snapshot-saved problem statement rewrite",
+              },
+            ],
+          },
+        };
+      }
+      if (typeof url === "string" && url.includes("/export-scratch/diff?against=original")) {
+        return {
+          status: 200,
+          data: {
+            spec_version_id: "spec-1",
+            against: "original",
+            sections: [
+              {
+                id: "problem_statement",
+                title: "Problem Statement",
+                before: "Original projection",
+                after: "Snapshot-saved problem statement rewrite",
+              },
+            ],
+          },
+        };
+      }
+      if (
+        typeof url === "string" &&
+        url.endsWith("/export-scratch/snapshots") &&
+        init?.method === "POST"
+      ) {
+        return {
+          status: 200,
+          data: {
+            ...draft,
+            version: 6,
+            export_scratch_snapshots: [
+              ...(draft.export_scratch_snapshots ?? []),
+              {
+                id: "snap-2",
+                spec_version_id: "spec-1",
+                snapshot_n: 2,
+                document: draft.export_scratch!.document,
+                created_at: "2026-08-30T01:00:00Z",
+              },
+            ],
+          },
+        };
+      }
+      return { status: 200, data: draft };
+    });
+    renderView(<ReadinessStageView session={draft} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Save Snapshot" }));
+    await waitFor(() => {
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch/snapshots",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(screen.getByRole("list", { name: "Export Scratch Snapshots" })).toHaveTextContent(
+      "Snapshot 2",
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("region", { name: "Diff versus previous Snapshot" }),
+      ).toHaveTextContent("Snapshot-saved problem statement rewrite");
+      expect(
+        screen.getByRole("region", { name: "Diff versus Snapshot 1" }),
+      ).toHaveTextContent("Snapshot-saved problem statement rewrite");
+    });
   });
 });

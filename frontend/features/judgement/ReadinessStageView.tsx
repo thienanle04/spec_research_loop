@@ -11,7 +11,11 @@ import {
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
   patchExportScratchApiLoopSessionsSessionIdExportScratchPatch,
 } from "@/lib/api/generated/endpoints";
-import type { ExportScratchSection, LoopSessionResponse } from "@/lib/api/generated/model";
+import type {
+  ExportScratchDiffResponse,
+  ExportScratchSection,
+  LoopSessionResponse,
+} from "@/lib/api/generated/model";
 import { customFetch } from "@/lib/api/mutator";
 
 import { ConferenceScoreList } from "./ConferenceScoreList";
@@ -22,6 +26,8 @@ const STATE_LABEL: Record<ReadinessState, string> = {
   blocked: "Blocked",
   ready: "Ready",
 };
+
+type ScratchDiff = ExportScratchDiffResponse;
 
 export function ReadinessStageView({
   session,
@@ -50,6 +56,8 @@ export function ReadinessStageView({
     session.valid_spec_version_id ?? specVersions[0]?.id ?? "",
   );
   const [viewed, setViewed] = useState(session);
+  const [previousDiff, setPreviousDiff] = useState<ScratchDiff | null>(null);
+  const [originalDiff, setOriginalDiff] = useState<ScratchDiff | null>(null);
 
   useEffect(() => {
     setSections(session.export_scratch?.document.sections ?? []);
@@ -85,6 +93,86 @@ export function ReadinessStageView({
     void exportArtifact(false);
   }
 
+  async function loadScratchDiffs(specVersionId: string | undefined) {
+    if (!specVersionId) {
+      setPreviousDiff(null);
+      setOriginalDiff(null);
+      return;
+    }
+    try {
+      const [previous, original] = await Promise.all([
+        customFetch<{ status: number; data: ScratchDiff }>(
+          `/api/loop/sessions/${sessionId}/export-scratch/diff?against=previous&spec_version_id=${specVersionId}`,
+          { method: "GET" },
+        ),
+        customFetch<{ status: number; data: ScratchDiff }>(
+          `/api/loop/sessions/${sessionId}/export-scratch/diff?against=original&spec_version_id=${specVersionId}`,
+          { method: "GET" },
+        ),
+      ]);
+      setPreviousDiff(previous.status === 200 ? previous.data : null);
+      setOriginalDiff(original.status === 200 ? original.data : null);
+    } catch {
+      setPreviousDiff(null);
+      setOriginalDiff(null);
+    }
+  }
+
+  async function saveExportScratchSnapshot() {
+    setScratchError(null);
+    setScratchOk(false);
+    try {
+      const response = await customFetch<{ status: number; data: LoopSessionResponse }>(
+        `/api/loop/sessions/${sessionId}/export-scratch/snapshots`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            expected_version: expectedVersion,
+            spec_version_id: selectedSpecId || session.export_scratch?.spec_version_id,
+          }),
+        },
+      );
+      if (response.status === 200) {
+        const next = response.data;
+        setExpectedVersion(next.version);
+        setViewed(next);
+        setSections(next.export_scratch?.document.sections ?? sections);
+        setScratchOk(true);
+        await queryClient.invalidateQueries({
+          queryKey: getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId),
+        });
+        await loadScratchDiffs(selectedSpecId || next.export_scratch?.spec_version_id);
+      }
+    } catch (error) {
+      setScratchError(getApiErrorMessage(error));
+    }
+  }
+
+  async function restoreSnapshot(snapshotId: string) {
+    setScratchError(null);
+    try {
+      const response = await customFetch<{ status: number; data: LoopSessionResponse }>(
+        `/api/loop/sessions/${sessionId}/export-scratch/snapshots/${snapshotId}/restore`,
+        {
+          method: "POST",
+          body: JSON.stringify({ expected_version: expectedVersion }),
+        },
+      );
+      if (response.status === 200) {
+        const next = response.data;
+        setExpectedVersion(next.version);
+        setViewed(next);
+        setSections(next.export_scratch?.document.sections ?? []);
+        await queryClient.invalidateQueries({
+          queryKey: getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId),
+        });
+        await loadScratchDiffs(selectedSpecId || next.export_scratch?.spec_version_id);
+      }
+    } catch (error) {
+      setScratchError(getApiErrorMessage(error));
+    }
+  }
+
   async function saveExportScratch() {
     setScratchError(null);
     setScratchOk(false);
@@ -100,11 +188,13 @@ export function ReadinessStageView({
       if (response.status === 200) {
         const next = response.data;
         setExpectedVersion(next.version);
+        setViewed(next);
         setSections(next.export_scratch?.document.sections ?? sections);
         setScratchOk(true);
         await queryClient.invalidateQueries({
           queryKey: getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId),
         });
+        await loadScratchDiffs(selectedSpecId || next.export_scratch?.spec_version_id);
       }
     } catch (error) {
       setScratchError(getApiErrorMessage(error));
@@ -124,6 +214,7 @@ export function ReadinessStageView({
         setViewed(next);
         setExpectedVersion(next.version);
         setSections(next.export_scratch?.document.sections ?? []);
+        await loadScratchDiffs(specVersionId);
       }
     } catch (error) {
       setScratchError(getApiErrorMessage(error));
@@ -225,6 +316,50 @@ export function ReadinessStageView({
               <Button type="button" className="justify-self-start" onClick={() => void saveExportScratch()}>
                 Save Export Scratch
               </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="justify-self-start"
+                onClick={() => void saveExportScratchSnapshot()}
+              >
+                Save Snapshot
+              </Button>
+              {(viewed.export_scratch_snapshots ?? []).length ? (
+                <ul aria-label="Export Scratch Snapshots" className="grid gap-2 text-sm">
+                  {(viewed.export_scratch_snapshots ?? []).map((snapshot) => (
+                    <li key={snapshot.id} className="flex items-center justify-between gap-2">
+                      <span>Snapshot {snapshot.snapshot_n}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() => void restoreSnapshot(snapshot.id)}
+                      >
+                        Load Snapshot {snapshot.snapshot_n}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {previousDiff?.sections?.length ? (
+                <section aria-label="Diff versus previous Snapshot" className="grid gap-2">
+                  <p className="text-sm font-medium">Diff versus previous Snapshot</p>
+                  {previousDiff.sections.map((row) => (
+                    <p key={row.id} className="text-sm">
+                      {row.title}: {row.after}
+                    </p>
+                  ))}
+                </section>
+              ) : null}
+              {originalDiff?.sections?.length ? (
+                <section aria-label="Diff versus Snapshot 1" className="grid gap-2">
+                  <p className="text-sm font-medium">Diff versus Snapshot 1</p>
+                  {originalDiff.sections.map((row) => (
+                    <p key={row.id} className="text-sm">
+                      {row.title}: {row.after}
+                    </p>
+                  ))}
+                </section>
+              ) : null}
               {scratchOk ? (
                 <p className="text-sm text-muted-foreground">Export Scratch saved.</p>
               ) : null}

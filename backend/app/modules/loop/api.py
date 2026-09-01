@@ -1,6 +1,6 @@
 """Loop Session HTTP API."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Query
@@ -18,6 +18,7 @@ from app.modules.loop.schemas import (
     CreateCardRequest,
     CreateSessionRequest,
     DecisionResponse,
+    ExportScratchDiffResponse,
     HandlingOptionPickRequest,
     LoopSessionResponse,
     LoopSessionSummary,
@@ -26,6 +27,8 @@ from app.modules.loop.schemas import (
     PatchSessionRequest,
     PrepareRequest,
     ReplaceCardsRequest,
+    RestoreExportScratchSnapshotRequest,
+    SaveExportScratchSnapshotRequest,
     SpecArtifactExportRequest,
     SpecArtifactResponse,
     WorkingDraftPatchRequest,
@@ -109,6 +112,64 @@ async def patch_export_scratch(
         expected_version=body.expected_version,
         document=body.document.model_dump(),
         spec_version_id=body.spec_version_id,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/export-scratch/snapshots",
+    response_model=LoopSessionResponse,
+    responses={409: {"model": OperationalError}},
+)
+async def save_export_scratch_snapshot(
+    session_id: UUID,
+    body: SaveExportScratchSnapshotRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> LoopSessionResponse:
+    return await _service(db).save_export_scratch_snapshot(
+        session_id=session_id,
+        account_id=account.id,
+        expected_version=body.expected_version,
+        spec_version_id=body.spec_version_id,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/export-scratch/snapshots/{snapshot_id}/restore",
+    response_model=LoopSessionResponse,
+    responses={409: {"model": OperationalError}},
+)
+async def restore_export_scratch_snapshot(
+    session_id: UUID,
+    snapshot_id: UUID,
+    body: RestoreExportScratchSnapshotRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> LoopSessionResponse:
+    return await _service(db).restore_export_scratch_snapshot(
+        session_id=session_id,
+        account_id=account.id,
+        snapshot_id=snapshot_id,
+        expected_version=body.expected_version,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/export-scratch/diff",
+    response_model=ExportScratchDiffResponse,
+)
+async def export_scratch_diff(
+    session_id: UUID,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    against: Annotated[Literal["previous", "original"], Query()],
+    spec_version_id: Annotated[UUID | None, Query()] = None,
+) -> ExportScratchDiffResponse:
+    return await _service(db).export_scratch_diff(
+        session_id=session_id,
+        account_id=account.id,
+        against=against,
+        spec_version_id=spec_version_id,
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 PAPER_SECTION_IDS: tuple[str, ...] = (
@@ -84,6 +85,41 @@ def project_paper_document(spec_document: dict[str, Any] | None) -> dict[str, An
             for section_id, title in PAPER_SECTIONS
         ]
     }
+
+
+def copy_paper_document(document: dict[str, Any] | None) -> dict[str, Any]:
+    return json.loads(json.dumps(document or {"sections": []}))
+
+
+def paper_section_diff(
+    current: dict[str, Any] | None,
+    baseline: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    titles = {section_id: title for section_id, title in PAPER_SECTIONS}
+    current_by_id = {
+        item["id"]: item
+        for item in _list(_dict(current).get("sections"))
+        if isinstance(item, dict) and "id" in item
+    }
+    baseline_by_id = {
+        item["id"]: item
+        for item in _list(_dict(baseline).get("sections"))
+        if isinstance(item, dict) and "id" in item
+    }
+    changed: list[dict[str, str]] = []
+    for section_id, title in PAPER_SECTIONS:
+        before = str(_dict(baseline_by_id.get(section_id)).get("body") or "")
+        after = str(_dict(current_by_id.get(section_id)).get("body") or "")
+        if before != after:
+            changed.append(
+                {
+                    "id": section_id,
+                    "title": titles[section_id],
+                    "before": before,
+                    "after": after,
+                }
+            )
+    return changed
 
 
 def _dict(value: Any) -> dict[str, Any]:

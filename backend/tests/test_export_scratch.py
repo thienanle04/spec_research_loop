@@ -685,3 +685,281 @@ async def test_patch_export_scratch_writes_no_decision(
     await _patch_export_scratch(client, confirmed, edited)
     after = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
     assert [row["id"] for row in after.json()] == decision_ids
+
+
+EDITED_PROBLEM = "Snapshot-saved problem statement rewrite"
+
+
+async def _save_export_scratch_snapshot(
+    client: AsyncClient,
+    session: dict,
+    *,
+    spec_version_id: str | None = None,
+) -> dict:
+    body: dict = {"expected_version": session["version"]}
+    if spec_version_id is not None:
+        body["spec_version_id"] = spec_version_id
+    response = await client.post(
+        f"/api/loop/sessions/{session['id']}/export-scratch/snapshots",
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _restore_export_scratch_snapshot(
+    client: AsyncClient,
+    session: dict,
+    snapshot_id: str,
+) -> dict:
+    response = await client.post(
+        f"/api/loop/sessions/{session['id']}/export-scratch/snapshots/{snapshot_id}/restore",
+        json={"expected_version": session["version"]},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _get_export_scratch_diff(
+    client: AsyncClient,
+    session_id: str,
+    *,
+    against: str,
+    spec_version_id: str | None = None,
+) -> dict:
+    params: dict[str, str] = {"against": against}
+    if spec_version_id is not None:
+        params["spec_version_id"] = spec_version_id
+    response = await client.get(
+        f"/api/loop/sessions/{session_id}/export-scratch/diff",
+        params=params,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+@pytest.mark.asyncio
+async def test_save_export_scratch_appends_snapshot_from_buffer(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    assert [row["snapshot_n"] for row in confirmed["export_scratch_snapshots"]] == [1]
+    cards_before = await client.get(f"/api/loop/sessions/{confirmed['id']}/cards")
+    card_bodies = {row["id"]: row["body"] for row in cards_before.json()}
+    produced_id = confirmed["produced_spec_version"]["id"]
+    valid_id = confirmed["valid_spec_version_id"]
+    snapshot_one = confirmed["export_scratch_snapshots"][0]
+    edited = _edited_document(
+        confirmed["export_scratch"]["document"],
+        problem_body=EDITED_PROBLEM,
+    )
+    patched = await _patch_export_scratch(client, confirmed, edited)
+    saved = await _save_export_scratch_snapshot(client, patched)
+    snapshots = saved["export_scratch_snapshots"]
+    assert [row["snapshot_n"] for row in snapshots] == [1, 2]
+    assert snapshots[0]["id"] == snapshot_one["id"]
+    assert snapshots[0]["document"] == snapshot_one["document"]
+    assert snapshots[1]["snapshot_n"] == 2
+    assert snapshots[1]["spec_version_id"] == valid_id
+    assert _sections_by_id({"export_scratch": {"document": snapshots[1]["document"]}})[
+        "problem_statement"
+    ]["body"] == EDITED_PROBLEM
+    assert _sections_by_id(saved)["problem_statement"]["body"] == EDITED_PROBLEM
+    cards_after = await client.get(f"/api/loop/sessions/{confirmed['id']}/cards")
+    assert {row["id"]: row["body"] for row in cards_after.json()} == card_bodies
+    assert saved["produced_spec_version"]["id"] == produced_id
+    assert saved["valid_spec_version_id"] == valid_id
+
+
+@pytest.mark.asyncio
+async def test_save_export_scratch_creates_snapshot_one_when_none(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    minted = await _mint_spec_with_paper_sources(client)
+    assert minted["export_scratch_snapshots"] == []
+    edited = _edited_document(
+        minted["export_scratch"]["document"],
+        problem_body=EDITED_PROBLEM,
+    )
+    patched = await _patch_export_scratch(client, minted, edited)
+    saved = await _save_export_scratch_snapshot(client, patched)
+    snapshots = saved["export_scratch_snapshots"]
+    assert [row["snapshot_n"] for row in snapshots] == [1]
+    assert _sections_by_id({"export_scratch": {"document": snapshots[0]["document"]}})[
+        "problem_statement"
+    ]["body"] == EDITED_PROBLEM
+
+
+@pytest.mark.asyncio
+async def test_get_lists_export_scratch_snapshots_in_order(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    patched = await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=EDITED_PROBLEM,
+        ),
+    )
+    saved = await _save_export_scratch_snapshot(client, patched)
+    fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
+    assert fetched.status_code == 200, fetched.text
+    listed = fetched.json()["export_scratch_snapshots"]
+    assert [row["snapshot_n"] for row in listed] == [1, 2]
+    assert listed[1]["id"] == saved["export_scratch_snapshots"][1]["id"]
+
+
+@pytest.mark.asyncio
+async def test_restore_export_scratch_snapshot_replaces_buffer(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    original_body = _sections_by_id(confirmed)["problem_statement"]["body"]
+    patched = await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=EDITED_PROBLEM,
+        ),
+    )
+    saved = await _save_export_scratch_snapshot(client, patched)
+    snapshot_one_id = saved["export_scratch_snapshots"][0]["id"]
+    restored = await _restore_export_scratch_snapshot(
+        client, saved, snapshot_one_id
+    )
+    assert _sections_by_id(restored)["problem_statement"]["body"] == original_body
+    fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
+    assert _sections_by_id(fetched.json())["problem_statement"]["body"] == original_body
+
+
+@pytest.mark.asyncio
+async def test_diff_vs_previous_snapshot_after_edit_and_save(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    original_body = _sections_by_id(confirmed)["problem_statement"]["body"]
+    patched = await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=EDITED_PROBLEM,
+        ),
+    )
+    saved = await _save_export_scratch_snapshot(client, patched)
+    payload = await _get_export_scratch_diff(
+        client, confirmed["id"], against="previous"
+    )
+    bodies = " ".join(
+        f"{row.get('before', '')} {row.get('after', '')}"
+        for row in payload["sections"]
+    )
+    assert EDITED_PROBLEM in bodies
+    assert original_body in bodies
+    assert payload["spec_version_id"] == saved["valid_spec_version_id"]
+
+
+@pytest.mark.asyncio
+async def test_diff_vs_snapshot_one_after_edit(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    original_body = _sections_by_id(confirmed)["problem_statement"]["body"]
+    await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=EDITED_PROBLEM,
+        ),
+    )
+    payload = await _get_export_scratch_diff(
+        client, confirmed["id"], against="original"
+    )
+    bodies = " ".join(
+        f"{row.get('before', '')} {row.get('after', '')}"
+        for row in payload["sections"]
+    )
+    assert EDITED_PROBLEM in bodies
+    assert original_body in bodies
+
+
+@pytest.mark.asyncio
+async def test_export_scratch_diffs_do_not_compare_across_spec_versions(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    minted = await _mint_spec_with_paper_sources(client)
+    first = await _confirm_aggregator(client, minted)
+    first_id = first["valid_spec_version_id"]
+    patched = await _patch_export_scratch(
+        client,
+        first,
+        _edited_document(
+            first["export_scratch"]["document"],
+            problem_body=EDITED_PROBLEM,
+        ),
+        spec_version_id=first_id,
+    )
+    saved = await _save_export_scratch_snapshot(
+        client, patched, spec_version_id=first_id
+    )
+    reminted = await _remint_second_spec(client, saved)
+    second_id = reminted["valid_spec_version_id"]
+    second_diff = await _get_export_scratch_diff(
+        client, first["id"], against="original", spec_version_id=second_id
+    )
+    second_bodies = " ".join(
+        f"{row.get('before', '')} {row.get('after', '')}"
+        for row in second_diff["sections"]
+    )
+    assert EDITED_PROBLEM not in second_bodies
+    assert second_diff["spec_version_id"] == second_id
+    first_diff = await _get_export_scratch_diff(
+        client, first["id"], against="previous", spec_version_id=first_id
+    )
+    first_bodies = " ".join(
+        f"{row.get('before', '')} {row.get('after', '')}"
+        for row in first_diff["sections"]
+    )
+    assert EDITED_PROBLEM in first_bodies
+    assert first_diff["spec_version_id"] == first_id
+
+
+@pytest.mark.asyncio
+async def test_save_export_scratch_writes_no_decision_and_does_not_mint(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    before = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    decision_ids = [row["id"] for row in before.json()]
+    kinds = [row["kind"] for row in before.json()]
+    produced_id = confirmed["produced_spec_version"]["id"]
+    valid_id = confirmed["valid_spec_version_id"]
+    patched = await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=EDITED_PROBLEM,
+        ),
+    )
+    saved = await _save_export_scratch_snapshot(client, patched)
+    after = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    assert [row["id"] for row in after.json()] == decision_ids
+    assert "export_ack" not in [row["kind"] for row in after.json()]
+    assert kinds == [row["kind"] for row in after.json()]
+    assert saved["produced_spec_version"]["id"] == produced_id
+    assert saved["valid_spec_version_id"] == valid_id
+    assert saved["produced_spec_version"]["id"] == confirmed["produced_spec_version"]["id"]
+

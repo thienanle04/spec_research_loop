@@ -177,6 +177,28 @@ class PatchExportScratchRequest(BaseModel):
     spec_version_id: UUID | None = None
 
 
+class SaveExportScratchSnapshotRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    spec_version_id: UUID | None = None
+
+
+class RestoreExportScratchSnapshotRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class ExportScratchDiffSection(BaseModel):
+    id: str
+    title: str
+    before: str
+    after: str
+
+
+class ExportScratchDiffResponse(BaseModel):
+    spec_version_id: UUID
+    against: str
+    sections: list[ExportScratchDiffSection]
+
+
 class ExportScratchSnapshotResponse(BaseModel):
     id: UUID
     spec_version_id: UUID

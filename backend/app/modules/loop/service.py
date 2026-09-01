@@ -34,6 +34,8 @@ from app.modules.loop.deps import get_stage_ports
 from app.modules.loop.export_scratch import (
     PAPER_SECTION_IDS,
     clarification_review_from_spec,
+    copy_paper_document,
+    paper_section_diff,
     project_paper_document,
 )
 from app.modules.loop.interpretation_turns import (
@@ -57,6 +59,7 @@ from app.modules.loop.schemas import (
     CardResponse,
     ClarificationReviewResponse,
     DecisionResponse,
+    ExportScratchDiffResponse,
     ExportScratchResponse,
     ExportScratchSnapshotResponse,
     HeadRevisionResponse,
@@ -260,6 +263,161 @@ class LoopService:
             session_id=session_id,
             account_id=account_id,
             spec_version_id=target_spec_id,
+        )
+
+    def _scratch_for_spec(
+        self, session: LoopSession, spec_version_id: UUID | None
+    ) -> tuple[UUID, ExportScratch]:
+        target_spec_id = spec_version_id or session.valid_spec_version_id
+        scratch = next(
+            (
+                row
+                for row in session.export_scratches
+                if row.spec_version_id == target_spec_id
+            ),
+            None,
+        )
+        if target_spec_id is None or scratch is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Export Scratch not found",
+            )
+        return target_spec_id, scratch
+
+    def _snapshots_for_spec(
+        self, session: LoopSession, spec_version_id: UUID
+    ) -> list[ExportScratchSnapshot]:
+        rows = [
+            row
+            for row in session.export_scratch_snapshots
+            if row.spec_version_id == spec_version_id
+        ]
+        rows.sort(key=lambda row: row.snapshot_n)
+        return rows
+
+    async def save_export_scratch_snapshot(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+        spec_version_id: UUID | None,
+    ) -> LoopSessionResponse:
+        session = await self._load_session(session_id, account_id)
+        target_spec_id, scratch = self._scratch_for_spec(session, spec_version_id)
+        await self._increment_session_version(
+            session,
+            session_id=session_id,
+            account_id=account_id,
+            expected_version=expected_version,
+        )
+        existing = self._snapshots_for_spec(session, target_spec_id)
+        next_n = (existing[-1].snapshot_n + 1) if existing else 1
+        snapshot = ExportScratchSnapshot(
+            session_id=session.id,
+            export_scratch_id=scratch.id,
+            spec_version_id=target_spec_id,
+            snapshot_n=next_n,
+            document=copy_paper_document(scratch.document),
+        )
+        session.export_scratch_snapshots.append(snapshot)
+        self._db.add(snapshot)
+        await self._db.commit()
+        return await self.get_session(
+            session_id=session_id,
+            account_id=account_id,
+            spec_version_id=target_spec_id,
+        )
+
+    async def restore_export_scratch_snapshot(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        snapshot_id: UUID,
+        expected_version: int,
+    ) -> LoopSessionResponse:
+        session = await self._load_session(session_id, account_id)
+        snapshot = next(
+            (
+                row
+                for row in session.export_scratch_snapshots
+                if row.id == snapshot_id
+            ),
+            None,
+        )
+        if snapshot is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Export Scratch Snapshot not found",
+            )
+        _, scratch = self._scratch_for_spec(session, snapshot.spec_version_id)
+        await self._increment_session_version(
+            session,
+            session_id=session_id,
+            account_id=account_id,
+            expected_version=expected_version,
+        )
+        scratch.document = copy_paper_document(snapshot.document)
+        await self._db.commit()
+        return await self.get_session(
+            session_id=session_id,
+            account_id=account_id,
+            spec_version_id=snapshot.spec_version_id,
+        )
+
+    async def export_scratch_diff(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        against: str,
+        spec_version_id: UUID | None,
+    ) -> ExportScratchDiffResponse:
+        if against not in {"previous", "original"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="against must be previous or original",
+            )
+        session = await self._load_session(session_id, account_id)
+        spec = await self._resolve_viewed_spec(session, spec_version_id)
+        if spec is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Spec Version not found",
+            )
+        scratch = await self._ensure_export_scratch_buffer(session, spec=spec)
+        if scratch is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Export Scratch not found",
+            )
+        snapshots = self._snapshots_for_spec(session, spec.id)
+        baseline_doc: dict[str, Any] | None = None
+        if against == "original":
+            original = next((row for row in snapshots if row.snapshot_n == 1), None)
+            if original is not None:
+                baseline_doc = original.document
+        else:
+            current = copy_paper_document(scratch.document)
+            latest = snapshots[-1] if snapshots else None
+            if latest is not None:
+                if (
+                    copy_paper_document(latest.document) == current
+                    and len(snapshots) >= 2
+                ):
+                    baseline_doc = snapshots[-2].document
+                else:
+                    baseline_doc = latest.document
+        sections = (
+            paper_section_diff(scratch.document, baseline_doc)
+            if baseline_doc is not None
+            else []
+        )
+        return ExportScratchDiffResponse(
+            spec_version_id=spec.id,
+            against=against,
+            sections=sections,
         )
 
     async def patch_working_draft(
@@ -1198,7 +1356,7 @@ class LoopService:
             export_scratch_id=scratch.id,
             spec_version_id=spec_id,
             snapshot_n=1,
-            document=json.loads(json.dumps(scratch.document)),
+            document=copy_paper_document(scratch.document),
         )
         session.export_scratch_snapshots.append(snapshot)
         self._db.add(snapshot)
