@@ -1,11 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { getApiErrorMessage } from "@/lib/api/config";
-import type { LoopSessionResponse } from "@/lib/api/generated/model";
+import {
+  getGetSessionApiLoopSessionsSessionIdGetQueryKey,
+  patchExportScratchApiLoopSessionsSessionIdExportScratchPatch,
+} from "@/lib/api/generated/endpoints";
+import type { ExportScratchSection, LoopSessionResponse } from "@/lib/api/generated/model";
 import { customFetch } from "@/lib/api/mutator";
 
 import { ConferenceScoreList } from "./ConferenceScoreList";
@@ -24,6 +30,7 @@ export function ReadinessStageView({
   session: LoopSessionResponse;
   sessionId: string;
 }) {
+  const queryClient = useQueryClient();
   const readiness = session.readiness;
   const state: ReadinessState = readiness?.state ?? "not_evaluated";
   const notice = readiness?.notice ?? "This is not conference acceptance.";
@@ -31,6 +38,17 @@ export function ReadinessStageView({
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportOk, setExportOk] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sections, setSections] = useState<ExportScratchSection[]>(
+    session.export_scratch?.document.sections ?? [],
+  );
+  const [expectedVersion, setExpectedVersion] = useState(session.version);
+  const [scratchError, setScratchError] = useState<string | null>(null);
+  const [scratchOk, setScratchOk] = useState(false);
+
+  useEffect(() => {
+    setSections(session.export_scratch?.document.sections ?? []);
+    setExpectedVersion(session.version);
+  }, [session]);
 
   async function exportArtifact(ack: boolean) {
     setExportError(null);
@@ -59,6 +77,32 @@ export function ReadinessStageView({
     void exportArtifact(false);
   }
 
+  async function saveExportScratch() {
+    setScratchError(null);
+    setScratchOk(false);
+    try {
+      const response = await patchExportScratchApiLoopSessionsSessionIdExportScratchPatch(
+        sessionId,
+        {
+          expected_version: expectedVersion,
+          document: { sections },
+          spec_version_id: session.export_scratch?.spec_version_id,
+        },
+      );
+      if (response.status === 200) {
+        const next = response.data;
+        setExpectedVersion(next.version);
+        setSections(next.export_scratch?.document.sections ?? sections);
+        setScratchOk(true);
+        await queryClient.invalidateQueries({
+          queryKey: getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId),
+        });
+      }
+    } catch (error) {
+      setScratchError(getApiErrorMessage(error));
+    }
+  }
+
   return (
     <section aria-label="Readiness overview">
       <Card>
@@ -69,15 +113,48 @@ export function ReadinessStageView({
         <CardContent className="grid gap-4">
           <p className="text-sm font-medium">{STATE_LABEL[state]}</p>
           {scores ? <ConferenceScoreList scores={scores} /> : null}
-          {session.export_scratch?.document.sections?.length ? (
-            <nav aria-label="Export Scratch">
-              <p className="text-sm font-medium">Export Scratch</p>
-              <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm">
-                {session.export_scratch.document.sections.map((section) => (
-                  <li key={section.id}>{section.title}</li>
+          {sections.length ? (
+            <>
+              <p role="status" aria-label="Export Scratch overlay" className="text-sm">
+                You are editing the Export Scratch, not the Research Spec. Changing the loop still
+                means reopen a Workflow Node.
+              </p>
+              <nav aria-label="Export Scratch">
+                <p className="text-sm font-medium">Export Scratch</p>
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm">
+                  {sections.map((section) => (
+                    <li key={section.id}>{section.title}</li>
+                  ))}
+                </ol>
+              </nav>
+              <div className="grid gap-4">
+                {sections.map((section, index) => (
+                  <label key={section.id} className="grid gap-2 text-sm font-medium">
+                    {section.title}
+                    <Textarea
+                      aria-label={section.title}
+                      value={section.body}
+                      onChange={(event) => {
+                        const next = [...sections];
+                        next[index] = { ...section, body: event.target.value };
+                        setSections(next);
+                      }}
+                    />
+                  </label>
                 ))}
-              </ol>
-            </nav>
+              </div>
+              <Button type="button" className="justify-self-start" onClick={() => void saveExportScratch()}>
+                Save Export Scratch
+              </Button>
+              {scratchOk ? (
+                <p className="text-sm text-muted-foreground">Export Scratch saved.</p>
+              ) : null}
+              {scratchError ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {scratchError}
+                </p>
+              ) : null}
+            </>
           ) : null}
           {state === "ready" || state === "blocked" ? (
             <Button type="button" className="justify-self-start" onClick={onExportClick}>
@@ -95,7 +172,7 @@ export function ReadinessStageView({
             </p>
           ) : null}
           {exportOk ? (
-            <p role="status" className="text-sm text-muted-foreground">
+            <p role="status" aria-label="Spec Artifact export" className="text-sm text-muted-foreground">
               Spec Artifact exported.
             </p>
           ) : null}

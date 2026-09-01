@@ -1,5 +1,8 @@
 """Export Scratch projection: Confirm Aggregator seed (Loop Session HTTP seam)."""
 
+import hashlib
+import json
+
 import pytest
 from httpx import AsyncClient
 
@@ -397,3 +400,112 @@ async def test_get_session_returns_export_scratch_for_valid_spec_version(
     assert scoped.json()["export_scratch"]["spec_version_id"] == confirmed[
         "valid_spec_version_id"
     ]
+
+
+def _document_hash(document: dict) -> str:
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _edited_document(source: dict, *, problem_body: str) -> dict:
+    sections = []
+    for item in source["sections"]:
+        if item["id"] == "problem_statement":
+            sections.append({**item, "body": problem_body})
+        else:
+            sections.append(dict(item))
+    return {"sections": sections}
+
+
+async def _patch_export_scratch(
+    client: AsyncClient,
+    session: dict,
+    document: dict,
+    *,
+    spec_version_id: str | None = None,
+) -> dict:
+    body: dict = {
+        "expected_version": session["version"],
+        "document": document,
+    }
+    if spec_version_id is not None:
+        body["spec_version_id"] = spec_version_id
+    response = await client.patch(
+        f"/api/loop/sessions/{session['id']}/export-scratch",
+        json=body,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+@pytest.mark.asyncio
+async def test_patch_export_scratch_updates_buffer_and_get_returns_it(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    edited = _edited_document(
+        confirmed["export_scratch"]["document"],
+        problem_body="Overlay problem statement for export only",
+    )
+    patched = await _patch_export_scratch(client, confirmed, edited)
+    assert _sections_by_id(patched)["problem_statement"]["body"] == (
+        "Overlay problem statement for export only"
+    )
+    fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
+    assert fetched.status_code == 200, fetched.text
+    payload = fetched.json()
+    assert _sections_by_id(payload)["problem_statement"]["body"] == (
+        "Overlay problem statement for export only"
+    )
+    assert [item["id"] for item in payload["export_scratch"]["document"]["sections"]] == list(
+        PAPER_SECTION_IDS
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_export_scratch_does_not_change_cards_or_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    cards_before = await client.get(f"/api/loop/sessions/{confirmed['id']}/cards")
+    assert cards_before.status_code == 200, cards_before.text
+    card_bodies = {row["id"]: row["body"] for row in cards_before.json()}
+    produced_id = confirmed["produced_spec_version"]["id"]
+    valid_id = confirmed["valid_spec_version_id"]
+    spec_hash = _document_hash(confirmed["produced_spec_version"]["document"])
+    snapshot_id = confirmed["export_scratch_snapshots"][0]["id"]
+    snapshot_doc = confirmed["export_scratch_snapshots"][0]["document"]
+    edited = _edited_document(
+        confirmed["export_scratch"]["document"],
+        problem_body="Buffer-only rewrite",
+    )
+    await _patch_export_scratch(client, confirmed, edited)
+    fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
+    payload = fetched.json()
+    cards_after = await client.get(f"/api/loop/sessions/{confirmed['id']}/cards")
+    assert {row["id"]: row["body"] for row in cards_after.json()} == card_bodies
+    assert payload["produced_spec_version"]["id"] == produced_id
+    assert payload["valid_spec_version_id"] == valid_id
+    assert _document_hash(payload["produced_spec_version"]["document"]) == spec_hash
+    assert payload["export_scratch_snapshots"][0]["id"] == snapshot_id
+    assert payload["export_scratch_snapshots"][0]["document"] == snapshot_doc
+
+
+@pytest.mark.asyncio
+async def test_patch_export_scratch_writes_no_decision(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    before = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    assert before.status_code == 200, before.text
+    decision_ids = [row["id"] for row in before.json()]
+    edited = _edited_document(
+        confirmed["export_scratch"]["document"],
+        problem_body="Still not a Decision",
+    )
+    await _patch_export_scratch(client, confirmed, edited)
+    after = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    assert [row["id"] for row in after.json()] == decision_ids

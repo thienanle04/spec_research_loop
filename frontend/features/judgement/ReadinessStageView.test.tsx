@@ -1,5 +1,7 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorkflowNode, type LoopSessionResponse } from "@/lib/api/generated/model";
@@ -13,6 +15,13 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/api/mutator", () => ({
   customFetch: (...args: unknown[]) => mocks.customFetch(...args),
 }));
+
+function renderView(ui: ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionResponse {
   return {
@@ -66,7 +75,7 @@ describe("ReadinessStageView", () => {
 
   it("exports Spec Artifact with one click when Readiness is ready", async () => {
     const user = userEvent.setup();
-    render(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
+    renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
     expect(screen.getByText("Ready")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Export Spec Artifact" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -75,14 +84,16 @@ describe("ReadinessStageView", () => {
         method: "POST",
       });
     });
-    expect(screen.getByRole("status")).toHaveTextContent("Spec Artifact exported.");
+    expect(screen.getByRole("status", { name: "Spec Artifact export" })).toHaveTextContent(
+      "Spec Artifact exported.",
+    );
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.queryByText("Blocked")).not.toBeInTheDocument();
   });
 
   it("asks for Critical Export Confirmation on each blocked Spec Artifact export", async () => {
     const user = userEvent.setup();
-    render(<ReadinessStageView session={session("blocked")} sessionId="session-1" />);
+    renderView(<ReadinessStageView session={session("blocked")} sessionId="session-1" />);
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Export Spec Artifact" }));
@@ -97,13 +108,15 @@ describe("ReadinessStageView", () => {
       });
     });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Spec Artifact exported.");
+    expect(screen.getByRole("status", { name: "Spec Artifact export" })).toHaveTextContent(
+      "Spec Artifact exported.",
+    );
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
   });
 
   it("renders a table of contents of the thirteen Export Scratch titles", () => {
-    render(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
+    renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
     const toc = screen.getByRole("navigation", { name: "Export Scratch" });
     const titles = [
       "Problem Statement",
@@ -122,7 +135,56 @@ describe("ReadinessStageView", () => {
     ];
     const items = toc.querySelectorAll("li");
     expect([...items].map((item) => item.textContent)).toEqual(titles);
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm export" })).not.toBeInTheDocument();
+  });
+
+  it("shows a persistent Export Scratch banner and saves overlay edits", async () => {
+    const user = userEvent.setup();
+    const draft = session("ready");
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        ...draft,
+        version: 5,
+        export_scratch: {
+          ...draft.export_scratch,
+          document: {
+            sections: draft.export_scratch!.document.sections.map((section) =>
+              section.id === "problem_statement"
+                ? { ...section, body: "Edited overlay body" }
+                : section,
+            ),
+          },
+        },
+      },
+    });
+    renderView(<ReadinessStageView session={draft} sessionId="session-1" />);
+    expect(
+      screen.getByRole("status", { name: "Export Scratch overlay" }),
+    ).toHaveTextContent(/Export Scratch, not the Research Spec/);
+    expect(screen.getByText(/reopen a Workflow Node/)).toBeInTheDocument();
+    const problem = screen.getByRole("textbox", { name: "Problem Statement" });
+    await user.clear(problem);
+    await user.type(problem, "Edited overlay body");
+    await user.click(screen.getByRole("button", { name: "Save Export Scratch" }));
+    await waitFor(() => {
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+    });
+    const body = JSON.parse(
+      (mocks.customFetch.mock.calls.find(
+        (call) =>
+          call[0] === "/api/loop/sessions/session-1/export-scratch",
+      )?.[1] as { body: string }).body,
+    );
+    expect(body.expected_version).toBe(4);
+    expect(body.document.sections[0].body).toBe("Edited overlay body");
+    expect(screen.getByRole("textbox", { name: "Problem Statement" })).toHaveValue(
+      "Edited overlay body",
+    );
     expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
   });
 });

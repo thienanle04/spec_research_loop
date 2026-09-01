@@ -158,6 +158,12 @@ class ExportScratchResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PatchExportScratchRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    document: ExportScratchDocument
+    spec_version_id: UUID | None = None
+
+
 class ExportScratchSnapshotResponse(BaseModel):
     id: UUID
     spec_version_id: UUID

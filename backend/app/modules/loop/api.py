@@ -22,6 +22,7 @@ from app.modules.loop.schemas import (
     LoopSessionResponse,
     LoopSessionSummary,
     PatchCardRequest,
+    PatchExportScratchRequest,
     PatchSessionRequest,
     PrepareRequest,
     ReplaceCardsRequest,
@@ -88,6 +89,26 @@ async def patch_session(
         session_id=session_id,
         account_id=account.id,
         title=body.title,
+    )
+
+
+@router.patch(
+    "/sessions/{session_id}/export-scratch",
+    response_model=LoopSessionResponse,
+    responses={409: {"model": OperationalError}},
+)
+async def patch_export_scratch(
+    session_id: UUID,
+    body: PatchExportScratchRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> LoopSessionResponse:
+    return await _service(db).patch_export_scratch(
+        session_id=session_id,
+        account_id=account.id,
+        expected_version=body.expected_version,
+        document=body.document.model_dump(),
+        spec_version_id=body.spec_version_id,
     )
 
 

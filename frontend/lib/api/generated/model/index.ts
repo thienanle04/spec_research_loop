@@ -59,6 +59,7 @@ export * from './nodeHeadStatus';
 export * from './operationalError';
 export * from './patchCardRequest';
 export * from './patchCardRequestBody';
+export * from './patchExportScratchRequest';
 export * from './patchSessionRequest';
 export * from './prepareRequest';
 export * from './registerRequest';

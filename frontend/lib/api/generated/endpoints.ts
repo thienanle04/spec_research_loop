@@ -54,6 +54,7 @@ import type {
   LoopSessionSummary,
   OperationalError,
   PatchCardRequest,
+  PatchExportScratchRequest,
   PatchSessionRequest,
   PrepareRequest,
   RegisterRequest,
@@ -1020,6 +1021,102 @@ export const usePatchSessionApiLoopSessionsSessionIdPatch = <TError = ErrorType<
         TContext
       > => {
       return useMutation(getPatchSessionApiLoopSessionsSessionIdPatchMutationOptions(options), queryClient);
+    }
+
+export type patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse200 = {
+  data: LoopSessionResponse
+  status: 200
+}
+
+export type patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponseSuccess = (patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse200) & {
+  headers: Headers;
+};
+export type patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponseError = (patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse409 | patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse422) & {
+  headers: Headers;
+};
+
+export type patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse = (patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponseSuccess | patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponseError)
+
+export const getPatchExportScratchApiLoopSessionsSessionIdExportScratchPatchUrl = (sessionId: string,) => {
+
+
+
+
+  return `/api/loop/sessions/${sessionId}/export-scratch`
+}
+
+/**
+ * @summary Patch Export Scratch
+ */
+export const patchExportScratchApiLoopSessionsSessionIdExportScratchPatch = async (sessionId: string,
+    patchExportScratchRequest: PatchExportScratchRequest, options?: Parameters<typeof customFetch>[1]): Promise<patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse> => {
+
+  return customFetch<patchExportScratchApiLoopSessionsSessionIdExportScratchPatchResponse>(getPatchExportScratchApiLoopSessionsSessionIdExportScratchPatchUrl(sessionId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(patchExportScratchRequest)
+  }
+);}
+
+
+
+
+
+export const getPatchExportScratchApiLoopSessionsSessionIdExportScratchPatchMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchExportScratchApiLoopSessionsSessionIdExportScratchPatch>>, TError,{sessionId: string;data: BodyType<PatchExportScratchRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof patchExportScratchApiLoopSessionsSessionIdExportScratchPatch>>, TError,{sessionId: string;data: BodyType<PatchExportScratchRequest>}, TContext> => {
+
+const mutationKey = ['patchExportScratchApiLoopSessionsSessionIdExportScratchPatch'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof patchExportScratchApiLoopSessionsSessionIdExportScratchPatch>>, {sessionId: string;data: BodyType<PatchExportScratchRequest>}> = (props) => {
+          const {sessionId,data} = props ?? {};
+
+          return  patchExportScratchApiLoopSessionsSessionIdExportScratchPatch(sessionId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PatchExportScratchApiLoopSessionsSessionIdExportScratchPatchMutationResult = NonNullable<Awaited<ReturnType<typeof patchExportScratchApiLoopSessionsSessionIdExportScratchPatch>>>
+    export type PatchExportScratchApiLoopSessionsSessionIdExportScratchPatchMutationBody = BodyType<PatchExportScratchRequest>
+    export type PatchExportScratchApiLoopSessionsSessionIdExportScratchPatchMutationError = ErrorType<OperationalError | HTTPValidationError>
+
+    /**
+ * @summary Patch Export Scratch
+ */
+export const usePatchExportScratchApiLoopSessionsSessionIdExportScratchPatch = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchExportScratchApiLoopSessionsSessionIdExportScratchPatch>>, TError,{sessionId: string;data: BodyType<PatchExportScratchRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof patchExportScratchApiLoopSessionsSessionIdExportScratchPatch>>,
+        TError,
+        {sessionId: string;data: BodyType<PatchExportScratchRequest>},
+        TContext
+      > => {
+      return useMutation(getPatchExportScratchApiLoopSessionsSessionIdExportScratchPatchMutationOptions(options), queryClient);
     }
 
 export type patchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatchResponse200 = {

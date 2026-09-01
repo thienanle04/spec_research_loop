@@ -4,6 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 
+PAPER_SECTION_IDS: tuple[str, ...] = (
+    "problem_statement",
+    "research_question",
+    "related_work",
+    "research_gap",
+    "contribution",
+    "claims",
+    "evidence",
+    "experiment_plan",
+    "constraints",
+    "required_resources",
+    "potential_bottlenecks",
+    "mitigation_strategies",
+    "open_issues",
+)
+
 PAPER_SECTIONS: tuple[tuple[str, str], ...] = (
     ("problem_statement", "Problem Statement"),
     ("research_question", "Research Question"),

@@ -31,7 +31,7 @@ from app.modules.loop.catalog import (
     upstream_of_stage,
 )
 from app.modules.loop.deps import get_stage_ports
-from app.modules.loop.export_scratch import project_paper_document
+from app.modules.loop.export_scratch import PAPER_SECTION_IDS, project_paper_document
 from app.modules.loop.interpretation_turns import (
     apply_account_reply_patch,
     interpretation_confirmable,
@@ -200,6 +200,61 @@ class LoopService:
             )
         await self._db.commit()
         return await self.get_session(session_id=session_id, account_id=account_id)
+
+    async def patch_export_scratch(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+        document: dict[str, Any],
+        spec_version_id: UUID | None,
+    ) -> LoopSessionResponse:
+        sections = document.get("sections")
+        if not isinstance(sections, list) or [
+            item.get("id") for item in sections if isinstance(item, dict)
+        ] != list(PAPER_SECTION_IDS):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Export Scratch document must include the thirteen paper sections",
+            )
+        session = await self._load_session(session_id, account_id)
+        target_spec_id = spec_version_id or session.valid_spec_version_id
+        scratch = next(
+            (
+                row
+                for row in session.export_scratches
+                if row.spec_version_id == target_spec_id
+            ),
+            None,
+        )
+        if scratch is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Export Scratch not found",
+            )
+        await self._increment_session_version(
+            session,
+            session_id=session_id,
+            account_id=account_id,
+            expected_version=expected_version,
+        )
+        scratch.document = {
+            "sections": [
+                {
+                    "id": item["id"],
+                    "title": item["title"],
+                    "body": item["body"],
+                }
+                for item in sections
+            ]
+        }
+        await self._db.commit()
+        return await self.get_session(
+            session_id=session_id,
+            account_id=account_id,
+            spec_version_id=target_spec_id,
+        )
 
     async def patch_working_draft(
         self,
