@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Query
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import OperationalError
@@ -332,6 +333,32 @@ async def recompute_prepare(
         account_id=account.id,
         stage=body.stage,
         expected_version=body.expected_version,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/export-scratch/markdown",
+    summary="Download Export Scratch markdown",
+    responses={409: {"model": OperationalError}},
+)
+async def download_export_scratch_markdown(
+    session_id: UUID,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    body: Annotated[SpecArtifactExportRequest | None, Body()] = None,
+    spec_version_id: Annotated[UUID | None, Query()] = None,
+) -> Response:
+    ack = False if body is None else body.critical_export_ack
+    filename, markdown = await _service(db).download_export_scratch_markdown(
+        session_id=session_id,
+        account_id=account.id,
+        critical_export_ack=ack,
+        spec_version_id=spec_version_id,
+    )
+    return Response(
+        content=markdown.encode("utf-8"),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import { WorkflowNode, type LoopSessionResponse } from "@/lib/api/generated/model";
 
@@ -108,46 +108,78 @@ function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionRespo
 describe("ReadinessStageView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.customFetch.mockResolvedValue({ status: 200, data: { spec_version_id: "spec-1" } });
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: "## 1. Problem Statement\n",
+      headers: {
+        get: (name: string) =>
+          name === "content-disposition"
+            ? 'attachment; filename="export-scratch-spec-1.md"'
+            : null,
+      },
+    });
+    vi.stubGlobal(
+      "URL",
+      class {
+        static createObjectURL = vi.fn(() => "blob:export-scratch");
+        static revokeObjectURL = vi.fn();
+      },
+    );
   });
 
-  it("exports Spec Artifact with one click when Readiness is ready", async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("downloads Export Scratch markdown with one click when Readiness is ready", async () => {
     const user = userEvent.setup();
     renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
     expect(screen.getByText("Ready")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Export Spec Artifact" }));
+    await user.click(screen.getByRole("button", { name: "Export Spec" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => {
-      expect(mocks.customFetch).toHaveBeenCalledWith("/api/loop/sessions/session-1/spec-artifact", {
-        method: "POST",
-      });
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch/markdown?spec_version_id=spec-1",
+        {
+          method: "POST",
+        },
+      );
     });
-    expect(screen.getByRole("status", { name: "Spec Artifact export" })).toHaveTextContent(
-      "Spec Artifact exported.",
+    expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("spec-artifact"))).toBe(
+      false,
+    );
+    expect(screen.getByRole("status", { name: "Export Spec" })).toHaveTextContent(
+      "Export Scratch markdown downloaded.",
     );
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.queryByText("Blocked")).not.toBeInTheDocument();
   });
 
-  it("asks for Critical Export Confirmation on each blocked Spec Artifact export", async () => {
+  it("asks for Critical Export Confirmation on each blocked Export Spec download", async () => {
     const user = userEvent.setup();
     renderView(<ReadinessStageView session={session("blocked")} sessionId="session-1" />);
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Export Spec Artifact" }));
+    await user.click(screen.getByRole("button", { name: "Export Spec" }));
     expect(mocks.customFetch).not.toHaveBeenCalled();
     const dialog = screen.getByRole("dialog", { name: "Critical Export Confirmation" });
     expect(dialog).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confirm export" }));
     await waitFor(() => {
-      expect(mocks.customFetch).toHaveBeenCalledWith("/api/loop/sessions/session-1/spec-artifact", {
-        method: "POST",
-        body: JSON.stringify({ critical_export_ack: true }),
-      });
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch/markdown?spec_version_id=spec-1",
+        {
+          method: "POST",
+          body: JSON.stringify({ critical_export_ack: true }),
+        },
+      );
     });
+    expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("spec-artifact"))).toBe(
+      false,
+    );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "Spec Artifact export" })).toHaveTextContent(
-      "Spec Artifact exported.",
+    expect(screen.getByRole("status", { name: "Export Spec" })).toHaveTextContent(
+      "Export Scratch markdown downloaded.",
     );
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();

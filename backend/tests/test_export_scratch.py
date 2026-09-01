@@ -7,6 +7,7 @@ import pytest
 from httpx import AsyncClient
 
 from tests.test_judgement_api import (
+    UNSUPPORTED_CLAIM,
     _advance_to_aggregator,
     _auth_client,
     _bind_aggregator_llm,
@@ -14,9 +15,12 @@ from tests.test_judgement_api import (
     _create_session,
     _events,
     _generate_aggregator,
+    _generate_evidence_judge,
     _interpret,
     _prepare,
     _prepare_aggregator,
+    _prepare_evidence_judge,
+    _session,
 )
 from tests.test_loop_api import IDEA_FRAME, _head, _patch_working_draft
 
@@ -962,4 +966,181 @@ async def test_save_export_scratch_writes_no_decision_and_does_not_mint(
     assert saved["produced_spec_version"]["id"] == produced_id
     assert saved["valid_spec_version_id"] == valid_id
     assert saved["produced_spec_version"]["id"] == confirmed["produced_spec_version"]["id"]
+
+
+ATX_HEADINGS = tuple(
+    f"## {index}. {title}" for index, title in enumerate(PAPER_TITLES, start=1)
+)
+MARKDOWN_PATH = "/api/loop/sessions/{session_id}/export-scratch/markdown"
+OVERLAY_PROBLEM = "Unsaved overlay problem statement for markdown download"
+
+
+def _assert_thirteen_atx_headings(body: str) -> None:
+    for heading in ATX_HEADINGS:
+        assert heading in body
+    positions = [body.index(heading) for heading in ATX_HEADINGS]
+    assert positions == sorted(positions)
+
+
+@pytest.mark.asyncio
+async def test_ready_markdown_download_has_thirteen_headings_and_writes_no_decision(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    assert confirmed["readiness"]["state"] == "ready"
+    spec_id = confirmed["valid_spec_version_id"]
+    before = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    download = await client.post(MARKDOWN_PATH.format(session_id=confirmed["id"]))
+    assert download.status_code == 200, download.text
+    assert "text/markdown" in download.headers["content-type"]
+    assert spec_id in download.headers.get("content-disposition", "")
+    body = download.text
+    assert spec_id in body
+    _assert_thirteen_atx_headings(body)
+    after = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    assert after.json() == before.json()
+    assert all(row["kind"] != "export_ack" for row in after.json())
+
+
+@pytest.mark.asyncio
+async def test_markdown_download_uses_patched_buffer_not_snapshot(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _mint_spec_with_paper_sources(client))
+    snapshot_one = confirmed["export_scratch_snapshots"][0]["document"]
+    snapshot_problem = next(
+        item["body"]
+        for item in snapshot_one["sections"]
+        if item["id"] == "problem_statement"
+    )
+    patched = await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=OVERLAY_PROBLEM,
+        ),
+    )
+    download = await client.post(MARKDOWN_PATH.format(session_id=patched["id"]))
+    assert download.status_code == 200, download.text
+    body = download.text
+    assert OVERLAY_PROBLEM in body
+    if snapshot_problem and snapshot_problem != OVERLAY_PROBLEM:
+        assert snapshot_problem not in body
+
+
+@pytest.mark.asyncio
+async def test_markdown_preamble_names_spec_version_and_disclaims_when_blocked(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    spec_id = confirmed["valid_spec_version_id"]
+    ready = await client.post(MARKDOWN_PATH.format(session_id=confirmed["id"]))
+    assert ready.status_code == 200, ready.text
+    assert f"Source Spec Version: {spec_id}" in ready.text
+    assert "not the Valid Spec Version" not in ready.text
+    assert "Readiness did not pass" not in ready.text
+
+    evidence = await _prepare_evidence_judge(
+        client, claim_statement=UNSUPPORTED_CLAIM
+    )
+    await _generate_evidence_judge(client, evidence["id"], evidence["version"])
+    session = await _session(client, evidence["id"])
+    session = await _prepare(
+        client, evidence["id"], "independent_judges", session["version"]
+    )
+    blocked_draft = await _advance_to_aggregator(client, session)
+    _bind_aggregator_llm({"options": []})
+    generated = await _generate_aggregator(
+        client, blocked_draft["id"], blocked_draft["version"]
+    )
+    blocked = await _confirm(
+        client, blocked_draft["id"], "aggregator", generated[-1]["version"]
+    )
+    assert blocked["readiness"]["state"] == "blocked"
+    blocked_id = blocked["valid_spec_version_id"]
+    download = await client.post(
+        MARKDOWN_PATH.format(session_id=blocked["id"]),
+        json={"critical_export_ack": True},
+    )
+    assert download.status_code == 200, download.text
+    assert f"Source Spec Version: {blocked_id}" in download.text
+    assert "This file is not the Valid Spec Version. Readiness did not pass." in (
+        download.text
+    )
+
+
+@pytest.mark.asyncio
+async def test_blocked_markdown_download_requires_ack_and_records_export_ack(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    evidence = await _prepare_evidence_judge(
+        client, claim_statement=UNSUPPORTED_CLAIM
+    )
+    await _generate_evidence_judge(client, evidence["id"], evidence["version"])
+    session = await _session(client, evidence["id"])
+    session = await _prepare(
+        client, evidence["id"], "independent_judges", session["version"]
+    )
+    blocked_draft = await _advance_to_aggregator(client, session)
+    _bind_aggregator_llm({"options": []})
+    generated = await _generate_aggregator(
+        client, blocked_draft["id"], blocked_draft["version"]
+    )
+    blocked = await _confirm(
+        client, blocked_draft["id"], "aggregator", generated[-1]["version"]
+    )
+    assert blocked["readiness"]["state"] == "blocked"
+    denied = await client.post(MARKDOWN_PATH.format(session_id=blocked["id"]))
+    assert denied.status_code == 409
+    assert denied.json()["code"] == "critical_export_confirmation_required"
+
+    before = await client.get(f"/api/loop/sessions/{blocked['id']}/decisions")
+    allowed = await client.post(
+        MARKDOWN_PATH.format(session_id=blocked["id"]),
+        json={"critical_export_ack": True},
+    )
+    assert allowed.status_code == 200, allowed.text
+    after = await client.get(f"/api/loop/sessions/{blocked['id']}/decisions")
+    acks = [row for row in after.json() if row["kind"] == "export_ack"]
+    assert len(acks) == 1
+    assert acks[0]["detail"] == {
+        "target": "export_scratch",
+        "format": "markdown",
+        "spec_version_id": blocked["valid_spec_version_id"],
+    }
+    assert len(after.json()) == len(before.json()) + 1
+
+    again = await client.post(MARKDOWN_PATH.format(session_id=blocked["id"]))
+    assert again.status_code == 409
+    assert again.json()["code"] == "critical_export_confirmation_required"
+
+
+@pytest.mark.asyncio
+async def test_spec_artifact_export_stays_unedited_valid_json_after_scratch_patch(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    valid_id = confirmed["valid_spec_version_id"]
+    valid_document = confirmed["produced_spec_version"]["document"]
+    await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=OVERLAY_PROBLEM,
+        ),
+    )
+    artifact = await client.post(
+        f"/api/loop/sessions/{confirmed['id']}/spec-artifact"
+    )
+    assert artifact.status_code == 200, artifact.text
+    assert artifact.json()["spec_version_id"] == valid_id
+    assert artifact.json()["document"] == valid_document
+    assert OVERLAY_PROBLEM not in json.dumps(artifact.json()["document"])
 

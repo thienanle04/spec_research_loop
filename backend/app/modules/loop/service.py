@@ -37,6 +37,7 @@ from app.modules.loop.export_scratch import (
     copy_paper_document,
     paper_section_diff,
     project_paper_document,
+    render_export_scratch_markdown,
 )
 from app.modules.loop.interpretation_turns import (
     apply_account_reply_patch,
@@ -1542,6 +1543,56 @@ class LoopService:
                     node_document["projection"] = projection
                 nodes[node.value] = node_document
         return {"nodes": nodes}
+
+    async def download_export_scratch_markdown(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        critical_export_ack: bool = False,
+        spec_version_id: UUID | None = None,
+    ) -> tuple[str, str]:
+        session = await self._load_session(session_id, account_id)
+        readiness = await self._readiness(session)
+        if readiness.state == "not_evaluated":
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="readiness_not_evaluated",
+                detail="Export Scratch download requires a current Aggregator Report",
+            )
+        if readiness.state == "blocked" and not critical_export_ack:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="critical_export_confirmation_required",
+                detail=(
+                    "Export Scratch download while Readiness is blocked requires "
+                    "a Critical Export Confirmation"
+                ),
+            )
+        target_spec_id, scratch = self._scratch_for_spec(session, spec_version_id)
+        markdown = render_export_scratch_markdown(
+            spec_version_id=target_spec_id,
+            document=scratch.document,
+            spec_version_is_valid=target_spec_id == session.valid_spec_version_id,
+            readiness_blocked=readiness.state == "blocked",
+        )
+        if readiness.state == "blocked":
+            self._db.add(
+                Decision(
+                    session_id=session.id,
+                    kind=DecisionKind.EXPORT_ACK.value,
+                    node=None,
+                    stage_revision_id=None,
+                    detail={
+                        "target": "export_scratch",
+                        "format": "markdown",
+                        "spec_version_id": str(target_spec_id),
+                    },
+                )
+            )
+            await self._db.commit()
+        filename = f"export-scratch-{target_spec_id}.md"
+        return filename, markdown
 
     async def export_spec_artifact(
         self,

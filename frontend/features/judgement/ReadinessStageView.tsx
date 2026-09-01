@@ -66,16 +66,34 @@ export function ReadinessStageView({
     setSelectedSpecId(session.valid_spec_version_id ?? session.spec_versions?.[0]?.id ?? "");
   }, [session]);
 
-  async function exportArtifact(ack: boolean) {
+  async function exportScratchMarkdown(ack: boolean) {
     setExportError(null);
     setExportOk(false);
     try {
-      await customFetch(
-        `/api/loop/sessions/${sessionId}/spec-artifact`,
+      const specVersionId =
+        selectedSpecId || session.export_scratch?.spec_version_id || "";
+      const query = specVersionId ? `?spec_version_id=${specVersionId}` : "";
+      const response = await customFetch<{
+        status: number;
+        data: string;
+        headers: Headers;
+      }>(
+        `/api/loop/sessions/${sessionId}/export-scratch/markdown${query}`,
         ack
           ? { method: "POST", body: JSON.stringify({ critical_export_ack: true }) }
           : { method: "POST" },
       );
+      const markdown = typeof response.data === "string" ? response.data : "";
+      const disposition = response.headers?.get?.("content-disposition") ?? "";
+      const matched = /filename="([^"]+)"/.exec(disposition);
+      const filename = matched?.[1] ?? `export-scratch-${specVersionId || "download"}.md`;
+      const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
       setConfirmOpen(false);
       setExportOk(true);
     } catch (error) {
@@ -90,7 +108,7 @@ export function ReadinessStageView({
       setConfirmOpen(true);
       return;
     }
-    void exportArtifact(false);
+    void exportScratchMarkdown(false);
   }
 
   async function loadScratchDiffs(specVersionId: string | undefined) {
@@ -372,7 +390,7 @@ export function ReadinessStageView({
           ) : null}
           {state === "ready" || state === "blocked" ? (
             <Button type="button" className="justify-self-start" onClick={onExportClick}>
-              Export Spec Artifact
+              Export Spec
             </Button>
           ) : (
             <p className="text-sm text-muted-foreground">
@@ -381,13 +399,13 @@ export function ReadinessStageView({
           )}
           {state === "blocked" ? (
             <p className="text-sm text-muted-foreground">
-              CRITICAL Judge Issues fail Readiness. Spec Artifact export of the unedited Valid Spec
-              Version requires a Critical Export Confirmation.
+              CRITICAL Judge Issues fail Readiness. Export Scratch markdown download requires a
+              Critical Export Confirmation.
             </p>
           ) : null}
           {exportOk ? (
-            <p role="status" aria-label="Spec Artifact export" className="text-sm text-muted-foreground">
-              Spec Artifact exported.
+            <p role="status" aria-label="Export Spec" className="text-sm text-muted-foreground">
+              Export Scratch markdown downloaded.
             </p>
           ) : null}
           {exportError ? (
@@ -409,11 +427,11 @@ export function ReadinessStageView({
               Critical Export Confirmation
             </h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Readiness stays blocked. This records a Critical Export Confirmation and exports the
-              unedited Valid Spec Version as Spec Artifact JSON.
+              Readiness stays blocked. This records a Critical Export Confirmation and downloads
+              the current Export Scratch as markdown.
             </p>
             <div className="mt-4 grid gap-2">
-              <Button type="button" onClick={() => void exportArtifact(true)}>
+              <Button type="button" onClick={() => void exportScratchMarkdown(true)}>
                 Confirm export
               </Button>
               <Button type="button" variant="ghost" onClick={() => setConfirmOpen(false)}>

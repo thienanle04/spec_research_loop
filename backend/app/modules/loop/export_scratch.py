@@ -87,6 +87,33 @@ def project_paper_document(spec_document: dict[str, Any] | None) -> dict[str, An
     }
 
 
+def render_export_scratch_markdown(
+    *,
+    spec_version_id: Any,
+    document: dict[str, Any] | None,
+    spec_version_is_valid: bool,
+    readiness_blocked: bool,
+) -> str:
+    lines = [f"Source Spec Version: {spec_version_id}"]
+    if not spec_version_is_valid or readiness_blocked:
+        lines.append(
+            "This file is not the Valid Spec Version. Readiness did not pass."
+        )
+    lines.append("")
+    by_id = {
+        item["id"]: item
+        for item in _list(_dict(document).get("sections"))
+        if isinstance(item, dict) and "id" in item
+    }
+    for index, (section_id, title) in enumerate(PAPER_SECTIONS, start=1):
+        lines.append(f"## {index}. {title}")
+        body = str(_dict(by_id.get(section_id)).get("body") or "")
+        if body:
+            lines.append(body)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def copy_paper_document(document: dict[str, Any] | None) -> dict[str, Any]:
     return json.loads(json.dumps(document or {"sections": []}))
 
