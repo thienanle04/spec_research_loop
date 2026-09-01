@@ -8,9 +8,6 @@
 export interface ResearchGenerateRequest {
   /** @minimum 1 */
   expected_version: number;
-  /**
-     * @minimum 1
-     * @maximum 5
-     */
+  /** @minimum 1 */
   max_results?: number;
 }

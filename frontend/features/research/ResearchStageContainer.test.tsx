@@ -205,6 +205,57 @@ describe("ResearchStageContainer", () => {
     );
   });
 
+  it("shows unverified LLM discovery leads after Related Work search", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const relatedNarrative = {
+      discovery_leads_status: "unverified_search_leads",
+      discovery_leads: {
+        tool_discovery_keywords: ["iterative prompt optimization"],
+        supporting_context_keywords: ["scientific information extraction"],
+        tools_and_frameworks: ["DSPy", "TextGrad"],
+        techniques: ["automatic prompt optimization"],
+        candidate_work_titles: ["DSPy: Compiling Declarative Language Model Calls"],
+        aliases: ["textual gradient optimization"],
+      },
+      tool_coverage: [
+        {
+          tool: "DSPy",
+          status: "matched_citation",
+          citation_key: "dspy-2024",
+          article_title: "DSPy framework paper",
+        },
+        {
+          tool: "TextGrad",
+          status: "not_found",
+          citation_key: null,
+          article_title: null,
+        },
+      ],
+    };
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ResearchStageContainer
+          sessionId="session-1"
+          session={session(1, relatedNarrative, WorkflowNode.related_work)}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("LLM discovery leads")).toBeInTheDocument();
+    expect(screen.getByText("DSPy · cited")).toHaveAttribute(
+      "title",
+      "DSPy framework paper",
+    );
+    expect(screen.getByText("TextGrad · not found")).toBeInTheDocument();
+    expect(screen.getByText("Tool-generation keywords:")).toBeInTheDocument();
+    expect(screen.getByText("iterative prompt optimization")).toBeInTheDocument();
+    expect(screen.getByText("Ranking-context keywords:")).toBeInTheDocument();
+    expect(screen.getByText("scientific information extraction")).toBeInTheDocument();
+  });
+
   it("does not auto-generate when remounted with a prior stale-dialog generateRequestId", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },

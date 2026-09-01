@@ -11,6 +11,7 @@ from app.modules.loop.catalog import WorkflowNode
 from app.modules.research.adapters import (
     CompositeScholarlySource,
     FakeCitationVerifier,
+    FakeDocumentTextSource,
     FakeScholarlySourcePort,
     HttpDocumentTextSource,
     OpenAlexSource,
@@ -67,6 +68,13 @@ def get_scholarly_source() -> ScholarlySourcePort:
 
 def get_document_text_source() -> DocumentTextPort:
     settings = get_settings()
+    providers = {
+        item.strip().casefold()
+        for item in settings.research_source_provider.split(",")
+        if item.strip()
+    }
+    if providers == {"fake"}:
+        return FakeDocumentTextSource()
     return HttpDocumentTextSource(
         timeout_seconds=settings.research_text_timeout_seconds,
         max_bytes=settings.research_text_max_bytes,
