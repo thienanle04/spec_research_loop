@@ -95,18 +95,30 @@ Restart the backend after changing `.env`. OpenAlex search errors are returned
 as a terminal stream error when every generated query fails; partial query
 failures remain warnings while successful results continue to be analyzed.
 
-## FIT@HCMUS WebUI LLM
+## LLM providers and profiles (ADR 0034)
 
-Personal API keys from the FIT WebUI use the OpenAI-compatible Chat Completions
-endpoint. Add the following to `.env` (never commit the real key):
+Composition root binds one `LlmPort` per Workflow Node from named **Profiles**
+(`creative`, `research`, `structured`, `judge`). Each Profile aliases a
+**ModelRef** (`provider_id` + model). **Providers** hold kind + `api_key_env`
+(secrets stay in separate env vars).
+
+With empty `LLM_PROVIDERS` / `LLM_PROFILES`, defaults are:
+
+- Provider `ai-fit` (`kind=langchain`) from `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_DEFAULT_MODEL` (default model `Qwen3.6-27B`)
+- Provider `fake` (opt-in via JSON or test injects)
+- All four Profiles → ModelRef(`ai-fit`, `LLM_DEFAULT_MODEL`)
+
+Migration: if `LLM_PROFILES` still uses `provider_id` `openai`, either add that Provider under `LLM_PROVIDERS` or retarget Profiles to `ai-fit`.
+
+Optional JSON overrides (e.g. Gemini for some roles, fake for research):
 
 ```dotenv
-RESEARCH_LLM_PROVIDER=fit_webui
-RESEARCH_LLM_MODEL=Qwen3.6-27B
-FIT_WEBUI_API_KEY=sk-your-personal-key
-FIT_WEBUI_BASE_URL=https://ai-fit.hcmus.edu.vn/openai
-FIT_WEBUI_TIMEOUT_SECONDS=300
-FIT_WEBUI_MAX_TOKENS=2000
+LLM_API_KEY=sk-your-fit-key
+LLM_BASE_URL=https://ai-fit.hcmus.edu.vn/openai
+LLM_DEFAULT_MODEL=Qwen3.6-27B
+LLM_PROVIDERS={"ai-fit":{"kind":"langchain","api_key_env":"LLM_API_KEY","base_url":"LLM_BASE_URL"},"gemini":{"kind":"langchain","api_key_env":"GEMINI_API_KEY","base_url":"GEMINI_BASE_URL"},"fake":{"kind":"fake"}}
+LLM_PROFILES={"creative":{"provider_id":"gemini","model":"gemini-2.0-flash"},"research":{"provider_id":"ai-fit","model":"Qwen3.6-27B"},"structured":{"provider_id":"ai-fit","model":"Qwen3.6-27B"},"judge":{"provider_id":"gemini","model":"gemini-2.0-flash"}}
+LLM_NODE_PROFILE_OVERRIDES=
 ```
 
 ## Migrations

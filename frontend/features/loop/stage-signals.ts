@@ -11,7 +11,7 @@ import {
   upstreamOfStage,
 } from "./catalog";
 
-export type CompletionSignal = "complete" | "needs_work" | "stale" | "not_evaluated";
+export type CompletionSignal = "complete" | "needs_work" | "stale" | "not_evaluated" | "blocked" | "ready";
 
 export type StageSignals = {
   completion: CompletionSignal;
@@ -60,14 +60,49 @@ export function deriveStageActions({
   };
 }
 
+export function shouldAutoPrepare({
+  stage,
+  selectedNode,
+  workingDraftNode,
+  nodeHeads,
+}: {
+  stage: LoopStage;
+  selectedNode: WorkflowNode | undefined;
+  workingDraftNode: WorkflowNode;
+  nodeHeads: NodeHeadResponse[];
+}): boolean {
+  if (!selectedNode) {
+    return false;
+  }
+  if (incompleteUpstreamNodes({ stage, nodeHeads }).length > 0) {
+    return false;
+  }
+  const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
+  const viewedStatus = statusByNode.get(selectedNode) ?? NodeHeadStatus.empty;
+  if (viewedStatus !== NodeHeadStatus.empty && viewedStatus !== NodeHeadStatus.stale) {
+    return false;
+  }
+  if (selectedNode === workingDraftNode) {
+    return false;
+  }
+  const wdStatus = statusByNode.get(workingDraftNode) ?? NodeHeadStatus.empty;
+  if (wdStatus !== NodeHeadStatus.current) {
+    return false;
+  }
+  const stageNodes = catalogStage(stage).nodes as readonly WorkflowNode[];
+  return !stageNodes.includes(workingDraftNode);
+}
+
 export function deriveStageSignals({
   stage,
   nodeHeads,
   workingDraftNode,
+  readinessState,
 }: {
   stage: LoopStage;
   nodeHeads: NodeHeadResponse[];
   workingDraftNode: WorkflowNode;
+  readinessState?: "not_evaluated" | "blocked" | "ready";
 }): StageSignals {
   const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
   const nodes = catalogStage(stage).nodes;
@@ -76,6 +111,13 @@ export function deriveStageSignals({
   const available = incompleteUpstream.length === 0;
 
   if (nodes.length === 0) {
+    if (stage === LoopStage.readiness) {
+      const completion =
+        readinessState === "blocked" || readinessState === "ready"
+          ? readinessState
+          : "not_evaluated";
+      return { completion, editing: false, available };
+    }
     return { completion: "not_evaluated", editing: false, available };
   }
 
@@ -107,6 +149,85 @@ export function staleInvalidationStages({
     }
   }
   return LOOP_STAGE_CATALOG.map((stage) => stage.id).filter((id) => stages.has(id));
+}
+
+/** Confirm needs Stale re-accept when the head is Stale and no post-prepare generate ran. */
+export function needsStaleReaccept(head: NodeHeadResponse | undefined | null): boolean {
+  return (
+    head?.status === NodeHeadStatus.stale && head.generated_since_prepare !== true
+  );
+}
+
+/** Mirror server mark after a successful node generate so Confirm/dimming update without refetch. */
+export function withGeneratedSincePrepare(
+  session: LoopSessionResponse,
+  node: WorkflowNode = session.working_draft_node,
+): LoopSessionResponse {
+  return {
+    ...session,
+    node_heads: session.node_heads.map((head) =>
+      head.node === node ? { ...head, generated_since_prepare: true } : head,
+    ),
+  };
+}
+
+/**
+ * Dim Stale revision/draft while the invalidation banner is showing and
+ * Stale re-accept is still needed (ADR 0036). Dismiss hides the banner and undims.
+ */
+export function shouldDimStaleContent(
+  head: NodeHeadResponse | undefined | null,
+  invalidationBannerVisible: boolean,
+): boolean {
+  return needsStaleReaccept(head) && invalidationBannerVisible;
+}
+
+/** Banner dismiss subject: one Workflow Node or Spec Draft (ADR 0036). */
+export type InvalidationBannerSubject = WorkflowNode | "spec_draft";
+
+export function invalidationWaveKey(
+  session: Pick<
+    LoopSessionResponse,
+    "node_heads" | "produced_spec_version" | "valid_spec_version_id"
+  >,
+): string {
+  const staleNodes = session.node_heads
+    .filter((head) => head.status === NodeHeadStatus.stale)
+    .map((head) => head.node)
+    .sort()
+    .join(",");
+  const specStale =
+    session.produced_spec_version != null &&
+    session.valid_spec_version_id !== session.produced_spec_version.id;
+  if (!staleNodes && !specStale) {
+    return "";
+  }
+  return `${staleNodes}|spec:${specStale ? "1" : "0"}`;
+}
+
+/** Whether Spec Draft's invalidation line belongs in the current-view banner. */
+export function specInvalidationInView(args: {
+  selectedNode: WorkflowNode | undefined;
+  selectedStage: LoopStage;
+  viewedNodeStale: boolean;
+  specVersionStale: boolean;
+}): boolean {
+  if (!args.specVersionStale) {
+    return false;
+  }
+  return (
+    args.viewedNodeStale ||
+    args.selectedStage === LoopStage.spec_draft ||
+    args.selectedNode == null
+  );
+}
+
+export function isInvalidationSubjectDismissed(
+  subject: InvalidationBannerSubject,
+  waveKey: string,
+  dismissedBySubject: Readonly<Record<string, string>>,
+): boolean {
+  return waveKey !== "" && dismissedBySubject[subject] === waveKey;
 }
 
 function fieldText(value: unknown): string {

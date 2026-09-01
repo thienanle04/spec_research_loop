@@ -27,7 +27,7 @@ Hero scroll-reveal (Master motion 3/10) is allowed here; skip under `prefers-red
 
 ## Typography
 
-Landing may use Master **EB Garamond** for the hero headline and honesty-block pull quote. Body and UI controls use **Atkinson Hyperlegible** (same as Loop Session) so the demo embeds match the product.
+Landing may use **EB Garamond** (vietnamese subset) for the hero headline and honesty-block pull quote. Body and UI controls use **Be Vietnam Pro** (same as Loop Session) so the demo embeds match the product.
 
 ---
 

@@ -18,12 +18,14 @@ from app.modules.loop.schemas import (
     CreateCardRequest,
     CreateSessionRequest,
     DecisionResponse,
+    HandlingOptionPickRequest,
     LoopSessionResponse,
     LoopSessionSummary,
     PatchCardRequest,
     PatchSessionRequest,
     PrepareRequest,
     ReplaceCardsRequest,
+    SpecArtifactResponse,
     WorkingDraftPatchRequest,
 )
 from app.modules.loop.service import LoopService
@@ -69,7 +71,6 @@ async def get_session(
 @router.patch(
     "/sessions/{session_id}",
     response_model=LoopSessionResponse,
-    responses={409: {"model": OperationalError}},
 )
 async def patch_session(
     session_id: UUID,
@@ -81,7 +82,6 @@ async def patch_session(
         session_id=session_id,
         account_id=account.id,
         title=body.title,
-        expected_version=body.expected_version,
     )
 
 
@@ -188,6 +188,27 @@ async def list_decisions(
 
 
 @router.post(
+    "/sessions/{session_id}/pick",
+    response_model=LoopSessionResponse,
+    responses={409: {"model": OperationalError}},
+)
+async def pick_handling_option(
+    session_id: UUID,
+    body: HandlingOptionPickRequest,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> LoopSessionResponse:
+    return await _service(db).pick_handling_option(
+        session_id=session_id,
+        account_id=account.id,
+        expected_version=body.expected_version,
+        handling_option_id=body.handling_option_id,
+        prose=body.prose,
+        target_node=body.target_node,
+    )
+
+
+@router.post(
     "/sessions/{session_id}/confirm",
     response_model=LoopSessionResponse,
     responses={409: {"model": OperationalError}},
@@ -203,6 +224,7 @@ async def confirm(
         account_id=account.id,
         node=body.node,
         expected_version=body.expected_version,
+        stale_reaccept=body.stale_reaccept,
     )
 
 
@@ -222,4 +244,19 @@ async def recompute_prepare(
         account_id=account.id,
         stage=body.stage,
         expected_version=body.expected_version,
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/spec-artifact",
+    response_model=SpecArtifactResponse,
+    responses={409: {"model": OperationalError}},
+)
+async def export_spec_artifact(
+    session_id: UUID,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> SpecArtifactResponse:
+    return await _service(db).export_spec_artifact(
+        session_id=session_id, account_id=account.id
     )

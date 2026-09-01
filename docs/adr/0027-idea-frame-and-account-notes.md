@@ -6,4 +6,4 @@ Each interpretation generate overwrites a model-authored Idea Frame (`intent`, `
 
 **Why:** Grilling is shared understanding of research intent, shown in a fixed restatement the Account can Confirm, not early decomposition. A free-form note lets them correct the model without editing the frame. A blank frame cannot be the source of problem and research-question Cards (ADR 0028).
 
-Extends ADR 0025. Supersedes that ADR’s “cluster Send is answers only.” Confirming interpretation still starts decomposition (ADR 0018). The cluster-closed Confirm gate here is superseded by ADR 0029.
+Extends ADR 0025. Supersedes that ADR’s “cluster Send is answers only.” Confirming interpretation still advances the Working Draft to `idea_decomposition` (ADR 0018); decomposition Generate is explicit (ADR 0038). The cluster-closed Confirm gate here is superseded by ADR 0029.

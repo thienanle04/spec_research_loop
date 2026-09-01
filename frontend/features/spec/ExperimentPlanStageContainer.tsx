@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,9 +9,12 @@ import {
 } from "@/lib/api/generated/endpoints";
 import {
   type LoopSessionResponse,
+  WorkflowNode,
 } from "@/lib/api/generated/model";
+import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
-import { Target, Activity, FlaskConical, AlertTriangle, FileText } from "lucide-react";
+import { withGeneratedSincePrepare } from "../loop/stage-signals";
+import { Target, Activity, AlertTriangle, FileText } from "lucide-react";
 
 type ExperimentItem = {
   claim: string;
@@ -74,11 +77,13 @@ export function ExperimentPlanStageContainer({
   session,
   onRunningChange,
   onConfirmabilityChange,
+  generateRequestId = 0,
 }: {
   sessionId: string;
   session: LoopSessionResponse;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  generateRequestId?: number;
 }) {
   const queryClient = useQueryClient();
   const generateExperiment = useGenerateExperimentApiSpecSessionsSessionIdExperimentPlanGeneratePost();
@@ -87,6 +92,7 @@ export function ExperimentPlanStageContainer({
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const [error, setError] = useState<string | null>(null);
+  const seenGenerateRequestIdRef = useRef(generateRequestId);
 
   const narrative = session.working_draft_narrative as any;
   const expHead = session.node_heads?.find(h => h.node === "experiment_plan");
@@ -130,15 +136,25 @@ export function ExperimentPlanStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not generate experiment plan");
-      updateSession((current) => ({
-        ...current,
-        version: response.data.version,
-        working_draft_narrative: { ...current.working_draft_narrative as object, plan: response.data.plan },
-      }));
+      updateSession((current) =>
+        withGeneratedSincePrepare({
+          ...current,
+          version: response.data.version,
+          working_draft_narrative: { ...current.working_draft_narrative as object, plan: response.data.plan },
+        }),
+      );
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }
   }
+
+  useEffect(() => {
+    const previous = seenGenerateRequestIdRef.current;
+    seenGenerateRequestIdRef.current = generateRequestId;
+    if (generateRequestId < 1 || generateRequestId <= previous) return;
+    void loadExperimentPlan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
+  }, [generateRequestId]);
 
   return (
     <Card>
@@ -146,10 +162,10 @@ export function ExperimentPlanStageContainer({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <FlaskConical className="w-5 h-5 text-indigo-600" /> Experiment Planning
+              {WORKFLOW_NODE_LABELS[WorkflowNode.experiment_plan]}
             </CardTitle>
             <CardDescription>
-              Plan your experiments to validate the claims.
+              Plan tests that could confirm or refute the claims.
             </CardDescription>
           </div>
           <div className="flex gap-2">
@@ -192,20 +208,20 @@ export function ExperimentPlanStageContainer({
                     </div>
                   </div>
 
-                  <div className="grid md:grid-cols-2 gap-6">
-                    <div>
+                  <div className="grid md:grid-cols-2 gap-6 items-stretch">
+                    <div className="flex min-h-0 flex-col">
                       <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
                         <Activity className="w-4 h-4 text-emerald-500" /> Objective (Mục tiêu)
                       </h5>
-                      <div className="text-sm text-slate-800 bg-emerald-50/40 p-4 rounded-md border border-emerald-100/60 h-full shadow-sm">
+                      <div className="flex-1 text-sm text-slate-800 bg-emerald-50/40 p-4 rounded-md border border-emerald-100/60 shadow-sm">
                         <FormattedText text={exp.objective} />
                       </div>
                     </div>
-                    <div>
+                    <div className="flex min-h-0 flex-col">
                       <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
                         <AlertTriangle className="w-4 h-4 text-amber-500" /> Significance (Ý nghĩa)
                       </h5>
-                      <div className="text-sm text-slate-800 bg-amber-50/40 p-4 rounded-md border border-amber-100/60 h-full shadow-sm">
+                      <div className="flex-1 text-sm text-slate-800 bg-amber-50/40 p-4 rounded-md border border-amber-100/60 shadow-sm">
                         <FormattedText text={exp.significance} />
                       </div>
                     </div>

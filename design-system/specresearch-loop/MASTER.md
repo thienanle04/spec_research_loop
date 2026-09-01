@@ -40,15 +40,17 @@
 
 ### Typography
 
-- **Heading Font:** EB Garamond
-- **Body Font:** Crimson Text
-- **Mood:** academic, old-school, university, research, serious, traditional
-- **Google Fonts:** [EB Garamond + Crimson Text](https://fonts.googleapis.com/css2?family=Crimson+Text:wght@400;600;700&family=EB+Garamond:wght@400;500;600;700;800&display=swap)
+- **Heading Font:** Be Vietnam Pro
+- **Body Font:** Noto Sans
+- **Mood:** vietnamese, international, readable, clean, multilingual, accessible
+- **Google Fonts:** [Be Vietnam Pro + Noto Sans](https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Noto+Sans:wght@400;500;600;700&display=swap)
 
 **CSS Import:**
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Crimson+Text:wght@400;600;700&family=EB+Garamond:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Noto+Sans:wght@400;500;600;700&display=swap');
 ```
+
+Display/export serif (hero, Spec Artifact) stays **EB Garamond** with `latin` + `latin-ext` + `vietnamese`. Spec headings in the workbench use **Crimson Pro** with the same subsets. Both serifs already include Vietnamese; load the subset or stacked marks (ắ, ẩ, ữ) fall back to a different face.
 
 ### Spacing Variables
 

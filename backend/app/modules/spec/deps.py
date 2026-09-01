@@ -1,27 +1,25 @@
 """Spec module dependency bindings."""
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from pydantic import TypeAdapter
 
-from app.adapters.llm import (
-    FitWebUiLlmPort,
-    TracingLlm,
-    configure_llm_trace_logger,
-)
-from app.core.config import get_settings
+from app.adapters.llm import get_llm_port
+from app.modules.loop.catalog import WorkflowNode
 from app.ports.llm import LlmPort
 
 
 class FakeSpecLlmPort:
+    """Domain fake for tests; not selected by runtime profiles (ADR 0034)."""
+
     async def stream(
         self,
         *,
         system: str,
         prompt: str,
         model: str | None = None,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         yield await self.complete(system=system, prompt=prompt, model=model)
 
     async def complete(
@@ -136,25 +134,17 @@ class FakeSpecLlmPort:
         return TypeAdapter(schema).validate_python(payloads.get(schema.__name__, {}))
 
 
-def get_spec_llm() -> LlmPort:
-    settings = get_settings()
-    provider = settings.research_llm_provider.casefold()
-    if provider == "fake":
-        return FakeSpecLlmPort()
-    if provider != "fit_webui":
-        raise RuntimeError(f"Unsupported Spec LLM provider: {provider}")
-    if not settings.fit_webui_api_key:
-        raise RuntimeError(
-            "FIT_WEBUI_API_KEY is required when RESEARCH_LLM_PROVIDER=fit_webui"
-        )
-    llm: LlmPort = FitWebUiLlmPort(
-        api_key=settings.fit_webui_api_key,
-        default_model=settings.research_llm_model,
-        base_url=settings.fit_webui_base_url,
-        timeout_seconds=settings.fit_webui_timeout_seconds,
-        max_tokens=settings.fit_webui_max_tokens,
-    )
-    if settings.llm_trace:
-        configure_llm_trace_logger()
-        return TracingLlm(llm, node="spec")
-    return llm
+def get_contribution_llm() -> LlmPort:
+    return get_llm_port(WorkflowNode.CONTRIBUTION.value)
+
+
+def get_claims_llm() -> LlmPort:
+    return get_llm_port(WorkflowNode.CLAIMS.value)
+
+
+def get_experiment_llm() -> LlmPort:
+    return get_llm_port(WorkflowNode.EXPERIMENT_PLAN.value)
+
+
+def get_feasibility_llm() -> LlmPort:
+    return get_llm_port(WorkflowNode.FEASIBILITY.value)

@@ -13,7 +13,9 @@ import {
   CardKind,
   type ClaimEvidenceCard,
   type LoopSessionResponse,
+  WorkflowNode,
 } from "@/lib/api/generated/model";
+import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
 import { FileSearch, CheckCircle2, Target, Activity, AlertTriangle, Edit, Save, X } from "lucide-react";
 
@@ -78,7 +80,6 @@ export function EvidenceStageContainer({
         patchWorkingDraft.mutateAsync({
           sessionId,
           data: {
-            node: session.working_draft_node,
             expected_version: currentSession().version,
             narrative: { ...narrative, evidence_saved: true }
           }
@@ -156,10 +157,10 @@ export function EvidenceStageContainer({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <FileSearch className="w-5 h-5 text-indigo-600" /> Evidence Planning
+                {WORKFLOW_NODE_LABELS[WorkflowNode.evidence]}
             </CardTitle>
             <CardDescription>
-              Review and refine the evidence, baselines, and metrics for your claims.
+              State the evidence that would support the confirmed claims.
             </CardDescription>
           </div>
         </div>

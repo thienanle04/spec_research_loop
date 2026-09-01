@@ -8,7 +8,13 @@ import {
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
+  isInvalidationSubjectDismissed,
+  needsStaleReaccept,
+  shouldAutoPrepare,
+  shouldDimStaleContent,
+  specInvalidationInView,
   staleInvalidationStages,
+  withGeneratedSincePrepare,
 } from "./stage-signals";
 
 function heads(
@@ -18,6 +24,8 @@ function heads(
     node,
     status: overrides[node] ?? NodeHeadStatus.empty,
     stage_revision_id: null,
+    generated_since_prepare: false,
+    head_revision: null,
   }));
 }
 
@@ -239,6 +247,36 @@ describe("Loop Stage signals", () => {
     });
   });
 
+  it("displays Readiness as blocked or ready from the Aggregator Report", () => {
+    const nodeHeads = heads({
+      [WorkflowNode.aggregator]: NodeHeadStatus.current,
+    });
+    expect(
+      deriveStageSignals({
+        stage: LoopStage.readiness,
+        nodeHeads,
+        workingDraftNode: WorkflowNode.aggregator,
+        readinessState: "blocked",
+      }),
+    ).toEqual({
+      completion: "blocked",
+      editing: false,
+      available: true,
+    });
+    expect(
+      deriveStageSignals({
+        stage: LoopStage.readiness,
+        nodeHeads,
+        workingDraftNode: WorkflowNode.aggregator,
+        readinessState: "ready",
+      }),
+    ).toEqual({
+      completion: "ready",
+      editing: false,
+      available: true,
+    });
+  });
+
   it("lists incomplete upstream Workflow Nodes for an unavailable Loop Stage", () => {
     expect(
       incompleteUpstreamNodes({
@@ -306,6 +344,141 @@ describe("Loop Stage actions", () => {
       canRecompute: false,
       editableNodes: [WorkflowNode.research_inputs, WorkflowNode.related_work],
     });
+  });
+});
+
+describe("shouldAutoPrepare", () => {
+  const grillingCurrent = {
+    [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+    [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+  };
+
+  it("prepares an empty node when the Working Draft is current in another Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.research_inputs,
+        workingDraftNode: WorkflowNode.idea_decomposition,
+        nodeHeads: heads(grillingCurrent),
+      }),
+    ).toBe(true);
+  });
+
+  it("prepares a Stale node when the Working Draft is current in another Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.related_work,
+        workingDraftNode: WorkflowNode.contribution,
+        nodeHeads: heads({
+          ...grillingCurrent,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.stale,
+          [WorkflowNode.gap]: NodeHeadStatus.current,
+          [WorkflowNode.contribution]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toBe(true);
+  });
+
+  it("does not prepare a current Node Head in a mixed Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.research_inputs,
+        workingDraftNode: WorkflowNode.contribution,
+        nodeHeads: heads({
+          ...grillingCurrent,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.stale,
+          [WorkflowNode.gap]: NodeHeadStatus.current,
+          [WorkflowNode.contribution]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare Spec Draft or a missing Workflow Node", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.spec_draft,
+        selectedNode: undefined,
+        workingDraftNode: WorkflowNode.feasibility,
+        nodeHeads: heads(grillingCurrent),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare an unavailable Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.research_inputs,
+        workingDraftNode: WorkflowNode.idea_interpretation,
+        nodeHeads: heads(),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare the Working Draft already on that empty or Stale node", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.related_work,
+        selectedNode: WorkflowNode.research_inputs,
+        workingDraftNode: WorkflowNode.research_inputs,
+        nodeHeads: heads({
+          ...grillingCurrent,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.empty,
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        workingDraftNode: WorkflowNode.idea_decomposition,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+        }),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare when the Working Draft is not current", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        workingDraftNode: WorkflowNode.idea_interpretation,
+        nodeHeads: heads(),
+      }),
+    ).toBe(false);
+  });
+
+  it("does not prepare while the Working Draft is a current node in the same Loop Stage", () => {
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        workingDraftNode: WorkflowNode.idea_interpretation,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.empty,
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoPrepare({
+        stage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        workingDraftNode: WorkflowNode.idea_interpretation,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+        }),
+      }),
+    ).toBe(false);
   });
 });
 
@@ -405,5 +578,86 @@ describe("Confirm signals", () => {
         ],
       }),
     ).toBe(true);
+  });
+});
+
+describe("Stale re-accept flag", () => {
+  it("clears needsStaleReaccept after withGeneratedSincePrepare", () => {
+    const nodeHeads = heads({
+      [WorkflowNode.contribution]: NodeHeadStatus.stale,
+    });
+    const head = nodeHeads.find((item) => item.node === WorkflowNode.contribution);
+    expect(needsStaleReaccept(head)).toBe(true);
+
+    const updated = withGeneratedSincePrepare({
+      id: "session-1",
+      title: "t",
+      version: 1,
+      working_draft_node: WorkflowNode.contribution,
+      working_draft_narrative: {},
+      node_heads: nodeHeads,
+      cards: [],
+      produced_spec_version: null,
+      valid_spec_version_id: null,
+      created_at: "2026-08-15T10:00:00Z",
+      updated_at: "2026-08-15T10:00:00Z",
+    });
+    const marked = updated.node_heads.find((item) => item.node === WorkflowNode.contribution);
+    expect(marked?.generated_since_prepare).toBe(true);
+    expect(needsStaleReaccept(marked)).toBe(false);
+  });
+
+  it("dims only when re-accept is needed and the invalidation banner is visible", () => {
+    const stale = heads({ [WorkflowNode.contribution]: NodeHeadStatus.stale }).find(
+      (item) => item.node === WorkflowNode.contribution,
+    );
+    expect(shouldDimStaleContent(stale, true)).toBe(true);
+    expect(shouldDimStaleContent(stale, false)).toBe(false);
+    expect(shouldDimStaleContent({ ...stale!, generated_since_prepare: true }, true)).toBe(false);
+  });
+
+  it("tracks Spec Draft invalidation in view and per-subject dismiss against the wave key", () => {
+    expect(
+      specInvalidationInView({
+        selectedNode: WorkflowNode.idea_decomposition,
+        selectedStage: LoopStage.grilling,
+        viewedNodeStale: true,
+        specVersionStale: true,
+      }),
+    ).toBe(true);
+    expect(
+      specInvalidationInView({
+        selectedNode: WorkflowNode.idea_decomposition,
+        selectedStage: LoopStage.grilling,
+        viewedNodeStale: false,
+        specVersionStale: true,
+      }),
+    ).toBe(false);
+    expect(
+      specInvalidationInView({
+        selectedNode: undefined,
+        selectedStage: LoopStage.spec_draft,
+        viewedNodeStale: false,
+        specVersionStale: true,
+      }),
+    ).toBe(true);
+
+    const wave = "idea_decomposition|spec:1";
+    expect(
+      isInvalidationSubjectDismissed(WorkflowNode.idea_decomposition, wave, {
+        [WorkflowNode.idea_decomposition]: wave,
+      }),
+    ).toBe(true);
+    expect(
+      isInvalidationSubjectDismissed(WorkflowNode.idea_interpretation, wave, {
+        [WorkflowNode.idea_decomposition]: wave,
+      }),
+    ).toBe(false);
+    expect(
+      isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: wave }),
+    ).toBe(true);
+    expect(
+      isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: "other-wave" }),
+    ).toBe(false);
   });
 });

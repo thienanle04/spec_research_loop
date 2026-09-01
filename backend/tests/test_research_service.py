@@ -4230,8 +4230,8 @@ class _RecordingVerifier:
 class _QuotaLlm:
     async def complete(self, **_kwargs: Any) -> str:
         raise LlmProviderError(
-            "FIT WebUI quota or rate limit was reached",
-            provider="fit_webui",
+            "LLM rate limit or quota was reached; retry later",
+            provider="langchain",
             status_code=429,
             code="insufficient_quota",
         )
@@ -4247,8 +4247,8 @@ class _GapSynthesisTimeoutLlm(FakeLlmPort):
     ) -> str:
         if "research-gap-synthesis" in system:
             raise LlmProviderError(
-                "FIT WebUI request timed out; retry later",
-                provider="fit_webui",
+                "LLM request timed out; retry later",
+                provider="langchain",
                 code="timeout",
             )
         return await super().complete(system=system, prompt=prompt, model=model)

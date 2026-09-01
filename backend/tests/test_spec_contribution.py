@@ -139,6 +139,12 @@ async def test_generates_contextual_directions_with_fixed_combine_and_other(
     assert (
         saved.json()["working_draft_narrative"]["directions"] == payload["directions"]
     )
+    contribution_head = next(
+        head
+        for head in saved.json()["node_heads"]
+        if head["node"] == "contribution"
+    )
+    assert contribution_head["generated_since_prepare"] is True
 
 
 @pytest.mark.asyncio

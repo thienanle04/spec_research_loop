@@ -1,292 +1,62 @@
-"""Tests for the live LLM adapter response contract without network access."""
+"""Tests for LLM adapter binding and port contracts without network access."""
 
 import json
-from typing import Self
 
-import httpx
 import pytest
 from pydantic import BaseModel
 
-from app.adapters.llm import TracingLlm
-from app.adapters.llm.fit_webui import (
-    FitWebUiLlmPort,
-    _utf8_safe,
-)
-from app.adapters.llm.fit_webui import (
-    _raise_for_status as raise_fit_webui_for_status,
-)
-from app.adapters.llm.fit_webui import (
-    _response_text as fit_webui_response_text,
-)
+from app.adapters.llm import bind_llm_ports, build_llm_ports, get_llm_port
+from app.adapters.llm.langchain_chat import DEFAULT_MAX_TOKENS, LangChainChatAdapter
 from app.core.config import get_settings
 from app.modules.research.adapters.fake_llm import FakeLlmPort
-from app.modules.research.deps import get_research_llm
-from app.modules.spec.deps import FakeSpecLlmPort, get_spec_llm
+from app.modules.spec.deps import FakeSpecLlmPort
 from app.modules.spec.schemas import (
     FeasibilityReport,
     GenerateClaimsResponse,
     GenerateExperimentResponse,
 )
-from app.ports.llm import LlmPort, LlmProviderError
+from app.ports.llm import LlmPort
 
 
 class _StructuredResult(BaseModel):
     value: str
 
 
-def test_fit_webui_response_text_reads_chat_completion() -> None:
-    payload = {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": '{"queries":["claim evidence"]}',
-                }
-            }
-        ]
-    }
-
-    assert fit_webui_response_text(payload) == '{"queries":["claim evidence"]}'
-
-
-def test_fit_webui_response_text_serializes_structured_content() -> None:
-    payload = {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": {"queries": ["claim evidence"]},
-                }
-            }
-        ]
-    }
-
-    assert json.loads(fit_webui_response_text(payload)) == {
-        "queries": ["claim evidence"]
-    }
-
-
-def test_fit_webui_response_text_reads_text_content_blocks() -> None:
-    payload = {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": '{"queries":'},
-                        {"type": "output_text", "text": '["claim evidence"]}'},
-                    ],
-                }
-            }
-        ]
-    }
-
-    assert fit_webui_response_text(payload) == '{"queries":["claim evidence"]}'
-
-
-def test_fit_webui_response_text_rejects_empty_output() -> None:
-    with pytest.raises(ValueError, match="output text"):
-        fit_webui_response_text({"choices": []})
-
-
-def test_fit_webui_normalizes_surrogates_without_damaging_valid_unicode() -> None:
-    assert _utf8_safe("Tiếng Việt \ud800") == "Tiếng Việt �"
-    assert _utf8_safe("emoji \ud83d\ude00") == "emoji 😀"
-
-
-def test_fit_webui_auth_error_is_safe() -> None:
-    response = httpx.Response(
-        401,
-        request=httpx.Request(
-            "POST", "https://ai-fit.hcmus.edu.vn/openai/chat/completions"
-        ),
-        json={"error": {"code": "invalid_key", "message": "vendor detail"}},
-    )
-
-    with pytest.raises(LlmProviderError, match="rejected") as caught:
-        raise_fit_webui_for_status(response)
-
-    assert caught.value.provider == "fit_webui"
-    assert caught.value.status_code == 401
-    assert caught.value.code == "invalid_key"
-    assert "vendor detail" not in str(caught.value)
-
-
-@pytest.mark.asyncio
-async def test_fit_webui_calls_chat_completions(
+def test_default_profiles_bind_ai_fit_langchain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, object] = {}
-
-    class FakeAsyncClient:
-        def __init__(self, *, timeout: float) -> None:
-            captured["timeout"] = timeout
-
-        async def __aenter__(self) -> Self:
-            return self
-
-        async def __aexit__(self, *args: object) -> None:
-            return None
-
-        async def post(
-            self,
-            url: str,
-            *,
-            headers: dict[str, str],
-            json: dict[str, object],
-        ) -> httpx.Response:
-            captured.update(url=url, headers=headers, json=json)
-            return httpx.Response(
-                200,
-                request=httpx.Request("POST", url),
-                json={"choices": [{"message": {"content": "result"}}]},
-            )
-
-    monkeypatch.setattr(
-        "app.adapters.llm.fit_webui.httpx.AsyncClient", FakeAsyncClient
-    )
-    adapter = FitWebUiLlmPort(
-        api_key="sk-test",
-        default_model="Qwen3.6-27B",
-        timeout_seconds=30,
-    )
-
-    result = await adapter.complete(system="system", prompt="prompt")
-
-    assert result == "result"
-    assert captured["url"] == (
-        "https://ai-fit.hcmus.edu.vn/openai/chat/completions"
-    )
-    assert captured["headers"] == {
-        "Authorization": "Bearer sk-test",
-        "Content-Type": "application/json",
-    }
-    assert captured["json"] == {
-        "model": "Qwen3.6-27B",
-        "messages": [
-            {"role": "system", "content": "system"},
-            {"role": "user", "content": "prompt"},
-        ],
-        "max_tokens": 4_000,
-        "response_format": {"type": "json_object"},
-        "stream": False,
-    }
-
-
-@pytest.mark.asyncio
-async def test_fit_webui_timeout_is_converted_to_safe_provider_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class TimeoutAsyncClient:
-        def __init__(self, *, timeout: float) -> None:
-            assert timeout == 120
-
-        async def __aenter__(self) -> Self:
-            return self
-
-        async def __aexit__(self, *args: object) -> None:
-            return None
-
-        async def post(self, url: str, **_kwargs: object) -> httpx.Response:
-            raise httpx.ReadTimeout(
-                "vendor detail",
-                request=httpx.Request("POST", url),
-            )
-
-    monkeypatch.setattr(
-        "app.adapters.llm.fit_webui.httpx.AsyncClient", TimeoutAsyncClient
-    )
-    adapter = FitWebUiLlmPort(
-        api_key="sk-test",
-        default_model="Qwen3.6-27B",
-        timeout_seconds=120,
-    )
-
-    with pytest.raises(LlmProviderError, match="timed out") as caught:
-        await adapter.complete(system="system", prompt="prompt")
-
-    assert caught.value.provider == "fit_webui"
-    assert caught.value.code == "timeout"
-    assert "vendor detail" not in str(caught.value)
-
-
-def test_research_llm_binding_selects_fit_webui(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "fit_webui")
-    monkeypatch.setenv("RESEARCH_LLM_MODEL", "Qwen3.6-27B")
-    monkeypatch.setenv("FIT_WEBUI_API_KEY", "sk-test")
-    monkeypatch.setenv("LLM_TRACE", "false")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_BASE_URL", "https://ai-fit.hcmus.edu.vn/openai")
+    monkeypatch.setenv("LLM_PROVIDERS", "")
+    monkeypatch.setenv("LLM_PROFILES", "")
+    monkeypatch.setenv("LLM_NODE_PROFILE_OVERRIDES", "")
     get_settings.cache_clear()
 
     try:
-        assert isinstance(get_research_llm(), FitWebUiLlmPort)
-    finally:
-        get_settings.cache_clear()
-
-
-def test_research_llm_binding_enables_trace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "fit_webui")
-    monkeypatch.setenv("RESEARCH_LLM_MODEL", "Qwen3.6-27B")
-    monkeypatch.setenv("FIT_WEBUI_API_KEY", "sk-test")
-    monkeypatch.setenv("LLM_TRACE", "true")
-    get_settings.cache_clear()
-
-    try:
-        assert isinstance(get_research_llm(), TracingLlm)
-    finally:
-        get_settings.cache_clear()
-
-
-def test_spec_llm_binding_uses_fit_adapter_and_configured_output_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "fit_webui")
-    monkeypatch.setenv("RESEARCH_LLM_MODEL", "Qwen3.6-27B")
-    monkeypatch.setenv("FIT_WEBUI_API_KEY", "sk-test")
-    monkeypatch.setenv("FIT_WEBUI_MAX_TOKENS", "4321")
-    monkeypatch.setenv("LLM_TRACE", "false")
-    get_settings.cache_clear()
-
-    try:
-        adapter = get_spec_llm()
-        assert isinstance(adapter, FitWebUiLlmPort)
-        assert adapter._max_tokens == 4_321
+        ports = build_llm_ports(get_settings())
+        bind_llm_ports(ports)
+        research = get_llm_port("research_inputs")
+        assert isinstance(research, LangChainChatAdapter)
+        assert research.default_model == "Qwen3.6-27B"
+        assert research._base_url == "https://ai-fit.hcmus.edu.vn/openai"
+        assert research._max_tokens == DEFAULT_MAX_TOKENS
+        assert get_llm_port("experiment_plan") is research
+        assert get_llm_port("related_work") is research
+        assert get_llm_port("idea_interpretation") is research
     finally:
         get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "adapter",
-    [
-        FakeLlmPort(responses={"structured": '{"value":"fake"}'}),
-        FitWebUiLlmPort(api_key="sk-test", default_model="Qwen3.6-27B"),
-    ],
-)
-async def test_research_llm_adapters_implement_port(
-    adapter: FakeLlmPort | FitWebUiLlmPort,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_research_fake_llm_implements_port() -> None:
+    adapter = FakeLlmPort(responses={"structured": '{"value":"fake"}'})
     assert isinstance(adapter, LlmPort)
-
-    if isinstance(adapter, FitWebUiLlmPort):
-        async def fake_complete(**_kwargs: object) -> str:
-            return '{"value":"live"}'
-
-        monkeypatch.setattr(adapter, "complete", fake_complete)
-        expected = "live"
-    else:
-        expected = "fake"
-
     result = await adapter.complete_structured(
         system="structured",
         prompt="{}",
         schema=_StructuredResult,
     )
-    assert result == _StructuredResult(value=expected)
+    assert result == _StructuredResult(value="fake")
 
 
 @pytest.mark.asyncio
@@ -318,5 +88,5 @@ async def test_fake_spec_llm_implements_port() -> None:
     )
 
     assert claims.cards[0].id == "claim-1"
-    assert experiment.plan.experiments[0].claim.startswith("Claim-level verification")
+    assert experiment.plan.experiments[0].claim.startswith("Claim-level")
     assert feasibility.is_feasible is True

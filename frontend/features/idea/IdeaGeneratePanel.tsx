@@ -27,6 +27,12 @@ const MODE_COPY = {
     action: "Generate Cards",
     pending: "Generating Cards…",
   },
+  cardsRegenerate: {
+    title: "Regenerate Cards",
+    description: "Regenerate Cards from the confirmed interpretation.",
+    action: "Regenerate Cards",
+    pending: "Regenerating Cards…",
+  },
 } as const;
 
 export function isGrillingNode(node: WorkflowNode): boolean {
@@ -40,16 +46,19 @@ export function IdeaGeneratePanel({
   saveBlocked,
   generating,
   error,
+  hasCards = false,
   onGenerate,
 }: {
   mode: "idea" | "recluster" | "cards";
   saveBlocked: boolean;
   generating: boolean;
   error: string | null;
+  hasCards?: boolean;
   onGenerate: (message?: string) => void;
 }) {
   const [message, setMessage] = useState("");
-  const copy = MODE_COPY[mode];
+  const copy =
+    mode === "cards" && hasCards ? MODE_COPY.cardsRegenerate : MODE_COPY[mode];
   const idea = mode === "idea";
   const canSend = !generating && !saveBlocked && (!idea || Boolean(message.trim()));
 

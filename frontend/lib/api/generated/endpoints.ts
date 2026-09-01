@@ -934,11 +934,6 @@ export type patchSessionApiLoopSessionsSessionIdPatchResponse200 = {
   status: 200
 }
 
-export type patchSessionApiLoopSessionsSessionIdPatchResponse409 = {
-  data: OperationalError
-  status: 409
-}
-
 export type patchSessionApiLoopSessionsSessionIdPatchResponse422 = {
   data: HTTPValidationError
   status: 422
@@ -947,7 +942,7 @@ export type patchSessionApiLoopSessionsSessionIdPatchResponse422 = {
 export type patchSessionApiLoopSessionsSessionIdPatchResponseSuccess = (patchSessionApiLoopSessionsSessionIdPatchResponse200) & {
   headers: Headers;
 };
-export type patchSessionApiLoopSessionsSessionIdPatchResponseError = (patchSessionApiLoopSessionsSessionIdPatchResponse409 | patchSessionApiLoopSessionsSessionIdPatchResponse422) & {
+export type patchSessionApiLoopSessionsSessionIdPatchResponseError = (patchSessionApiLoopSessionsSessionIdPatchResponse422) & {
   headers: Headers;
 };
 
@@ -980,7 +975,7 @@ export const patchSessionApiLoopSessionsSessionIdPatch = async (sessionId: strin
 
 
 
-export const getPatchSessionApiLoopSessionsSessionIdPatchMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+export const getPatchSessionApiLoopSessionsSessionIdPatchMutationOptions = <TError = ErrorType<HTTPValidationError>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchSessionApiLoopSessionsSessionIdPatch>>, TError,{sessionId: string;data: BodyType<PatchSessionRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
 ): UseMutationOptions<Awaited<ReturnType<typeof patchSessionApiLoopSessionsSessionIdPatch>>, TError,{sessionId: string;data: BodyType<PatchSessionRequest>}, TContext> => {
 
@@ -1009,12 +1004,12 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
     export type PatchSessionApiLoopSessionsSessionIdPatchMutationResult = NonNullable<Awaited<ReturnType<typeof patchSessionApiLoopSessionsSessionIdPatch>>>
     export type PatchSessionApiLoopSessionsSessionIdPatchMutationBody = BodyType<PatchSessionRequest>
-    export type PatchSessionApiLoopSessionsSessionIdPatchMutationError = ErrorType<OperationalError | HTTPValidationError>
+    export type PatchSessionApiLoopSessionsSessionIdPatchMutationError = ErrorType<HTTPValidationError>
 
     /**
  * @summary Patch Session
  */
-export const usePatchSessionApiLoopSessionsSessionIdPatch = <TError = ErrorType<OperationalError | HTTPValidationError>,
+export const usePatchSessionApiLoopSessionsSessionIdPatch = <TError = ErrorType<HTTPValidationError>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof patchSessionApiLoopSessionsSessionIdPatch>>, TError,{sessionId: string;data: BodyType<PatchSessionRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
  , queryClient?: QueryClient): UseMutationResult<
         Awaited<ReturnType<typeof patchSessionApiLoopSessionsSessionIdPatch>>,

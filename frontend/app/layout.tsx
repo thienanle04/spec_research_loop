@@ -1,26 +1,26 @@
 import type { Metadata } from "next";
-import { Atkinson_Hyperlegible, Crimson_Pro, EB_Garamond } from "next/font/google";
+import { Be_Vietnam_Pro, Crimson_Pro, EB_Garamond } from "next/font/google";
 
 import { AppHeader } from "@/components/app-header";
 
 import { AppProviders } from "./providers";
 import "./globals.css";
 
-const atkinson = Atkinson_Hyperlegible({
-  subsets: ["latin"],
-  weight: ["400", "700"],
-  variable: "--font-atkinson",
+const beVietnam = Be_Vietnam_Pro({
+  subsets: ["latin", "latin-ext", "vietnamese"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-be-vietnam",
   display: "swap",
 });
 
 const crimson = Crimson_Pro({
-  subsets: ["latin"],
+  subsets: ["latin", "latin-ext", "vietnamese"],
   variable: "--font-crimson",
   display: "swap",
 });
 
 const garamond = EB_Garamond({
-  subsets: ["latin"],
+  subsets: ["latin", "latin-ext", "vietnamese"],
   variable: "--font-garamond",
   display: "swap",
 });
@@ -37,7 +37,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${atkinson.variable} ${crimson.variable} ${garamond.variable}`}>
+    <html lang="en" className={`${beVietnam.variable} ${crimson.variable} ${garamond.variable}`}>
       <body suppressHydrationWarning className="min-h-svh font-sans antialiased">
         <AppProviders>
           <AppHeader />

@@ -29,13 +29,13 @@ Do **not** use a portfolio/masonry layout. Verified product matches:
 
 ## Typography (overrides Master serif-on-serif)
 
-Master’s EB Garamond / Crimson Text pairing is for archives, not a dense app. For UI chrome and body:
+Master’s archive serif pairing is not a dense app. Atkinson Hyperlegible has no Vietnamese subset, so UI copy fell back to mixed system glyphs. For UI chrome and body:
 
 | Role | Font | Why |
 |------|------|-----|
-| UI / body | Atkinson Hyperlegible | Verified Academic/Research pairing; accessible at density 8 |
-| Spec headings / quotes | Crimson Pro | Scholarly without slowing the workbench |
-| Spec Artifact export | EB Garamond | Keep Master serif only on exported Research Spec |
+| UI / body | Be Vietnam Pro (Noto Sans fallback) | Designed for Vietnamese diacritics; latin-ext + vietnamese subsets |
+| Spec headings / quotes | Crimson Pro | Scholarly without slowing the workbench; load vietnamese subset |
+| Spec Artifact export | EB Garamond | Keep Master serif only on exported Research Spec; load vietnamese subset |
 
 Swiss Modernism still applies: 12-column grid, 8px base, one accent, no decoration.
 

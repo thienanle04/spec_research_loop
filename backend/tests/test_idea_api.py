@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import pytest
@@ -230,7 +230,7 @@ async def test_second_generate_conflicts_when_in_flight(client: AsyncClient) -> 
     class SlowLlm:
         calls: list = []
 
-        async def stream(self, *, system: str, prompt: str, model: str | None = None) -> AsyncIterator[str]:
+        async def stream(self, *, system: str, prompt: str, model: str | None = None) -> AsyncGenerator[str, None]:
             self.calls.append((system, prompt, model))
             started.set()
             await release.wait()
