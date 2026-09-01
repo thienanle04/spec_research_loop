@@ -699,13 +699,15 @@ class LoopService:
                 session.working_draft_node = WorkflowNode.IDEA_DECOMPOSITION.value
                 session.working_draft_narrative = {}
 
-            if node is WorkflowNode.FEASIBILITY:
-                document = await self._assemble_spec(session, heads)
-                spec = SpecVersion(session_id=session.id, document=document)
-                session.spec_versions.append(spec)
-                await self._db.flush()
-                session.produced_spec_version_id = spec.id
-                session.valid_spec_version_id = spec.id
+        if node is WorkflowNode.FEASIBILITY and (
+            minted or session.valid_spec_version_id is None
+        ):
+            document = await self._assemble_spec(session, heads)
+            spec = SpecVersion(session_id=session.id, document=document)
+            session.spec_versions.append(spec)
+            await self._db.flush()
+            session.produced_spec_version_id = spec.id
+            session.valid_spec_version_id = spec.id
 
         await self._db.commit()
         return await self.get_session(session_id=session_id, account_id=account_id)

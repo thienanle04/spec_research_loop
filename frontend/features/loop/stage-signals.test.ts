@@ -8,10 +8,9 @@ import {
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
-  isInvalidationSubjectDismissed,
+  invalidationBannerNodeSubject,
   needsStaleReaccept,
   shouldAutoPrepare,
-  shouldDimStaleContent,
   specInvalidationInView,
   staleInvalidationStages,
   withGeneratedSincePrepare,
@@ -607,16 +606,27 @@ describe("Stale re-accept flag", () => {
     expect(needsStaleReaccept(marked)).toBe(false);
   });
 
-  it("dims only when re-accept is needed and the invalidation banner is visible", () => {
-    const stale = heads({ [WorkflowNode.contribution]: NodeHeadStatus.stale }).find(
-      (item) => item.node === WorkflowNode.contribution,
-    );
-    expect(shouldDimStaleContent(stale, true)).toBe(true);
-    expect(shouldDimStaleContent(stale, false)).toBe(false);
-    expect(shouldDimStaleContent({ ...stale!, generated_since_prepare: true }, true)).toBe(false);
+  it("hides the node invalidation subject after generate even while the Node Head is Stale", () => {
+    const stale = heads({
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+    }).find((head) => head.node === WorkflowNode.idea_decomposition);
+    expect(
+      invalidationBannerNodeSubject({
+        selectedStage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        viewedHead: stale,
+      }),
+    ).toBe(WorkflowNode.idea_decomposition);
+    expect(
+      invalidationBannerNodeSubject({
+        selectedStage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        viewedHead: { ...stale!, generated_since_prepare: true },
+      }),
+    ).toBeNull();
   });
 
-  it("tracks Spec Draft invalidation in view and per-subject dismiss against the wave key", () => {
+  it("tracks Spec Draft invalidation in the current view", () => {
     expect(
       specInvalidationInView({
         selectedNode: WorkflowNode.idea_decomposition,
@@ -641,23 +651,27 @@ describe("Stale re-accept flag", () => {
         specVersionStale: true,
       }),
     ).toBe(true);
+  });
 
-    const wave = "idea_decomposition|spec:1";
+  it("does not use Aggregator as the Independent judges invalidation subject", () => {
+    const viewedHead = heads({
+      [WorkflowNode.aggregator]: NodeHeadStatus.stale,
+    }).find((head) => head.node === WorkflowNode.aggregator);
     expect(
-      isInvalidationSubjectDismissed(WorkflowNode.idea_decomposition, wave, {
-        [WorkflowNode.idea_decomposition]: wave,
+      invalidationBannerNodeSubject({
+        selectedStage: LoopStage.independent_judges,
+        selectedNode: WorkflowNode.aggregator,
+        viewedHead,
       }),
-    ).toBe(true);
+    ).toBeNull();
     expect(
-      isInvalidationSubjectDismissed(WorkflowNode.idea_interpretation, wave, {
-        [WorkflowNode.idea_decomposition]: wave,
+      invalidationBannerNodeSubject({
+        selectedStage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        viewedHead: heads({
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+        }).find((head) => head.node === WorkflowNode.idea_decomposition),
       }),
-    ).toBe(false);
-    expect(
-      isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: wave }),
-    ).toBe(true);
-    expect(
-      isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: "other-wave" }),
-    ).toBe(false);
+    ).toBe(WorkflowNode.idea_decomposition);
   });
 });

@@ -340,10 +340,66 @@ async def test_gap_judge_floors_llm_minor_unsupported_gap_to_critical(
     )
 
 
+@pytest.mark.asyncio
+async def test_hash_match_feasibility_confirm_restores_valid_spec(
+    client: AsyncClient,
+) -> None:
+    """After upstream invalidation, hash-matching Confirm of feasibility must
+    restore a Valid Spec Version. Live Spec Draft is stuck without it:
+    Produced exists, valid_spec_version_id is null, Continue is disabled.
+    """
+    await _auth_client(client)
+    minted = await _mint_valid_spec(client)
+    session_id = minted["id"]
+    produced_id = minted["produced_spec_version"]["id"]
+    assert minted["valid_spec_version_id"] == produced_id
+
+    reopened = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=minted["version"],
+        node="experiment_plan",
+    )
+    assert reopened.status_code == 200, reopened.text
+    narrative = dict(reopened.json()["working_draft_narrative"])
+    narrative["text"] = f"{narrative.get('text') or ''} (tweaked after mint)"
+    patched = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=reopened.json()["version"],
+        narrative=narrative,
+    )
+    assert patched.status_code == 200, patched.text
+    changed = await _confirm(
+        client, session_id, "experiment_plan", patched.json()["version"]
+    )
+    assert changed["valid_spec_version_id"] is None
+    assert _head(changed, "feasibility")["status"] == "stale"
+    assert changed["produced_spec_version"]["id"] == produced_id
+
+    prepared = await _prepare(
+        client, session_id, "experiment_planning", changed["version"]
+    )
+    assert prepared["working_draft_node"] == "feasibility"
+    assert _head(prepared, "feasibility")["status"] == "stale"
+
+    reconfirmed = await _confirm(
+        client,
+        session_id,
+        "feasibility",
+        prepared["version"],
+        stale_reaccept=True,
+    )
+    assert _head(reconfirmed, "feasibility")["status"] == "current"
+    assert reconfirmed["produced_spec_version"] is not None
+    assert reconfirmed["valid_spec_version_id"] == reconfirmed["produced_spec_version"]["id"]
+
+
 async def _session(client: AsyncClient, session_id: str) -> dict:
     response = await client.get(f"/api/loop/sessions/{session_id}")
     assert response.status_code == 200, response.text
     return response.json()
+
 
 
 async def _decisions(client: AsyncClient, session_id: str) -> list[dict]:
