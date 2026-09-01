@@ -33,7 +33,7 @@ import {
   ContributionStageContainer,
   ResearchStageContainer,
 } from "@/features/research";
-import { isJudgeNode, JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
+import { JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
 import { ClaimsStageContainer } from "@/features/spec/ClaimsStageContainer";
 import { EvidenceStageContainer } from "@/features/spec/EvidenceStageContainer";
 import { ExperimentPlanStageContainer } from "@/features/spec/ExperimentPlanStageContainer";
@@ -45,11 +45,13 @@ import {
   adjacentStop,
   ancestors,
   catalogStage,
+  isIndependentJudgeNode,
   railStop,
   resolveSelectedNode,
   resolveSelectedStage,
   sessionHref,
   stageForWorkflowNode,
+  stagePathNodes,
   workingDraftStop,
   type NavStop,
 } from "./catalog";
@@ -67,11 +69,9 @@ import {
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
-  invalidationWaveKey,
-  isInvalidationSubjectDismissed,
+  invalidationBannerNodeSubject,
   needsStaleReaccept,
   shouldAutoPrepare,
-  shouldDimStaleContent,
   specInvalidationInView,
   staleInvalidationStages,
   type CompletionSignal,
@@ -262,8 +262,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const [generateRequestId, setGenerateRequestId] = useState(0);
   const [generateRequestNode, setGenerateRequestNode] = useState<WorkflowNode | null>(null);
-  /** subject → waveKey dismissed for; cleared implicitly when waveKey changes. */
-  const [dismissedBySubject, setDismissedBySubject] = useState<Record<string, string>>({});
 
   const queriedSession = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
   const session = newerSession(queriedSession, appliedSession);
@@ -322,12 +320,16 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!session || !selectedStage) return;
+    const canonicalStop =
+      selectedStage === LoopStage.independent_judges
+        ? { stage: selectedStage }
+        : { stage: selectedStage, node: selectedNode };
     const stageMatches = searchParams.get("stage") === selectedStage;
-    const nodeMatches = selectedNode
-      ? searchParams.get("node") === selectedNode
+    const nodeMatches = canonicalStop.node
+      ? searchParams.get("node") === canonicalStop.node
       : !searchParams.get("node");
     if (stageMatches && nodeMatches) return;
-    router.replace(sessionHref(sessionId, { stage: selectedStage, node: selectedNode }), {
+    router.replace(sessionHref(sessionId, canonicalStop), {
       scroll: false,
     });
   }, [router, searchParams, selectedNode, selectedStage, session, sessionId]);
@@ -421,7 +423,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     viewingWorkingDraft && workingDraftNode === WorkflowNode.experiment_plan;
   const editingFeasibilityDraft =
     viewingWorkingDraft && workingDraftNode === WorkflowNode.feasibility;
-  const editingJudgementDraft = viewingWorkingDraft && isJudgeNode(workingDraftNode);
+  const editingJudgementDraft = selectedStage === LoopStage.independent_judges;
   const editingStructuredDraft =
     editingResearchDraft ||
     editingContributionDraft ||
@@ -439,8 +441,17 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const draftConfirmable = editingStructuredDraft
     ? researchConfirmable
     : hasConfirmableWorkingDraft(session);
+  const workingDraftIsJudgeHead = isIndependentJudgeNode(workingDraftNode);
+  const specDraftNeedsFeasibilityConfirm =
+    selectedStage === LoopStage.spec_draft &&
+    workingDraftNode === WorkflowNode.feasibility &&
+    !isValidSpecVersion(session);
   const showConfirm =
-    viewingWorkingDraft && selected.nodes.length > 0 && draftConfirmable;
+    specDraftNeedsFeasibilityConfirm ||
+    (viewingWorkingDraft &&
+      selected.nodes.length > 0 &&
+      draftConfirmable &&
+      !workingDraftIsJudgeHead);
   const confirmDisabled =
     generating ||
     grillEditing ||
@@ -449,7 +460,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     status === "failed" ||
     status === "conflict" ||
     researchRunning ||
-    !draftConfirmable;
+    (!draftConfirmable && !specDraftNeedsFeasibilityConfirm);
   const stageAvailable = incompleteUpstreamNodes({
     stage: selectedStage,
     nodeHeads: session.node_heads,
@@ -458,31 +469,23 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     ? session.node_heads.find((head) => head.node === selectedNode)
     : undefined;
   const workingDraftHead = session.node_heads.find((head) => head.node === workingDraftNode);
-  const waveKey = invalidationWaveKey(session);
   const viewedNodeStale = viewedHead?.status === NodeHeadStatus.stale;
   const specVersionStale =
     session.produced_spec_version != null &&
     session.valid_spec_version_id !== session.produced_spec_version.id;
-  const nodeBannerSubject =
-    viewedNodeStale && selectedNode != null ? selectedNode : null;
-  const specBannerInView = specInvalidationInView({
+  const nodeBannerSubject = invalidationBannerNodeSubject({
+    selectedStage,
+    selectedNode,
+    viewedHead,
+  });
+  const showNodeInvalidationLine = nodeBannerSubject != null;
+  const showSpecInvalidationLine = specInvalidationInView({
     selectedNode,
     selectedStage,
     viewedNodeStale,
     specVersionStale,
   });
-  const showNodeInvalidationLine =
-    nodeBannerSubject != null &&
-    !isInvalidationSubjectDismissed(nodeBannerSubject, waveKey, dismissedBySubject);
-  const showSpecInvalidationLine =
-    specBannerInView &&
-    !isInvalidationSubjectDismissed("spec_draft", waveKey, dismissedBySubject);
-  const showInvalidationBanner =
-    waveKey !== "" && (showNodeInvalidationLine || showSpecInvalidationLine);
-  const dimStaleContent = shouldDimStaleContent(
-    viewingWorkingDraft ? workingDraftHead : viewedHead,
-    showInvalidationBanner,
-  );
+  const showInvalidationBanner = showNodeInvalidationLine || showSpecInvalidationLine;
   const confirmNeedsReaccept = needsStaleReaccept(workingDraftHead);
   const stagedGenerateRequestId =
     generateRequestNode === workingDraftNode ? generateRequestId : 0;
@@ -678,7 +681,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           emptyTabLabel={
             selectedStage === LoopStage.spec_draft ? selected.name : undefined
           }
-          nodes={selected.nodes}
+          nodes={stagePathNodes(selectedStage)}
           nodeHeads={session.node_heads}
           viewedNode={selectedNode}
           previous={previousStop}
@@ -686,10 +689,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           onBrowse={browseTo}
         />
         {showInvalidationBanner ? (
-          <div
-            role="status"
-            className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-pending bg-card p-3"
-          >
+          <div role="status" className="rounded-md border border-pending bg-card p-3">
             <div className="grid gap-1 text-sm text-pending">
               {showNodeInvalidationLine && nodeBannerSubject ? (
                 <p>
@@ -703,26 +703,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 <p>Spec Draft has no Valid Spec Version after upstream invalidation.</p>
               ) : null}
             </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="shrink-0 text-pending hover:bg-pending/10 hover:text-pending"
-              onClick={() =>
-                setDismissedBySubject((prev) => {
-                  const next = { ...prev };
-                  if (nodeBannerSubject) {
-                    next[nodeBannerSubject] = waveKey;
-                  }
-                  if (specBannerInView) {
-                    next.spec_draft = waveKey;
-                  }
-                  return next;
-                })
-              }
-            >
-              Dismiss
-            </Button>
           </div>
         ) : null}
         {transitionError ? (
@@ -748,7 +728,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           </div>
         ) : null}
         {viewingWorkingDraft ? (
-          <div className={cn(dimStaleContent && "opacity-50")}>
+          <>
             <SuggestedPatchNotice
               narrative={session.working_draft_narrative as Record<string, unknown>}
             />
@@ -823,7 +803,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
-                generateRequestId={stagedGenerateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
                 onPicked={(next) => {
@@ -841,14 +820,13 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 <WorkingDraftCardCanvas locked={generating} sessionId={sessionId} />
               </>
             )}
-          </div>
+          </>
         ) : selectedNode ? (
           <HeadRevisionView
             node={selectedNode}
             status={viewedHead?.status ?? NodeHeadStatus.empty}
             revision={viewedHead?.head_revision ?? null}
             available={stageAvailable}
-            dimmed={dimStaleContent}
             upstreamNames={incompleteUpstreamNodes({
               stage: selectedStage,
               nodeHeads: session.node_heads,
@@ -915,9 +893,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               refresh it from upstream, or Confirm anyway as a Stale re-accept.
             </p>
             <div className="mt-4 grid gap-2">
-              <Button type="button" disabled={confirmDisabled} onClick={confirmDialogGenerate}>
-                Generate
-              </Button>
+              {editingJudgementDraft ? null : (
+                <Button type="button" disabled={confirmDisabled} onClick={confirmDialogGenerate}>
+                  Generate
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"

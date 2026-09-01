@@ -114,6 +114,22 @@ vi.mock("@/features/judgement", () => ({
   ),
 }));
 
+vi.mock("@/features/spec/FeasibilityStageContainer", () => ({
+  FeasibilityStageContainer: ({
+    onRunningChange,
+    onConfirmabilityChange,
+  }: {
+    onRunningChange?: (running: boolean) => void;
+    onConfirmabilityChange?: (confirmable: boolean) => void;
+  }) => {
+    React.useEffect(() => {
+      onRunningChange?.(false);
+      onConfirmabilityChange?.(true);
+    }, [onConfirmabilityChange, onRunningChange]);
+    return <p>Feasibility report</p>;
+  },
+}));
+
 vi.mock("@/features/research", () => ({
   ResearchStageContainer: ({
     sessionId,
@@ -472,7 +488,7 @@ describe("LoopSessionWorkbench", () => {
       data: { stage: LoopStage.independent_judges, expected_version: 20 },
     });
     expect(replace).toHaveBeenCalledWith(
-      path(LoopStage.independent_judges, WorkflowNode.gap_judge),
+      path(LoopStage.independent_judges),
       { scroll: false },
     );
   });
@@ -507,7 +523,188 @@ describe("LoopSessionWorkbench", () => {
     render(<LoopSessionWorkbench sessionId="session-1" />);
     expect(await screen.findByText("Gap Judge Issues for session-1")).toBeInTheDocument();
     expect(screen.queryByText("Working Draft narrative editor for session-1")).not.toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Confirm" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Workflow Nodes" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer Confirm for a Judge on Independent judges", () => {
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.gap_judge,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.current,
+            [WorkflowNode.claims]: NodeHeadStatus.current,
+            [WorkflowNode.evidence]: NodeHeadStatus.current,
+            [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+            [WorkflowNode.feasibility]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
+  it("continues to Readiness after Confirm Aggregator", async () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+      [WorkflowNode.feasibility]: NodeHeadStatus.current,
+      [WorkflowNode.gap_judge]: NodeHeadStatus.current,
+      [WorkflowNode.contribution_judge]: NodeHeadStatus.current,
+      [WorkflowNode.evidence_judge]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_judge]: NodeHeadStatus.current,
+      [WorkflowNode.conference_judge]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 40,
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads({
+            ...upstreamCurrent,
+            [WorkflowNode.aggregator]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 41,
+      working_draft_node: WorkflowNode.aggregator,
+      node_heads: heads({
+        ...upstreamCurrent,
+        [WorkflowNode.aggregator]: NodeHeadStatus.current,
+      }),
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(confirmMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { node: WorkflowNode.aggregator, expected_version: 40 },
+    });
+    expect(replace).toHaveBeenCalledWith(path(LoopStage.readiness), { scroll: false });
+  });
+
+  it("does not offer Generate on the Independent judges Stale dialog", async () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+      [WorkflowNode.feasibility]: NodeHeadStatus.current,
+      [WorkflowNode.gap_judge]: NodeHeadStatus.current,
+      [WorkflowNode.contribution_judge]: NodeHeadStatus.current,
+      [WorkflowNode.evidence_judge]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_judge]: NodeHeadStatus.current,
+      [WorkflowNode.conference_judge]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads({
+            ...upstreamCurrent,
+            [WorkflowNode.aggregator]: NodeHeadStatus.stale,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    confirmHook.mockReturnValue({ mutateAsync: vi.fn(), error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    const dialog = screen.getByRole("dialog", { name: "Stale Workflow Node" });
+    expect(within(dialog).queryByRole("button", { name: "Generate" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Confirm anyway" })).toBeInTheDocument();
+  });
+
+  it("does not show Aggregator invalidation banner after run pending leaves Aggregator Stale", () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+      [WorkflowNode.feasibility]: NodeHeadStatus.current,
+      [WorkflowNode.gap_judge]: NodeHeadStatus.current,
+      [WorkflowNode.contribution_judge]: NodeHeadStatus.current,
+      [WorkflowNode.evidence_judge]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_judge]: NodeHeadStatus.current,
+      [WorkflowNode.conference_judge]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads({
+            ...upstreamCurrent,
+            [WorkflowNode.aggregator]: NodeHeadStatus.stale,
+          }).map((head) =>
+            head.node === WorkflowNode.aggregator
+              ? {
+                  ...head,
+                  generated_since_prepare: true,
+                  stage_revision_id: "rev-aggregator",
+                }
+              : head,
+          ),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(
+      screen.queryAllByRole("status").some((el) =>
+        (el.textContent ?? "").includes("Aggregator is Stale"),
+      ),
+    ).toBe(false);
   });
 
   it("shows Gap, Contribution, and Spec Draft on the Loop Stage rail", () => {
@@ -598,17 +795,6 @@ describe("LoopSessionWorkbench", () => {
         stage: LoopStage.contribution,
         labels: ["Contribution direction"],
       },
-      {
-        stage: LoopStage.independent_judges,
-        labels: [
-          "Gap Judge",
-          "Contribution Judge",
-          "Evidence Judge",
-          "Experiment Judge",
-          "Conference Judge",
-          "Aggregator",
-        ],
-      },
     ];
 
     for (const { stage, labels } of stages) {
@@ -620,6 +806,49 @@ describe("LoopSessionWorkbench", () => {
       );
       view.unmount();
     }
+  });
+
+  it("does not expose six Independent judges Workflow Node sub-tabs", () => {
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.queryByRole("tablist", { name: "Workflow Nodes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Gap Judge/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Aggregator/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Stage path" })).toBeInTheDocument();
+  });
+
+  it("does not resurrect Independent judges tab navigation from a Judge node query", async () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.independent_judges}&node=${WorkflowNode.gap_judge}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.aggregator,
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+            [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+            [WorkflowNode.related_work]: NodeHeadStatus.current,
+            [WorkflowNode.gap]: NodeHeadStatus.current,
+            [WorkflowNode.contribution]: NodeHeadStatus.current,
+            [WorkflowNode.claims]: NodeHeadStatus.current,
+            [WorkflowNode.evidence]: NodeHeadStatus.current,
+            [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+            [WorkflowNode.feasibility]: NodeHeadStatus.current,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(await screen.findByText("Gap Judge Issues for session-1")).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Workflow Nodes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Gap Judge/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Working Draft narrative editor for session-1")).not.toBeInTheDocument();
   });
 
   it("shows a Spec Draft tab on the stage path and no Workflow Node tabs on Readiness", () => {
@@ -919,6 +1148,77 @@ describe("LoopSessionWorkbench", () => {
     );
   });
 
+  it("applies the minted Produced Spec Version and opens Spec Draft after confirming feasibility", async () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(
+      `stage=${LoopStage.experiment_planning}&node=${WorkflowNode.feasibility}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 30,
+          working_draft_node: WorkflowNode.feasibility,
+          node_heads: heads({
+            ...upstreamCurrent,
+            [WorkflowNode.feasibility]: NodeHeadStatus.empty,
+          }),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 31,
+      working_draft_node: WorkflowNode.feasibility,
+      node_heads: heads({
+        ...upstreamCurrent,
+        [WorkflowNode.feasibility]: NodeHeadStatus.current,
+      }),
+      produced_spec_version: {
+        id: "spec-new",
+        created_at: "2026-08-31T12:00:00Z",
+        document: {
+          nodes: {
+            feasibility: {
+              narrative: { text: "Plan is feasible" },
+              card_snapshot: [],
+            },
+          },
+        },
+      },
+      valid_spec_version_id: "spec-new",
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(setQueryData).toHaveBeenCalledWith(
+      ["/sessions/session-1"],
+      expect.objectContaining({
+        status: 200,
+        data: expect.objectContaining({
+          produced_spec_version: expect.objectContaining({ id: "spec-new" }),
+          valid_spec_version_id: "spec-new",
+        }),
+      }),
+    );
+    expect(replace).toHaveBeenCalledWith(path(LoopStage.spec_draft), { scroll: false });
+  });
+
   it("collapses to Stage Revision view after Confirm when there is nowhere to advance", async () => {
     search = new URLSearchParams(
       `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
@@ -1103,6 +1403,67 @@ describe("LoopSessionWorkbench", () => {
     rerender(<LoopSessionWorkbench sessionId="session-1" />);
     expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Edit / })).not.toBeInTheDocument();
+  });
+
+  it("offers Confirm on Spec Draft when feasibility is current but Spec Version is not Valid", async () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+      [WorkflowNode.feasibility]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    const mutateAsync = vi.fn().mockResolvedValue({
+      status: 200,
+      data: session({
+        version: 2,
+        working_draft_node: WorkflowNode.feasibility,
+        node_heads: heads(upstreamCurrent),
+        produced_spec_version: {
+          id: "spec-new",
+          document: {},
+          created_at: "2026-09-01T12:00:00Z",
+        },
+        valid_spec_version_id: "spec-new",
+      }),
+    });
+    confirmHook.mockReturnValue({ mutateAsync, error: null });
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.feasibility,
+          node_heads: heads(upstreamCurrent),
+          produced_spec_version: {
+            id: "spec-old",
+            document: {},
+            created_at: "2026-08-16T12:00:00Z",
+          },
+          valid_spec_version_id: null,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          node: WorkflowNode.feasibility,
+        }),
+      }),
+    );
   });
 
   it("does not auto-prepare Grilling while the Working Draft is unconfirmed", () => {
@@ -1962,7 +2323,7 @@ describe("LoopSessionWorkbench", () => {
     );
   });
 
-  it("keeps invalidation banner on another Stale node after Dismiss, and undims after Dismiss", async () => {
+  it("shows each Stale node's banner when opened and has no Dismiss", async () => {
     search = new URLSearchParams(
       `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_interpretation}`,
     );
@@ -1995,15 +2356,7 @@ describe("LoopSessionWorkbench", () => {
         (el.textContent ?? "").includes("Idea interpretation is Stale"),
       ),
     ).toBe(true);
-    expect(document.querySelector(".opacity-50")).toBeTruthy();
-
-    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(
-      screen.queryAllByRole("status").some((el) =>
-        (el.textContent ?? "").includes("Idea interpretation is Stale"),
-      ),
-    ).toBe(false);
-    expect(document.querySelector(".opacity-50")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
 
     search = new URLSearchParams(
       `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
@@ -2037,10 +2390,10 @@ describe("LoopSessionWorkbench", () => {
         (el.textContent ?? "").includes("Idea decomposition is Stale"),
       ),
     ).toBe(true);
-    expect(document.querySelector(".opacity-50")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
   });
 
-  it("dismisses Spec Draft invalidation independently of a Workflow Node", async () => {
+  it("keeps Spec Draft invalidation visible next to a Stale Workflow Node", async () => {
     search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
     const nodeHeads = heads({
       [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
@@ -2084,18 +2437,64 @@ describe("LoopSessionWorkbench", () => {
       "Spec Draft has no Valid Spec Version",
     );
     expect(screen.getByRole("status")).not.toHaveTextContent("Idea decomposition is Stale");
-
-    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
 
     search = new URLSearchParams(
       `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
     );
     view.rerender(<LoopSessionWorkbench sessionId="session-1" />);
     expect(screen.getByRole("status")).toHaveTextContent("Idea decomposition is Stale");
-    expect(screen.getByRole("status")).not.toHaveTextContent(
+    expect(screen.getByRole("status")).toHaveTextContent(
       "Spec Draft has no Valid Spec Version",
     );
+  });
+
+  it("hides the node invalidation line after generate while Spec Draft stays Stale", () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          working_draft_node: WorkflowNode.idea_decomposition,
+          working_draft_narrative: { text: "regenerated cards" },
+          cards: [
+            {
+              id: "card-1",
+              kind: CardKind.problem,
+              body: { text: "accuracy" },
+              created_at: "2026-08-15T10:00:00Z",
+              updated_at: "2026-08-15T10:00:00Z",
+            },
+          ],
+          node_heads: heads({
+            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+            [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+          }).map((head) =>
+            head.node === WorkflowNode.idea_decomposition
+              ? { ...head, generated_since_prepare: true }
+              : head,
+          ),
+          produced_spec_version: {
+            id: "spec-1",
+            document: {},
+            created_at: "2026-08-16T10:00:00Z",
+          },
+          valid_spec_version_id: null,
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Spec Draft has no Valid Spec Version",
+    );
+    expect(screen.getByRole("status")).not.toHaveTextContent("Idea decomposition is Stale");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
   });
 
   it("prepares the rest of the Loop Stage after Confirm when the next Workflow Node is empty", async () => {
