@@ -652,7 +652,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   stage: stage.id,
                   nodeHeads: session.node_heads,
                   workingDraftNode: session.working_draft_node,
-                  readinessState: session.readiness?.state,
+                  readinessState: session.readiness?.state as
+                    | "not_evaluated"
+                    | "blocked"
+                    | "ready"
+                    | undefined,
                 });
                 const Icon = LOOP_STAGE_ICONS[stage.id];
                 const active = stage.id === selectedStage;

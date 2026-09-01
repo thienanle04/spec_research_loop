@@ -5,8 +5,8 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface ResearchGenerateRequest {
+export interface JudgementGenerateRequest {
   /** @minimum 1 */
   expected_version: number;
-  max_results?: number | null;
+  stale_reaccept?: boolean;
 }

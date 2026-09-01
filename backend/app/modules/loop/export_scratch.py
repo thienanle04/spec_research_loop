@@ -37,6 +37,28 @@ PAPER_SECTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+def clarification_review_from_spec(spec_document: dict[str, Any] | None) -> dict[str, Any]:
+    nodes = _dict(spec_document).get("nodes")
+    nodes = nodes if isinstance(nodes, dict) else {}
+    cards = _all_cards(nodes)
+    original_idea = ""
+    turns = _list(_dict(_dict(nodes.get("idea_interpretation")).get("narrative")).get("turns"))
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        if turn.get("role") == "account" and turn.get("kind") == "idea":
+            text = turn.get("text")
+            if isinstance(text, str):
+                original_idea = text
+            break
+    return {
+        "original_idea": original_idea,
+        "gap": _card_texts(cards, "gap"),
+        "contribution": _card_texts(cards, "contribution"),
+        "claims": _card_text_list(cards, "claim"),
+    }
+
+
 def project_paper_document(spec_document: dict[str, Any] | None) -> dict[str, Any]:
     nodes = _dict(spec_document).get("nodes")
     nodes = nodes if isinstance(nodes, dict) else {}
@@ -92,7 +114,7 @@ def _card_text(item: dict[str, Any]) -> str:
     return ""
 
 
-def _card_texts(cards: list[dict[str, Any]], kind: str) -> str:
+def _card_text_list(cards: list[dict[str, Any]], kind: str) -> list[str]:
     seen: set[str] = set()
     texts: list[str] = []
     for item in cards:
@@ -103,7 +125,11 @@ def _card_texts(cards: list[dict[str, Any]], kind: str) -> str:
             continue
         seen.add(text)
         texts.append(text)
-    return "\n\n".join(texts)
+    return texts
+
+
+def _card_texts(cards: list[dict[str, Any]], kind: str) -> str:
+    return "\n\n".join(_card_text_list(cards, kind))
 
 
 def _related_work_body(nodes: dict[str, Any]) -> str:

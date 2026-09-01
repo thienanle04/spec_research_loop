@@ -32,7 +32,8 @@ export function ReadinessStageView({
 }) {
   const queryClient = useQueryClient();
   const readiness = session.readiness;
-  const state: ReadinessState = readiness?.state ?? "not_evaluated";
+  const state: ReadinessState =
+    (readiness?.state as ReadinessState | undefined) ?? "not_evaluated";
   const notice = readiness?.notice ?? "This is not conference acceptance.";
   const scores = (readiness?.scores ?? null) as ConferenceScores | null;
   const [exportError, setExportError] = useState<string | null>(null);
@@ -44,10 +45,17 @@ export function ReadinessStageView({
   const [expectedVersion, setExpectedVersion] = useState(session.version);
   const [scratchError, setScratchError] = useState<string | null>(null);
   const [scratchOk, setScratchOk] = useState(false);
+  const specVersions = session.spec_versions ?? [];
+  const [selectedSpecId, setSelectedSpecId] = useState(
+    session.valid_spec_version_id ?? specVersions[0]?.id ?? "",
+  );
+  const [viewed, setViewed] = useState(session);
 
   useEffect(() => {
     setSections(session.export_scratch?.document.sections ?? []);
     setExpectedVersion(session.version);
+    setViewed(session);
+    setSelectedSpecId(session.valid_spec_version_id ?? session.spec_versions?.[0]?.id ?? "");
   }, [session]);
 
   async function exportArtifact(ack: boolean) {
@@ -86,7 +94,7 @@ export function ReadinessStageView({
         {
           expected_version: expectedVersion,
           document: { sections },
-          spec_version_id: session.export_scratch?.spec_version_id,
+          spec_version_id: selectedSpecId || session.export_scratch?.spec_version_id,
         },
       );
       if (response.status === 200) {
@@ -103,6 +111,30 @@ export function ReadinessStageView({
     }
   }
 
+  async function selectSpecVersion(specVersionId: string) {
+    setSelectedSpecId(specVersionId);
+    setScratchError(null);
+    try {
+      const response = await customFetch<{ status: number; data: LoopSessionResponse }>(
+        `/api/loop/sessions/${sessionId}?spec_version_id=${specVersionId}`,
+        { method: "GET" },
+      );
+      if (response.status === 200) {
+        const next = response.data;
+        setViewed(next);
+        setExpectedVersion(next.version);
+        setSections(next.export_scratch?.document.sections ?? []);
+      }
+    } catch (error) {
+      setScratchError(getApiErrorMessage(error));
+    }
+  }
+
+  const selectedValid =
+    specVersions.find((item) => item.id === selectedSpecId)?.valid ??
+    selectedSpecId === session.valid_spec_version_id;
+  const review = viewed.clarification_review ?? session.clarification_review;
+
   return (
     <section aria-label="Readiness overview">
       <Card>
@@ -113,6 +145,53 @@ export function ReadinessStageView({
         <CardContent className="grid gap-4">
           <p className="text-sm font-medium">{STATE_LABEL[state]}</p>
           {scores ? <ConferenceScoreList scores={scores} /> : null}
+          {specVersions.length ? (
+            <label className="grid gap-2 text-sm font-medium">
+              Spec Version
+              <select
+                aria-label="Spec Version"
+                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                value={selectedSpecId}
+                onChange={(event) => void selectSpecVersion(event.target.value)}
+              >
+                {specVersions.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.valid ? "Valid" : "Not Valid"} · {item.created_at}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {!selectedValid && selectedSpecId ? (
+            <p role="status" aria-label="Spec Version not Valid" className="text-sm">
+              This Spec Version is not Valid. Readiness still follows the current Valid Spec
+              Version and Aggregator Report.
+            </p>
+          ) : null}
+          {review ? (
+            <section aria-label="Clarification Review" className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-1">
+                <p className="text-sm font-medium">Original research idea</p>
+                <p className="text-sm text-muted-foreground">{review.original_idea}</p>
+              </div>
+              <div className="grid gap-2">
+                <p className="text-sm font-medium">Confirmed on this Spec Version</p>
+                <p className="text-sm">
+                  <span className="font-medium">Gap. </span>
+                  {review.gap}
+                </p>
+                <p className="text-sm">
+                  <span className="font-medium">Contribution. </span>
+                  {review.contribution}
+                </p>
+                <ul className="list-disc space-y-1 pl-5 text-sm">
+                  {review.claims.map((claim) => (
+                    <li key={claim}>{claim}</li>
+                  ))}
+                </ul>
+              </div>
+            </section>
+          ) : null}
           {sections.length ? (
             <>
               <p role="status" aria-label="Export Scratch overlay" className="text-sm">

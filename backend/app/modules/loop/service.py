@@ -31,7 +31,11 @@ from app.modules.loop.catalog import (
     upstream_of_stage,
 )
 from app.modules.loop.deps import get_stage_ports
-from app.modules.loop.export_scratch import PAPER_SECTION_IDS, project_paper_document
+from app.modules.loop.export_scratch import (
+    PAPER_SECTION_IDS,
+    clarification_review_from_spec,
+    project_paper_document,
+)
 from app.modules.loop.interpretation_turns import (
     apply_account_reply_patch,
     interpretation_confirmable,
@@ -51,6 +55,7 @@ from app.modules.loop.schemas import (
     CardBatchMutationResponse,
     CardMutationResponse,
     CardResponse,
+    ClarificationReviewResponse,
     DecisionResponse,
     ExportScratchResponse,
     ExportScratchSnapshotResponse,
@@ -60,6 +65,7 @@ from app.modules.loop.schemas import (
     NodeHeadResponse,
     ReadinessSummary,
     SpecArtifactResponse,
+    SpecVersionListItem,
     SpecVersionResponse,
     StageRevisionResponse,
 )
@@ -1166,16 +1172,6 @@ class LoopService:
         spec_id = session.valid_spec_version_id
         if spec_id is None:
             return
-        existing = next(
-            (
-                row
-                for row in session.export_scratches
-                if row.spec_version_id == spec_id
-            ),
-            None,
-        )
-        if existing is not None:
-            return
         spec = next(
             (item for item in session.spec_versions if item.id == spec_id),
             None,
@@ -1184,21 +1180,25 @@ class LoopService:
             spec = await self._db.get(SpecVersion, spec_id)
         if spec is None:
             return
-        paper = project_paper_document(dict(spec.document))
-        scratch = ExportScratch(
-            session_id=session.id,
-            spec_version_id=spec_id,
-            document=paper,
+        scratch = await self._ensure_export_scratch_buffer(session, spec=spec)
+        if scratch is None:
+            return
+        existing_snapshot = next(
+            (
+                item
+                for item in session.export_scratch_snapshots
+                if item.spec_version_id == spec_id
+            ),
+            None,
         )
-        session.export_scratches.append(scratch)
-        self._db.add(scratch)
-        await self._db.flush()
+        if existing_snapshot is not None:
+            return
         snapshot = ExportScratchSnapshot(
             session_id=session.id,
             export_scratch_id=scratch.id,
             spec_version_id=spec_id,
             snapshot_n=1,
-            document=json.loads(json.dumps(paper)),
+            document=json.loads(json.dumps(scratch.document)),
         )
         session.export_scratch_snapshots.append(snapshot)
         self._db.add(snapshot)
@@ -1230,14 +1230,10 @@ class LoopService:
             session.node_heads, key=lambda head: WORKFLOW_NODES.index(head.node_enum())
         )
         revisions = {rev.id: rev for rev in session.stage_revisions}
-        target_spec_id = spec_version_id or session.valid_spec_version_id
-        scratch = next(
-            (
-                row
-                for row in session.export_scratches
-                if row.spec_version_id == target_spec_id
-            ),
-            None,
+        target_spec = await self._resolve_viewed_spec(session, spec_version_id)
+        target_spec_id = target_spec.id if target_spec is not None else None
+        scratch = await self._ensure_export_scratch_buffer(
+            session, spec=target_spec
         )
         snapshots = [
             row
@@ -1245,6 +1241,7 @@ class LoopService:
             if row.spec_version_id == target_spec_id
         ]
         snapshots.sort(key=lambda row: row.snapshot_n)
+        listed = sorted(session.spec_versions, key=lambda item: item.created_at)
         return LoopSessionResponse(
             id=session.id,
             title=session.title,
@@ -1270,6 +1267,19 @@ class LoopService:
             if produced
             else None,
             valid_spec_version_id=session.valid_spec_version_id,
+            spec_versions=[
+                SpecVersionListItem(
+                    id=item.id,
+                    created_at=item.created_at,
+                    valid=item.id == session.valid_spec_version_id,
+                )
+                for item in listed
+            ],
+            clarification_review=ClarificationReviewResponse.model_validate(
+                clarification_review_from_spec(dict(target_spec.document))
+            )
+            if target_spec is not None
+            else None,
             readiness=await self._readiness(session),
             export_scratch=ExportScratchResponse.model_validate(scratch)
             if scratch
@@ -1280,6 +1290,63 @@ class LoopService:
             created_at=session.created_at,
             updated_at=session.updated_at,
         )
+
+    async def _resolve_viewed_spec(
+        self,
+        session: LoopSession,
+        spec_version_id: UUID | None,
+    ) -> SpecVersion | None:
+        if spec_version_id is None:
+            spec_id = session.valid_spec_version_id
+            if spec_id is None:
+                return None
+            found = next(
+                (item for item in session.spec_versions if item.id == spec_id),
+                None,
+            )
+            if found is not None:
+                return found
+            return await self._db.get(SpecVersion, spec_id)
+        found = next(
+            (item for item in session.spec_versions if item.id == spec_version_id),
+            None,
+        )
+        if found is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Spec Version not found",
+            )
+        return found
+
+    async def _ensure_export_scratch_buffer(
+        self,
+        session: LoopSession,
+        *,
+        spec: SpecVersion | None,
+    ) -> ExportScratch | None:
+        if spec is None:
+            return None
+        existing = next(
+            (
+                row
+                for row in session.export_scratches
+                if row.spec_version_id == spec.id
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        paper = project_paper_document(dict(spec.document))
+        scratch = ExportScratch(
+            session_id=session.id,
+            spec_version_id=spec.id,
+            document=paper,
+        )
+        session.export_scratches.append(scratch)
+        self._db.add(scratch)
+        await self._db.flush()
+        await self._db.commit()
+        return scratch
 
     async def _assemble_spec(
         self,

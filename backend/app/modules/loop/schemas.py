@@ -100,6 +100,19 @@ class SpecVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SpecVersionListItem(BaseModel):
+    id: UUID
+    created_at: datetime
+    valid: bool
+
+
+class ClarificationReviewResponse(BaseModel):
+    original_idea: str
+    gap: str
+    contribution: str
+    claims: list[str]
+
+
 class ReadinessSummary(BaseModel):
     state: str
     notice: str
@@ -182,10 +195,17 @@ class LoopSessionResponse(BaseModel):
     working_draft_narrative: dict[str, Any]
     node_heads: list[NodeHeadResponse]
     cards: list[CardResponse]
-    stage_revisions: list[StageRevisionResponse]
+    stage_revisions: list[StageRevisionResponse] = Field(default_factory=list)
     produced_spec_version: SpecVersionResponse | None
     valid_spec_version_id: UUID | None
-    readiness: ReadinessSummary
+    spec_versions: list[SpecVersionListItem] = Field(default_factory=list)
+    clarification_review: ClarificationReviewResponse | None = None
+    readiness: ReadinessSummary = Field(
+        default_factory=lambda: ReadinessSummary(
+            state="not_evaluated",
+            notice="This is not conference acceptance.",
+        )
+    )
     export_scratch: ExportScratchResponse | None = None
     export_scratch_snapshots: list[ExportScratchSnapshotResponse] = Field(
         default_factory=list

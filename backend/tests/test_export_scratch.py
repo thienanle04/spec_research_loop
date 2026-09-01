@@ -266,7 +266,6 @@ async def test_confirm_aggregator_seeds_thirteen_section_export_scratch(
 ) -> None:
     await _auth_client(client)
     draft = await _prepare_aggregator(client)
-    assert draft.get("export_scratch") in (None, {})
     assert draft.get("export_scratch_snapshots", []) == []
 
     confirmed = await _confirm_aggregator(client, draft)
@@ -400,6 +399,183 @@ async def test_get_session_returns_export_scratch_for_valid_spec_version(
     assert scoped.json()["export_scratch"]["spec_version_id"] == confirmed[
         "valid_spec_version_id"
     ]
+
+
+def _first_idea_text(session: dict) -> str:
+    revisions = [
+        row
+        for row in session["stage_revisions"]
+        if row["node"] == "idea_interpretation"
+    ]
+    revisions.sort(key=lambda row: row["revision_n"])
+    for turn in revisions[0]["narrative"]["turns"]:
+        if turn.get("role") == "account" and turn.get("kind") == "idea":
+            return turn["text"]
+    raise AssertionError("no interpretation idea turn")
+
+
+async def _remint_second_spec(client: AsyncClient, session: dict) -> dict:
+    """Change contribution and remint a second Spec Version without Confirm Aggregator."""
+    session_id = session["id"]
+    contribution = next(
+        card for card in session["cards"] if card["kind"] == "contribution"
+    )
+    reopened = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=session["version"],
+        node="contribution",
+    )
+    assert reopened.status_code == 200, reopened.text
+    patched = await client.patch(
+        f"/api/loop/sessions/{session_id}/cards/{contribution['id']}",
+        json={
+            "body": {"text": "A second contribution for a later Spec Version"},
+            "expected_version": reopened.json()["version"],
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    changed = await _confirm(
+        client, session_id, "contribution", patched.json()["version"]
+    )
+    claims_prepared = await _prepare(
+        client, session_id, "claims_evidence", changed["version"]
+    )
+    claims_confirmed = await _confirm(
+        client,
+        session_id,
+        "claims",
+        claims_prepared["version"],
+        stale_reaccept=True,
+    )
+    evidence_prepared = await _prepare(
+        client, session_id, "claims_evidence", claims_confirmed["version"]
+    )
+    evidence_confirmed = await _confirm(
+        client,
+        session_id,
+        "evidence",
+        evidence_prepared["version"],
+        stale_reaccept=True,
+    )
+    experiment_prepared = await _prepare(
+        client, session_id, "experiment_planning", evidence_confirmed["version"]
+    )
+    experiment_confirmed = await _confirm(
+        client,
+        session_id,
+        "experiment_plan",
+        experiment_prepared["version"],
+        stale_reaccept=True,
+    )
+    feasibility_prepared = await _prepare(
+        client, session_id, "experiment_planning", experiment_confirmed["version"]
+    )
+    checked = await client.post(
+        f"/api/spec/sessions/{session_id}/feasibility/check",
+        json={"expected_version": feasibility_prepared["version"]},
+    )
+    assert checked.status_code == 200, checked.text
+    reminted = await _confirm(
+        client,
+        session_id,
+        "feasibility",
+        checked.json()["version"],
+        stale_reaccept=True,
+    )
+    assert reminted["valid_spec_version_id"] == reminted["produced_spec_version"]["id"]
+    assert reminted["valid_spec_version_id"] != session["valid_spec_version_id"]
+    return reminted
+
+
+@pytest.mark.asyncio
+async def test_get_session_lists_spec_versions_with_valid_flag(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
+    assert fetched.status_code == 200, fetched.text
+    payload = fetched.json()
+    versions = payload["spec_versions"]
+    assert len(versions) == 1
+    assert versions[0]["id"] == confirmed["valid_spec_version_id"]
+    assert versions[0]["valid"] is True
+    assert versions[0]["created_at"]
+
+
+@pytest.mark.asyncio
+async def test_get_selected_non_valid_spec_version_keeps_readiness_criteria(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    minted = await _mint_spec_with_paper_sources(client)
+    first = await _confirm_aggregator(client, minted)
+    first_id = first["valid_spec_version_id"]
+    reminted = await _remint_second_spec(client, first)
+    second_id = reminted["valid_spec_version_id"]
+    current = await client.get(f"/api/loop/sessions/{first['id']}")
+    assert current.status_code == 200, current.text
+    current_payload = current.json()
+    selected = await client.get(
+        f"/api/loop/sessions/{first['id']}",
+        params={"spec_version_id": first_id},
+    )
+    assert selected.status_code == 200, selected.text
+    older = selected.json()
+    assert older["export_scratch"]["spec_version_id"] == first_id
+    assert older["valid_spec_version_id"] == second_id
+    assert older["readiness"] == current_payload["readiness"]
+    listed = {row["id"]: row["valid"] for row in older["spec_versions"]}
+    assert listed[first_id] is False
+    assert listed[second_id] is True
+
+
+@pytest.mark.asyncio
+async def test_clarification_review_matches_stage_revisions_of_selected_spec(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    minted = await _mint_spec_with_paper_sources(client)
+    confirmed = await _confirm_aggregator(client, minted)
+    fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
+    payload = fetched.json()
+    review = payload["clarification_review"]
+    assert review["original_idea"] == _first_idea_text(payload)
+    assert review["gap"] == GAP_TEXT
+    assert review["contribution"] == CONTRIBUTION_TEXT
+    claims_revs = [
+        row for row in payload["stage_revisions"] if row["node"] == "claims"
+    ]
+    claims_revs.sort(key=lambda row: row["revision_n"])
+    expected_claims = []
+    for card in claims_revs[-1]["card_snapshot"]:
+        if card.get("kind") != "claim":
+            continue
+        body = card.get("body") or {}
+        text = body.get("statement") or body.get("text")
+        if isinstance(text, str) and text.strip():
+            expected_claims.append(text.strip())
+    assert review["claims"] == expected_claims
+    assert review["claims"] == [CLAIM_TEXT]
+
+
+@pytest.mark.asyncio
+async def test_get_spec_version_without_snapshot_projects_buffer_only(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    minted = await _mint_spec_with_paper_sources(client)
+    assert minted["export_scratch"]["spec_version_id"] == minted["valid_spec_version_id"]
+    assert [item["id"] for item in minted["export_scratch"]["document"]["sections"]] == list(
+        PAPER_SECTION_IDS
+    )
+    assert minted["export_scratch_snapshots"] == []
+    again = await client.get(f"/api/loop/sessions/{minted['id']}")
+    assert again.status_code == 200, again.text
+    payload = again.json()
+    assert payload["export_scratch_snapshots"] == []
+    assert payload["export_scratch"]["id"] == minted["export_scratch"]["id"]
 
 
 def _document_hash(document: dict) -> str:

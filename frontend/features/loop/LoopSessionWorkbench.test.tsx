@@ -222,8 +222,13 @@ function session(overrides: Partial<LoopSessionResponse> = {}): LoopSessionRespo
     working_draft_narrative: {},
     node_heads: heads(),
     cards: [],
+    stage_revisions: [],
     produced_spec_version: null,
     valid_spec_version_id: null,
+    readiness: {
+      state: "not_evaluated",
+      notice: "This is not conference acceptance.",
+    },
     created_at: "2026-08-15T10:00:00Z",
     updated_at: "2026-08-16T10:00:00Z",
     ...overrides,
