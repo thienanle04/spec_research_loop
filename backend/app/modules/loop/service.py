@@ -31,6 +31,7 @@ from app.modules.loop.catalog import (
     upstream_of_stage,
 )
 from app.modules.loop.deps import get_stage_ports
+from app.modules.loop.export_scratch import project_paper_document
 from app.modules.loop.interpretation_turns import (
     apply_account_reply_patch,
     interpretation_confirmable,
@@ -38,6 +39,8 @@ from app.modules.loop.interpretation_turns import (
 from app.modules.loop.models import (
     Card,
     Decision,
+    ExportScratch,
+    ExportScratchSnapshot,
     LoopSession,
     NodeHead,
     SpecVersion,
@@ -49,6 +52,8 @@ from app.modules.loop.schemas import (
     CardMutationResponse,
     CardResponse,
     DecisionResponse,
+    ExportScratchResponse,
+    ExportScratchSnapshotResponse,
     HeadRevisionResponse,
     LoopSessionResponse,
     LoopSessionSummary,
@@ -154,10 +159,14 @@ class LoopService:
         return [LoopSessionSummary.model_validate(row) for row in result.all()]
 
     async def get_session(
-        self, *, session_id: UUID, account_id: UUID
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        spec_version_id: UUID | None = None,
     ) -> LoopSessionResponse:
         session = await self._load_session(session_id, account_id)
-        return await self._to_response(session)
+        return await self._to_response(session, spec_version_id=spec_version_id)
 
     async def get_readiness(
         self, *, session_id: UUID, account_id: UUID
@@ -709,6 +718,9 @@ class LoopService:
             session.produced_spec_version_id = spec.id
             session.valid_spec_version_id = spec.id
 
+        if node is WorkflowNode.AGGREGATOR:
+            await self._seed_export_scratch_if_absent(session)
+
         await self._db.commit()
         return await self.get_session(session_id=session_id, account_id=account_id)
 
@@ -1085,6 +1097,8 @@ class LoopService:
                 selectinload(LoopSession.stage_revisions),
                 selectinload(LoopSession.decisions),
                 selectinload(LoopSession.spec_versions),
+                selectinload(LoopSession.export_scratches),
+                selectinload(LoopSession.export_scratch_snapshots),
             )
         )
         if session is None:
@@ -1093,7 +1107,54 @@ class LoopService:
             )
         return session
 
-    async def _to_response(self, session: LoopSession) -> LoopSessionResponse:
+    async def _seed_export_scratch_if_absent(self, session: LoopSession) -> None:
+        spec_id = session.valid_spec_version_id
+        if spec_id is None:
+            return
+        existing = next(
+            (
+                row
+                for row in session.export_scratches
+                if row.spec_version_id == spec_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return
+        spec = next(
+            (item for item in session.spec_versions if item.id == spec_id),
+            None,
+        )
+        if spec is None:
+            spec = await self._db.get(SpecVersion, spec_id)
+        if spec is None:
+            return
+        paper = project_paper_document(dict(spec.document))
+        scratch = ExportScratch(
+            session_id=session.id,
+            spec_version_id=spec_id,
+            document=paper,
+        )
+        session.export_scratches.append(scratch)
+        self._db.add(scratch)
+        await self._db.flush()
+        snapshot = ExportScratchSnapshot(
+            session_id=session.id,
+            export_scratch_id=scratch.id,
+            spec_version_id=spec_id,
+            snapshot_n=1,
+            document=json.loads(json.dumps(paper)),
+        )
+        session.export_scratch_snapshots.append(snapshot)
+        self._db.add(snapshot)
+        await self._db.flush()
+
+    async def _to_response(
+        self,
+        session: LoopSession,
+        *,
+        spec_version_id: UUID | None = None,
+    ) -> LoopSessionResponse:
         produced = None
         if session.produced_spec_version_id is not None:
             produced = next(
@@ -1114,6 +1175,21 @@ class LoopService:
             session.node_heads, key=lambda head: WORKFLOW_NODES.index(head.node_enum())
         )
         revisions = {rev.id: rev for rev in session.stage_revisions}
+        target_spec_id = spec_version_id or session.valid_spec_version_id
+        scratch = next(
+            (
+                row
+                for row in session.export_scratches
+                if row.spec_version_id == target_spec_id
+            ),
+            None,
+        )
+        snapshots = [
+            row
+            for row in session.export_scratch_snapshots
+            if row.spec_version_id == target_spec_id
+        ]
+        snapshots.sort(key=lambda row: row.snapshot_n)
         return LoopSessionResponse(
             id=session.id,
             title=session.title,
@@ -1140,6 +1216,12 @@ class LoopService:
             else None,
             valid_spec_version_id=session.valid_spec_version_id,
             readiness=await self._readiness(session),
+            export_scratch=ExportScratchResponse.model_validate(scratch)
+            if scratch
+            else None,
+            export_scratch_snapshots=[
+                ExportScratchSnapshotResponse.model_validate(row) for row in snapshots
+            ],
             created_at=session.created_at,
             updated_at=session.updated_at,
         )

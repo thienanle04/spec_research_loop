@@ -394,6 +394,36 @@ describe("ProducedSpecVersionView", () => {
     expect(spec).not.toHaveTextContent("Hidden question?");
   });
 
+  it("does not render an Export Scratch editor on Spec Draft", () => {
+    renderSpec(
+      <ProducedSpecVersionView
+        produced={produced({
+          document: {
+            nodes: {
+              idea_interpretation: {
+                narrative: {
+                  frame: {
+                    intent: "Cut kernel launch latency",
+                    problem: "GPU launches are slow",
+                    research_question: "Can we fuse launches?",
+                  },
+                  turns: [],
+                },
+                card_snapshot: [],
+              },
+            },
+          },
+        })}
+        validSpecVersionId="spec-valid"
+        sessionId="session-1"
+      />,
+    );
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+    expect(spec).toHaveTextContent("Idea interpretation");
+    expect(screen.queryByRole("navigation", { name: "Export Scratch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
   it("omits interpretation from Spec Draft when the Idea Frame is blank", () => {
     renderSpec(
       <ProducedSpecVersionView

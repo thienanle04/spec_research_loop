@@ -5,6 +5,8 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CardResponse } from './cardResponse';
+import type { ExportScratchResponse } from './exportScratchResponse';
+import type { ExportScratchSnapshotResponse } from './exportScratchSnapshotResponse';
 import type { LoopSessionResponseWorkingDraftNarrative } from './loopSessionResponseWorkingDraftNarrative';
 import type { NodeHeadResponse } from './nodeHeadResponse';
 import type { SpecVersionResponse } from './specVersionResponse';
@@ -31,6 +33,8 @@ export interface LoopSessionResponse {
       reproducibility: number;
     } | null;
   };
+  export_scratch?: ExportScratchResponse | null;
+  export_scratch_snapshots?: ExportScratchSnapshotResponse[];
   created_at: string;
   updated_at: string;
 }

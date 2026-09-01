@@ -1,0 +1,399 @@
+"""Export Scratch projection: Confirm Aggregator seed (Loop Session HTTP seam)."""
+
+import pytest
+from httpx import AsyncClient
+
+from tests.test_judgement_api import (
+    _advance_to_aggregator,
+    _auth_client,
+    _bind_aggregator_llm,
+    _confirm,
+    _create_session,
+    _events,
+    _generate_aggregator,
+    _interpret,
+    _prepare,
+    _prepare_aggregator,
+)
+from tests.test_loop_api import IDEA_FRAME, _head, _patch_working_draft
+
+PAPER_SECTION_IDS = (
+    "problem_statement",
+    "research_question",
+    "related_work",
+    "research_gap",
+    "contribution",
+    "claims",
+    "evidence",
+    "experiment_plan",
+    "constraints",
+    "required_resources",
+    "potential_bottlenecks",
+    "mitigation_strategies",
+    "open_issues",
+)
+
+PAPER_TITLES = (
+    "Problem Statement",
+    "Research Question",
+    "Related Work",
+    "Research Gap",
+    "Proposed Approach & Contribution",
+    "Claims",
+    "Evidence",
+    "Experiment Plan",
+    "Constraints",
+    "Required Resources",
+    "Potential Bottlenecks",
+    "Mitigation Strategies",
+    "Open Issues",
+)
+
+PROBLEM_TEXT = IDEA_FRAME["problem"]
+RQ_TEXT = IDEA_FRAME["research_question"]
+CONSTRAINT_TEXT = "Single-accelerator GPU kernel latency budget"
+OPEN_Q_TEXT = "How does tiling change GPU kernel DRAM traffic?"
+CONTRIBUTION_TEXT = "A tiling schedule that cuts DRAM traffic"
+CLAIM_TEXT = "Tiling cuts DRAM traffic by at least 20%"
+EVIDENCE_TEXT = "Held-out kernel traces show traffic reduction"
+GAP_TEXT = (
+    "The literature has not measured whether brass instruments improve "
+    "soil nitrogen fixation in alpine peat bogs."
+)
+RESOURCE_TEXT = "Held-out scholarly sources"
+BOTTLENECK_TEXT = "Evidence annotation time"
+MITIGATION_TEXT = "Start with a smaller evaluation set"
+EXPERIMENT_ACTION = (
+    "Compare claim-level and aggregate verification on held-out sources."
+)
+
+
+def _sections_by_id(payload: dict) -> dict[str, dict]:
+    sections = payload["export_scratch"]["document"]["sections"]
+    return {item["id"]: item for item in sections}
+
+
+async def _confirm_aggregator(client: AsyncClient, session: dict) -> dict:
+    if (
+        session["working_draft_node"] != "aggregator"
+        and _head(session, "aggregator")["status"] == "empty"
+    ):
+        session = await _prepare(
+            client, session["id"], "independent_judges", session["version"]
+        )
+    session = await _advance_to_aggregator(client, session)
+    _bind_aggregator_llm({"options": []})
+    generated = await _generate_aggregator(
+        client, session["id"], session["version"]
+    )
+    return await _confirm(
+        client, session["id"], "aggregator", generated[-1]["version"]
+    )
+
+
+async def _post_card(
+    client: AsyncClient,
+    session_id: str,
+    *,
+    kind: str,
+    text: str,
+    expected_version: int,
+) -> int:
+    response = await client.post(
+        f"/api/loop/sessions/{session_id}/cards",
+        json={
+            "kind": kind,
+            "body": {"text": text} if kind != "claim" else {"statement": text},
+            "expected_version": expected_version,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["version"]
+
+
+async def _mint_spec_with_paper_sources(client: AsyncClient) -> dict:
+    created = await _create_session(client)
+    session_id = created["id"]
+    interpreted = await _interpret(client, session_id, created["version"])
+    decomposed = await _confirm(
+        client, session_id, "idea_decomposition", interpreted["version"]
+    )
+    return await _mint_valid_spec_from_decomposition(
+        client, decomposed, claim_text=CLAIM_TEXT
+    )
+
+
+async def _mint_valid_spec_from_decomposition(
+    client: AsyncClient, decomposed: dict, *, claim_text: str
+) -> dict:
+    """Continue the mint path after Confirm of idea_decomposition."""
+    session_id = decomposed["id"]
+    inputs = await _prepare(client, session_id, "related_work", decomposed["version"])
+    inputs_confirmed = await _confirm(
+        client, session_id, "research_inputs", inputs["version"]
+    )
+    related = await _prepare(
+        client, session_id, "related_work", inputs_confirmed["version"]
+    )
+    related_generation = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/related_work/generate",
+        json={"expected_version": related["version"], "max_results": 5},
+    )
+    assert related_generation.status_code == 200, related_generation.text
+    related_events = _events(related_generation.text)
+    related_confirmed = await _confirm(
+        client, session_id, "related_work", related_events[-1]["version"]
+    )
+    gap = await _prepare(client, session_id, "gap", related_confirmed["version"])
+    gap_generation = await client.post(
+        f"/api/research/sessions/{session_id}/nodes/gap/generate",
+        json={"expected_version": gap["version"]},
+    )
+    gap_events = _events(gap_generation.text)
+    candidate = next(
+        event["narrative"]["candidate"]
+        for event in gap_events
+        if event["type"] == "draft_patch"
+    )
+    candidate = {
+        **candidate,
+        "statement": GAP_TEXT,
+        "supporting_citation_keys": [],
+    }
+    card = await client.post(
+        f"/api/loop/sessions/{session_id}/cards",
+        json={
+            "kind": "gap",
+            "body": candidate,
+            "expected_version": gap_events[-1]["version"],
+        },
+    )
+    assert card.status_code == 201, card.text
+    gap_confirmed = await _confirm(client, session_id, "gap", card.json()["version"])
+    expected_version = gap_confirmed["version"]
+
+    contribution_prepared = await _prepare(
+        client, session_id, "contribution", expected_version
+    )
+    expected_version = await _post_card(
+        client,
+        session_id,
+        kind="contribution",
+        text=CONTRIBUTION_TEXT,
+        expected_version=contribution_prepared["version"],
+    )
+    expected_version = (
+        await _confirm(client, session_id, "contribution", expected_version)
+    )["version"]
+
+    claims_prepared = await _prepare(
+        client, session_id, "claims_evidence", expected_version
+    )
+    expected_version = await _post_card(
+        client,
+        session_id,
+        kind="claim",
+        text=claim_text,
+        expected_version=claims_prepared["version"],
+    )
+    expected_version = (
+        await _confirm(client, session_id, "claims", expected_version)
+    )["version"]
+
+    evidence_prepared = await _prepare(
+        client, session_id, "claims_evidence", expected_version
+    )
+    expected_version = await _post_card(
+        client,
+        session_id,
+        kind="evidence",
+        text=EVIDENCE_TEXT,
+        expected_version=evidence_prepared["version"],
+    )
+    expected_version = (
+        await _confirm(client, session_id, "evidence", expected_version)
+    )["version"]
+
+    experiment_prepared = await _prepare(
+        client, session_id, "experiment_planning", expected_version
+    )
+    plan_patch = await _patch_working_draft(
+        client,
+        session_id,
+        expected_version=experiment_prepared["version"],
+        narrative={
+            "plan": {
+                "experiments": [
+                    {
+                        "claim": CLAIM_TEXT,
+                        "action": EXPERIMENT_ACTION,
+                        "objective": "Measure DRAM traffic.",
+                        "significance": "Tests whether tiling helps.",
+                    }
+                ]
+            }
+        },
+    )
+    assert plan_patch.status_code == 200, plan_patch.text
+    expected_version = (
+        await _confirm(
+            client, session_id, "experiment_plan", plan_patch.json()["version"]
+        )
+    )["version"]
+
+    feasibility_prepared = await _prepare(
+        client, session_id, "experiment_planning", expected_version
+    )
+    checked = await client.post(
+        f"/api/spec/sessions/{session_id}/feasibility/check",
+        json={"expected_version": feasibility_prepared["version"]},
+    )
+    assert checked.status_code == 200, checked.text
+    expected_version = checked.json()["version"]
+    await _confirm(client, session_id, "feasibility", expected_version)
+    fetched = await client.get(f"/api/loop/sessions/{session_id}")
+    payload = fetched.json()
+    assert payload["valid_spec_version_id"] == payload["produced_spec_version"]["id"]
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_confirm_aggregator_seeds_thirteen_section_export_scratch(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_aggregator(client)
+    assert draft.get("export_scratch") in (None, {})
+    assert draft.get("export_scratch_snapshots", []) == []
+
+    confirmed = await _confirm_aggregator(client, draft)
+    assert confirmed["valid_spec_version_id"] == draft["valid_spec_version_id"]
+    scratch = confirmed["export_scratch"]
+    assert scratch["spec_version_id"] == confirmed["valid_spec_version_id"]
+    sections = scratch["document"]["sections"]
+    assert [item["id"] for item in sections] == list(PAPER_SECTION_IDS)
+    assert [item["title"] for item in sections] == list(PAPER_TITLES)
+    assert all("body" in item for item in sections)
+    assert all(item["id"] != "intent" for item in sections)
+    snapshots = confirmed["export_scratch_snapshots"]
+    assert len(snapshots) == 1
+    assert snapshots[0]["snapshot_n"] == 1
+    assert snapshots[0]["spec_version_id"] == confirmed["valid_spec_version_id"]
+    assert [item["id"] for item in snapshots[0]["document"]["sections"]] == list(
+        PAPER_SECTION_IDS
+    )
+
+
+@pytest.mark.asyncio
+async def test_export_scratch_projection_maps_spec_version_sources(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    minted = await _mint_spec_with_paper_sources(client)
+    confirmed = await _confirm_aggregator(client, minted)
+    by_id = _sections_by_id(confirmed)
+    assert by_id["research_gap"]["body"] == GAP_TEXT
+    assert by_id["contribution"]["body"] == CONTRIBUTION_TEXT
+    assert by_id["claims"]["body"] == CLAIM_TEXT
+    assert by_id["evidence"]["body"] == EVIDENCE_TEXT
+    assert EXPERIMENT_ACTION in by_id["experiment_plan"]["body"]
+    assert by_id["required_resources"]["body"] == RESOURCE_TEXT
+    assert by_id["potential_bottlenecks"]["body"] == BOTTLENECK_TEXT
+    assert by_id["mitigation_strategies"]["body"] == MITIGATION_TEXT
+    assert by_id["related_work"]["body"]
+    assert "Analyzes" in by_id["related_work"]["body"]
+
+
+@pytest.mark.asyncio
+async def test_export_scratch_projects_constraint_and_open_question_cards(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    session_id = created["id"]
+    interpreted = await _interpret(client, session_id, created["version"])
+    version = await _post_card(
+        client,
+        session_id,
+        kind="problem",
+        text=PROBLEM_TEXT,
+        expected_version=interpreted["version"],
+    )
+    version = await _post_card(
+        client,
+        session_id,
+        kind="research_question",
+        text=RQ_TEXT,
+        expected_version=version,
+    )
+    version = await _post_card(
+        client,
+        session_id,
+        kind="constraint",
+        text=CONSTRAINT_TEXT,
+        expected_version=version,
+    )
+    version = await _post_card(
+        client,
+        session_id,
+        kind="open_question",
+        text=OPEN_Q_TEXT,
+        expected_version=version,
+    )
+    decomposed = await _confirm(client, session_id, "idea_decomposition", version)
+    minted = await _mint_valid_spec_from_decomposition(
+        client, decomposed, claim_text=CLAIM_TEXT
+    )
+    confirmed = await _confirm_aggregator(client, minted)
+    by_id = _sections_by_id(confirmed)
+    assert by_id["problem_statement"]["body"] == PROBLEM_TEXT
+    assert by_id["research_question"]["body"] == RQ_TEXT
+    assert IDEA_FRAME["intent"] not in by_id["problem_statement"]["body"]
+    assert by_id["constraints"]["body"] == CONSTRAINT_TEXT
+    assert by_id["open_issues"]["body"] == OPEN_Q_TEXT
+    assert [item["id"] for item in confirmed["export_scratch"]["document"]["sections"]] == list(
+        PAPER_SECTION_IDS
+    )
+
+
+@pytest.mark.asyncio
+async def test_second_confirm_aggregator_does_not_clone_snapshot_or_reset_buffer(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_aggregator(client)
+    first = await _confirm_aggregator(client, draft)
+    first_snapshot_id = first["export_scratch_snapshots"][0]["id"]
+    first_buffer = first["export_scratch"]["document"]
+    second = await _confirm(
+        client, first["id"], "aggregator", first["version"]
+    )
+    assert _head(second, "aggregator")["status"] == "current"
+    assert second["valid_spec_version_id"] == first["valid_spec_version_id"]
+    assert len(second["export_scratch_snapshots"]) == 1
+    assert second["export_scratch_snapshots"][0]["id"] == first_snapshot_id
+    assert second["export_scratch_snapshots"][0]["snapshot_n"] == 1
+    assert second["export_scratch"]["document"] == first_buffer
+
+
+@pytest.mark.asyncio
+async def test_get_session_returns_export_scratch_for_valid_spec_version(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_aggregator(client)
+    confirmed = await _confirm_aggregator(client, draft)
+    fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
+    assert fetched.status_code == 200, fetched.text
+    payload = fetched.json()
+    assert payload["export_scratch"]["id"] == confirmed["export_scratch"]["id"]
+    assert payload["export_scratch"]["document"] == confirmed["export_scratch"]["document"]
+    assert len(payload["export_scratch_snapshots"]) == 1
+    scoped = await client.get(
+        f"/api/loop/sessions/{confirmed['id']}",
+        params={"spec_version_id": confirmed["valid_spec_version_id"]},
+    )
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["export_scratch"]["spec_version_id"] == confirmed[
+        "valid_spec_version_id"
+    ]

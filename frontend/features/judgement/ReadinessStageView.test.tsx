@@ -29,6 +29,30 @@ function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionRespo
       state,
       notice: "This is not conference acceptance.",
     },
+    export_scratch: {
+      id: "scratch-1",
+      spec_version_id: "spec-1",
+      document: {
+        sections: [
+          { id: "problem_statement", title: "Problem Statement", body: "" },
+          { id: "research_question", title: "Research Question", body: "" },
+          { id: "related_work", title: "Related Work", body: "" },
+          { id: "research_gap", title: "Research Gap", body: "" },
+          { id: "contribution", title: "Proposed Approach & Contribution", body: "" },
+          { id: "claims", title: "Claims", body: "" },
+          { id: "evidence", title: "Evidence", body: "" },
+          { id: "experiment_plan", title: "Experiment Plan", body: "" },
+          { id: "constraints", title: "Constraints", body: "" },
+          { id: "required_resources", title: "Required Resources", body: "" },
+          { id: "potential_bottlenecks", title: "Potential Bottlenecks", body: "" },
+          { id: "mitigation_strategies", title: "Mitigation Strategies", body: "" },
+          { id: "open_issues", title: "Open Issues", body: "" },
+        ],
+      },
+      created_at: "2026-08-30T00:00:00Z",
+      updated_at: "2026-08-30T00:00:00Z",
+    },
+    export_scratch_snapshots: [],
     created_at: "2026-08-30T00:00:00Z",
     updated_at: "2026-08-30T00:00:00Z",
   };
@@ -76,5 +100,29 @@ describe("ReadinessStageView", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Spec Artifact exported.");
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
+  });
+
+  it("renders a table of contents of the thirteen Export Scratch titles", () => {
+    render(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
+    const toc = screen.getByRole("navigation", { name: "Export Scratch" });
+    const titles = [
+      "Problem Statement",
+      "Research Question",
+      "Related Work",
+      "Research Gap",
+      "Proposed Approach & Contribution",
+      "Claims",
+      "Evidence",
+      "Experiment Plan",
+      "Constraints",
+      "Required Resources",
+      "Potential Bottlenecks",
+      "Mitigation Strategies",
+      "Open Issues",
+    ];
+    const items = toc.querySelectorAll("li");
+    expect([...items].map((item) => item.textContent)).toEqual(titles);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
   });
 });

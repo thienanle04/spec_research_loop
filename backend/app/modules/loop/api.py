@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import OperationalError
@@ -65,8 +65,13 @@ async def get_session(
     session_id: UUID,
     account: Annotated[Account, Depends(get_current_account)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    spec_version_id: Annotated[UUID | None, Query()] = None,
 ) -> LoopSessionResponse:
-    return await _service(db).get_session(session_id=session_id, account_id=account.id)
+    return await _service(db).get_session(
+        session_id=session_id,
+        account_id=account.id,
+        spec_version_id=spec_version_id,
+    )
 
 
 @router.patch(

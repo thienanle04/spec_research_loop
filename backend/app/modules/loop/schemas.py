@@ -138,6 +138,36 @@ class StageRevisionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExportScratchSection(BaseModel):
+    id: str
+    title: str
+    body: str
+
+
+class ExportScratchDocument(BaseModel):
+    sections: list[ExportScratchSection]
+
+
+class ExportScratchResponse(BaseModel):
+    id: UUID
+    spec_version_id: UUID
+    document: ExportScratchDocument
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ExportScratchSnapshotResponse(BaseModel):
+    id: UUID
+    spec_version_id: UUID
+    snapshot_n: int
+    document: ExportScratchDocument
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class LoopSessionResponse(BaseModel):
     id: UUID
     title: str | None
@@ -150,6 +180,10 @@ class LoopSessionResponse(BaseModel):
     produced_spec_version: SpecVersionResponse | None
     valid_spec_version_id: UUID | None
     readiness: ReadinessSummary
+    export_scratch: ExportScratchResponse | None = None
+    export_scratch_snapshots: list[ExportScratchSnapshotResponse] = Field(
+        default_factory=list
+    )
     created_at: datetime
     updated_at: datetime
 

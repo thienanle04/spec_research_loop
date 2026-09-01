@@ -69,6 +69,16 @@ export function ReadinessStageView({
         <CardContent className="grid gap-4">
           <p className="text-sm font-medium">{STATE_LABEL[state]}</p>
           {scores ? <ConferenceScoreList scores={scores} /> : null}
+          {session.export_scratch?.document.sections?.length ? (
+            <nav aria-label="Export Scratch">
+              <p className="text-sm font-medium">Export Scratch</p>
+              <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm">
+                {session.export_scratch.document.sections.map((section) => (
+                  <li key={section.id}>{section.title}</li>
+                ))}
+              </ol>
+            </nav>
+          ) : null}
           {state === "ready" || state === "blocked" ? (
             <Button type="button" className="justify-self-start" onClick={onExportClick}>
               Export Spec Artifact
