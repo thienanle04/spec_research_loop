@@ -305,6 +305,7 @@ describe("LoopSessionWorkbench", () => {
     prepareHook.mockReturnValue({ mutateAsync: vi.fn(), error: null, isPending: false });
     patchHook.mockReturnValue({ mutateAsync: vi.fn(), error: null });
     confirmHook.mockReturnValue({ mutateAsync: vi.fn(), error: null });
+    vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
   });
 
   it("loads Working Draft, Node Heads, Cards, and Spec Version pointers through the generated client", () => {
@@ -376,6 +377,19 @@ describe("LoopSessionWorkbench", () => {
 
     expect(screen.queryByRole("region", { name: "Decision history" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Produced Spec Version" })).not.toBeInTheDocument();
+  });
+
+  it("scrolls to the top of the page when opening Spec Draft", () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.experiment_planning}&node=${WorkflowNode.feasibility}`,
+    );
+    const view = render(<LoopSessionWorkbench sessionId="session-1" />);
+    vi.mocked(window.scrollTo).mockClear();
+
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    view.rerender(<LoopSessionWorkbench sessionId="session-1" />);
+
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
   it("opens Spec Draft as a workspace placeholder without Produced Spec Version", () => {
@@ -2450,29 +2464,75 @@ describe("LoopSessionWorkbench", () => {
   });
 
   it("hides the node invalidation line after generate while Spec Draft stays Stale", () => {
+    const afterGenerate = session({
+      working_draft_node: WorkflowNode.idea_decomposition,
+      working_draft_narrative: { text: "regenerated cards" },
+      cards: [
+        {
+          id: "card-1",
+          kind: CardKind.problem,
+          body: { text: "accuracy" },
+          created_at: "2026-08-15T10:00:00Z",
+          updated_at: "2026-08-15T10:00:00Z",
+        },
+      ],
+      node_heads: heads({
+        [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+        [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+      }).map((head) =>
+        head.node === WorkflowNode.idea_decomposition
+          ? { ...head, generated_since_prepare: true }
+          : head,
+      ),
+      produced_spec_version: {
+        id: "spec-1",
+        document: {},
+        created_at: "2026-08-16T10:00:00Z",
+      },
+      valid_spec_version_id: null,
+    });
     search = new URLSearchParams(
       `stage=${LoopStage.grilling}&node=${WorkflowNode.idea_decomposition}`,
+    );
+    getHook.mockReturnValue({
+      data: { status: 200, data: afterGenerate },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    const view = render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.queryByText("Idea decomposition is Stale")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Spec Draft has no Valid Spec Version after upstream invalidation."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
+
+    search = new URLSearchParams(`stage=${LoopStage.spec_draft}`);
+    view.rerender(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Spec Draft has no Valid Spec Version",
+    );
+    expect(screen.getByRole("status")).not.toHaveTextContent("Idea decomposition is Stale");
+  });
+
+  it("hides the invalidation banner after re-check feasibility", () => {
+    search = new URLSearchParams(
+      `stage=${LoopStage.experiment_planning}&node=${WorkflowNode.feasibility}`,
     );
     getHook.mockReturnValue({
       data: {
         status: 200,
         data: session({
-          working_draft_node: WorkflowNode.idea_decomposition,
-          working_draft_narrative: { text: "regenerated cards" },
-          cards: [
-            {
-              id: "card-1",
-              kind: CardKind.problem,
-              body: { text: "accuracy" },
-              created_at: "2026-08-15T10:00:00Z",
-              updated_at: "2026-08-15T10:00:00Z",
-            },
-          ],
+          working_draft_node: WorkflowNode.feasibility,
+          working_draft_narrative: {
+            feasibility_report: { is_feasible: true, conclusion: "ok" },
+          },
           node_heads: heads({
-            [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
-            [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+            [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+            [WorkflowNode.feasibility]: NodeHeadStatus.stale,
           }).map((head) =>
-            head.node === WorkflowNode.idea_decomposition
+            head.node === WorkflowNode.feasibility
               ? { ...head, generated_since_prepare: true }
               : head,
           ),
@@ -2490,11 +2550,10 @@ describe("LoopSessionWorkbench", () => {
     });
 
     render(<LoopSessionWorkbench sessionId="session-1" />);
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Spec Draft has no Valid Spec Version",
-    );
-    expect(screen.getByRole("status")).not.toHaveTextContent("Idea decomposition is Stale");
-    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Feasibility is Stale")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Spec Draft has no Valid Spec Version after upstream invalidation."),
+    ).not.toBeInTheDocument();
   });
 
   it("prepares the rest of the Loop Stage after Confirm when the next Workflow Node is empty", async () => {

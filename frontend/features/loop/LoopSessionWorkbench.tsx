@@ -335,6 +335,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   }, [router, searchParams, selectedNode, selectedStage, session, sessionId]);
 
   useEffect(() => {
+    if (selectedStage !== LoopStage.spec_draft) return;
+    window.scrollTo(0, 0);
+  }, [selectedStage]);
+
+  useEffect(() => {
     if (!session || !selectedStage) return;
     if (
       generating ||
@@ -469,7 +474,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     ? session.node_heads.find((head) => head.node === selectedNode)
     : undefined;
   const workingDraftHead = session.node_heads.find((head) => head.node === workingDraftNode);
-  const viewedNodeStale = viewedHead?.status === NodeHeadStatus.stale;
+  const viewedNodeStale = needsStaleReaccept(viewedHead);
   const specVersionStale =
     session.produced_spec_version != null &&
     session.valid_spec_version_id !== session.produced_spec_version.id;

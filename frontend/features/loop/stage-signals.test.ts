@@ -645,6 +645,14 @@ describe("Stale re-accept flag", () => {
     ).toBe(false);
     expect(
       specInvalidationInView({
+        selectedNode: WorkflowNode.feasibility,
+        selectedStage: LoopStage.experiment_planning,
+        viewedNodeStale: false,
+        specVersionStale: true,
+      }),
+    ).toBe(false);
+    expect(
+      specInvalidationInView({
         selectedNode: undefined,
         selectedStage: LoopStage.spec_draft,
         viewedNodeStale: false,
