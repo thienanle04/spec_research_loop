@@ -17,6 +17,7 @@ const citation: CitationResponse = {
   authors: ["Smith"],
   year: 2025,
   doi: "10.1000/research",
+  metadata: { research_work_name: "ResearchLoop" },
   verification_status: VerificationStatus.verified,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
@@ -193,6 +194,11 @@ describe("ResearchStagePanel", () => {
     expect(screen.getByRole("columnheader", { name: "Method or feedback" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Remaining limitation" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Source" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "ResearchLoop" })).toHaveAttribute(
+      "href",
+      "https://doi.org/10.1000/research",
+    );
+    expect(screen.getByText(`Article: ${citation.title}`)).toBeInTheDocument();
     expect(screen.getByText("Evaluated a research loop.")).toBeInTheDocument();
     expect(screen.getByText("Textual feedback")).toBeInTheDocument();
     expect(screen.getByText("Used one benchmark.")).toBeInTheDocument();

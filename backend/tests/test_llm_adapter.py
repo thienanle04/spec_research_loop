@@ -69,7 +69,7 @@ async def test_fake_spec_llm_implements_port() -> None:
         async for chunk in adapter.stream(system="directions", prompt="{}")
     ]
     assert len(chunks) == 1
-    assert len(json.loads(chunks[0])) == 3
+    assert len(json.loads(chunks[0])["directions"]) == 3
 
     claims = await adapter.complete_structured(
         system="claims",

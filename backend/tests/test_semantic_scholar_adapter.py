@@ -8,7 +8,6 @@ import pytest
 from app.modules.research.adapters.semantic_scholar import (
     SemanticScholarSource,
     _bulk_query,
-    _provider_query_plan,
     _query_match_score,
     _SharedIntervalRateLimiter,
 )
@@ -348,21 +347,8 @@ def test_bulk_query_translates_boolean_words_outside_phrases() -> None:
     ) == '"research and development"+survey|review -privacy'
 
 
-def test_provider_query_plan_adds_short_recall_anchors() -> None:
-    queries = [
-        "refurbished smartphone inventory availability AND customer trust",
-        "benchmark study B2C smartphone inventory turnover",
-    ]
-
-    assert _provider_query_plan(queries) == [
-        *queries,
-        "refurbished smartphone inventory",
-        "b2c smartphone inventory",
-    ]
-
-
 @pytest.mark.asyncio
-async def test_search_many_coalesces_queries_into_one_bulk_request(
+async def test_search_many_gives_each_logical_query_an_independent_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class RecordingLimiter:
@@ -373,7 +359,7 @@ async def test_search_many_coalesces_queries_into_one_bulk_request(
             self.calls += 1
 
     class FakeAsyncClient:
-        query: ClassVar[str | None] = None
+        queries: ClassVar[list[str]] = []
 
         def __init__(self, **_kwargs: Any) -> None:
             pass
@@ -390,7 +376,7 @@ async def test_search_many_coalesces_queries_into_one_bulk_request(
             url: str,
             **kwargs: Any,
         ) -> httpx.Response:
-            type(self).query = kwargs["params"]["query"]
+            type(self).queries.append(kwargs["params"]["query"])
             return httpx.Response(
                 200,
                 json={
@@ -419,13 +405,13 @@ async def test_search_many_coalesces_queries_into_one_bulk_request(
         limit=5,
     )
 
-    assert limiter.calls == 1
-    assert FakeAsyncClient.query == "claim verification|fact checking"
+    assert limiter.calls == 2
+    assert FakeAsyncClient.queries == ["claim verification", "fact checking"]
     assert records[0].metadata["discovery_queries"] == [
         "claim verification",
-        "fact checking",
     ]
     assert records[1].metadata["discovery_queries"] == []
+    assert records[2].metadata["discovery_queries"] == ["fact checking"]
 
 
 def test_bulk_candidates_prioritize_query_terms_in_title() -> None:
@@ -442,6 +428,15 @@ def test_bulk_candidates_prioritize_query_terms_in_title() -> None:
         abstract_match,
         "claim verification",
     )
+
+
+def test_query_match_uses_whole_tokens_instead_of_substrings() -> None:
+    unrelated = ScholarlyRecord(
+        title="Training systems for highway maintenance",
+        abstract="A general engineering evaluation.",
+    )
+
+    assert _query_match_score(unrelated, "AI") == (0, 0)
 
 
 @pytest.mark.asyncio
@@ -487,7 +482,7 @@ async def test_provider_verifier_uses_one_batch_lookup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_verifier_keeps_discovered_citations_when_batch_is_throttled() -> None:
+async def test_provider_verifier_warns_when_batch_identity_check_is_throttled() -> None:
     class ThrottledBatchSource:
         async def get_source(self, *, identifier: str) -> ScholarlyRecord | None:
             raise AssertionError(f"Unexpected individual lookup for {identifier}")
@@ -516,10 +511,37 @@ async def test_provider_verifier_keeps_discovered_citations_when_batch_is_thrott
     )
 
     assert [result.status for result in results] == [
-        VerificationStatus.VERIFIED,
+        VerificationStatus.WARNING,
         VerificationStatus.WARNING,
     ]
-    assert "provider search response" in results[0].messages[0]
+    assert "could not be independently rechecked" in results[0].messages[0]
+
+
+@pytest.mark.asyncio
+async def test_provider_verifier_keeps_discovered_record_when_recheck_is_empty() -> None:
+    class EmptyBatchSource:
+        async def get_source(self, *, identifier: str) -> ScholarlyRecord | None:
+            raise AssertionError(f"Unexpected individual lookup for {identifier}")
+
+        async def get_sources(
+            self,
+            *,
+            identifiers: list[str],
+        ) -> list[ScholarlyRecord | None]:
+            return [None for _ in identifiers]
+
+    citation = ScholarlyRecord(
+        title="Provider-discovered tool paper",
+        provider="semantic_scholar",
+        provider_source_id="S1",
+    )
+    verifier = ProviderCitationVerifier(EmptyBatchSource())  # type: ignore[arg-type]
+
+    [result] = await verifier.verify_many(citations=[citation])
+
+    assert result.status is VerificationStatus.WARNING
+    assert result.record is citation
+    assert "independent identifier lookup returned no record" in result.messages[0]
 
 
 def test_semantic_scholar_instances_share_the_process_limiter() -> None:

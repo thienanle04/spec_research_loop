@@ -82,11 +82,11 @@ def _discovery_result(
 ) -> VerificationResult:
     if citation.provider and _identifier(citation):
         return VerificationResult(
-            status=VerificationStatus.VERIFIED,
+            status=VerificationStatus.WARNING,
             messages=[
                 (
-                    "Citation identity is supported by the provider search response; "
-                    f"the secondary batch lookup was unavailable: {reason}"
+                    "Citation was discovered by a scholarly provider, but its identity "
+                    f"could not be independently rechecked: {reason}"
                 )
             ],
             record=citation,
@@ -108,6 +108,11 @@ def _compare(
     resolved: ScholarlyRecord | None,
 ) -> VerificationResult:
     if resolved is None:
+        if citation.provider and _identifier(citation):
+            return _discovery_result(
+                citation,
+                reason="the independent identifier lookup returned no record",
+            )
         return _unresolved_result()
     if citation.doi and normalize_doi(citation.doi) != normalize_doi(resolved.doi):
         return VerificationResult(

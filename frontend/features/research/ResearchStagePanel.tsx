@@ -8,13 +8,15 @@ import { CitationSearchPanel } from "./CitationSearchPanel";
 import { GapCandidatePicker } from "./GapCandidatePicker";
 import { RelatedWorkMatrix } from "./RelatedWorkMatrix";
 import { ResearchInputsEditor } from "./ResearchInputsEditor";
-import type { GapCandidate, ResearchInputs } from "./types";
+import type { DiscoveryLeads, GapCandidate, ResearchInputs, ToolCoverage } from "./types";
 
 type Props = {
   node: WorkflowNode;
   inputs: ResearchInputs;
   citations: CitationResponse[];
   findings: RelatedWorkFindingResponse[];
+  discoveryLeads?: DiscoveryLeads | null;
+  toolCoverage?: ToolCoverage[];
   gapCandidate: GapCandidate | null;
   selectedGap: GapCandidate | null;
   running: boolean;
@@ -85,6 +87,8 @@ export function ResearchStagePanel(props: Props) {
             progress={props.progress}
             progressMessage={props.progressMessage}
             warnings={props.warnings}
+            discoveryLeads={props.discoveryLeads}
+            toolCoverage={props.toolCoverage}
             error={props.error}
             disabled={props.disabled}
             onSearch={props.onGenerate}

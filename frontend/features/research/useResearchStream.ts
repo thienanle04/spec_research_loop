@@ -10,7 +10,6 @@ type StartOptions = {
   sessionId: string;
   node: "research_inputs" | "related_work" | "gap";
   expectedVersion: number;
-  maxResults?: number;
   onEvent?: (event: ResearchStreamEvent) => void;
 };
 
@@ -80,7 +79,6 @@ export function useResearchStream() {
           method: "POST",
           body: {
             expected_version: options.expectedVersion,
-            ...(options.maxResults ? { max_results: options.maxResults } : {}),
           },
           signal: controller.signal,
         },

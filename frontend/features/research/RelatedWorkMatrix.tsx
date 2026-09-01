@@ -27,6 +27,16 @@ function sourceHref(citation: CitationResponse | undefined): string | null {
   return citation.url || (citation.doi ? `https://doi.org/${citation.doi}` : null);
 }
 
+function researchWorkName(citation: CitationResponse | undefined): string {
+  const value = citation?.metadata?.research_work_name;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  const [prefix, suffix] = (citation?.title ?? "").split(":", 2);
+  if (suffix && prefix.trim().split(/\s+/).length <= 6 && prefix.trim().length <= 60) {
+    return prefix.trim();
+  }
+  return "Unnamed research work";
+}
+
 function evidenceFor(finding: RelatedWorkFindingResponse, key: EvidenceKey): SourceEvidence {
   const evidence = (finding as FindingWithEvidence).evidence?.[key];
   return evidence?.passage && evidence.location
@@ -82,6 +92,7 @@ export function RelatedWorkMatrix({
                 const citation = citationsById.get(finding.citation_id);
                 const href = sourceHref(citation);
                 const title = citation?.title ?? "Citation not found";
+                const studyName = researchWorkName(citation);
                 const retrieval = citation as RetrievalCitation | undefined;
                 return (
                   <tr key={finding.id} className="border-t align-top">
@@ -93,13 +104,16 @@ export function RelatedWorkMatrix({
                           target="_blank"
                           rel="noreferrer"
                         >
-                          {title}
+                          {studyName}
                         </a>
                       ) : (
-                        <p className="font-semibold">{title}</p>
+                        <p className="font-semibold">{studyName}</p>
                       )}
                       <p className="mt-1 text-xs text-muted-foreground">
                         {citation?.year ? `(${citation.year})` : citation?.citation_key}
+                      </p>
+                      <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                        Article: {title}
                       </p>
                       {retrieval ? (
                         <div className="mt-2 flex flex-wrap gap-1 text-[11px] text-muted-foreground">

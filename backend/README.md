@@ -54,11 +54,32 @@ instances in the backend process. Keep a single backend worker when one API key
 is shared; a multi-worker deployment needs a distributed rate limiter. HTTP 429
 responses are retried twice with `Retry-After`/exponential backoff.
 
-Discovery uses the lower-cost paper bulk-search endpoint and requests only the
-metadata needed by the research pipeline. Each returned bulk batch is pre-ranked
-locally to the configured candidate count; query-family coverage then drives the
-final top-five relevance selection. The five selected papers are resolved with
-one paper-batch request before analysis instead of five individual detail calls.
+Discovery issues each SearchPlan facet query independently through the lower-cost
+paper bulk-search endpoint and requests only the metadata needed by the research
+workflow. When Related Work search starts, the LLM first expands the confirmed
+Research Input keywords into unverified discovery leads: named tools/frameworks,
+techniques, candidate scholarly-work titles, and aliases. The SearchPlan then turns
+tool names and candidate titles into exact queries while using techniques and aliases
+to refine conceptual queries. Leads never become Citations until a configured
+scholarly provider returns and verifies a matching record. For Ideas with known
+implementations, papers that explicitly mention a named tool/framework/technique rank
+ahead of otherwise comparable concept-only papers.
+Results are pre-ranked locally, missing facets receive one bounded follow-up search,
+and facet coverage drives the final top-eight selection. Before downloading text,
+records without a known full-text URL are resolved across all configured providers so
+an OpenAlex open-access URL can enrich a Semantic Scholar discovery record. With
+`RESEARCH_REQUIRE_DOWNLOADABLE_FULL_TEXT=false` (the default), downloadable papers,
+scholarly landing/DOI pages, and provider abstracts are all eligible when they yield
+non-empty analyzable text. Their actual provenance remains recorded in
+`text_source_kind`; the application does not relabel an abstract as a PDF. Set the
+option to `true` to restore strict downloadable-full-text behavior, in which
+abstract-only records are skipped and lower-ranked records backfill the result set.
+The portfolio reserves the highest-ranked matching article for each discovered named
+tool, then fills remaining slots with distinct works. A second article for the same
+work/tool is excluded rather than used as backfill. The Related Work narrative records
+each discovery tool as `matched_citation` or `not_found`, and the UI shows that status
+next to the lead. In the Related Work matrix, Study is the work/tool/framework name
+while the article title remains visible as source provenance.
 
 ## OpenAlex scholarly search
 

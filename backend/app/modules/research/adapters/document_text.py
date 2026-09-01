@@ -176,19 +176,89 @@ class _TextExtractor(HTMLParser):
 
 def _candidate_urls(record: ScholarlyRecord) -> list[str]:
     metadata = record.metadata
+    external_ids = metadata.get("externalIds") or {}
+    provider_ids = metadata.get("ids") or {}
+    best_oa_location = metadata.get("best_oa_location") or {}
+    primary_location = metadata.get("primary_location") or {}
     candidates: list[str | None] = [
         metadata.get("full_text_url"),
         metadata.get("open_access_pdf_url"),
-        ((metadata.get("best_oa_location") or {}).get("pdf_url")),
-        ((metadata.get("primary_location") or {}).get("pdf_url")),
+        best_oa_location.get("pdf_url"),
+        primary_location.get("pdf_url"),
+        _arxiv_pdf_url(external_ids.get("ArXiv") or provider_ids.get("arxiv")),
+        _pmc_full_text_url(external_ids.get("PubMedCentral")),
+        _trusted_repository_url(best_oa_location.get("landing_page_url")),
+        _trusted_repository_url(primary_location.get("landing_page_url")),
+        best_oa_location.get("landing_page_url"),
+        primary_location.get("landing_page_url"),
+        record.url,
+        _doi_url(record.doi),
     ]
-    if record.url and record.url.casefold().endswith((".pdf", ".txt", ".xml")):
-        candidates.append(record.url)
     unique: list[str] = []
     for item in candidates:
         if isinstance(item, str) and item.startswith(("http://", "https://")) and item not in unique:
             unique.append(item)
     return unique
+
+
+def _doi_url(value: object) -> str | None:
+    doi = str(value or "").strip()
+    if not doi:
+        return None
+    doi = re.sub(
+        r"^https?://(?:dx\.)?doi\.org/",
+        "",
+        doi,
+        flags=re.IGNORECASE,
+    ).strip()
+    return f"https://doi.org/{doi}" if doi else None
+
+
+def _arxiv_pdf_url(identifier: object) -> str | None:
+    value = str(identifier or "").strip()
+    if not value:
+        return None
+    value = re.sub(
+        r"^https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"^arxiv:\s*", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\.pdf$", "", value, flags=re.IGNORECASE).strip("/")
+    return f"https://arxiv.org/pdf/{value}" if value else None
+
+
+def _pmc_full_text_url(identifier: object) -> str | None:
+    value = str(identifier or "").strip()
+    if not value:
+        return None
+    article_id = value if value.upper().startswith("PMC") else f"PMC{value}"
+    return f"https://pmc.ncbi.nlm.nih.gov/articles/{article_id}/"
+
+
+def _trusted_repository_url(value: object) -> str | None:
+    url = str(value or "").strip()
+    folded = url.casefold()
+    if not url.startswith(("http://", "https://")):
+        return None
+    if "arxiv.org/abs/" in folded:
+        return re.sub(r"/abs/", "/pdf/", url, flags=re.IGNORECASE)
+    if "aclanthology.org/" in folded:
+        return f"{url.rstrip('/').removesuffix('.pdf')}.pdf"
+    if "openreview.net/forum" in folded:
+        return re.sub(r"/forum", "/pdf", url, flags=re.IGNORECASE)
+    if "proceedings.mlr.press/" in folded and folded.endswith(".html"):
+        return f"{url[:-5]}.pdf"
+    if any(
+        host in folded
+        for host in (
+            "openreview.net/pdf",
+            "pmc.ncbi.nlm.nih.gov/articles/",
+        )
+    ):
+        return url
+    return None
 
 
 def _pdf_text(data: bytes) -> str:

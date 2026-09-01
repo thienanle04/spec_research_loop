@@ -14,6 +14,22 @@ export type ResearchInputs = {
   preferred_sources: PreferredSources;
 };
 
+export type DiscoveryLeads = {
+  tool_discovery_keywords: string[];
+  supporting_context_keywords: string[];
+  tools_and_frameworks: string[];
+  techniques: string[];
+  candidate_work_titles: string[];
+  aliases: string[];
+};
+
+export type ToolCoverage = {
+  tool: string;
+  status: "matched_citation" | "not_found";
+  citation_key: string | null;
+  article_title: string | null;
+};
+
 export type CounterEvidenceOutcome =
   | "no_direct_counter_evidence"
   | "gap_narrowed"
@@ -120,6 +136,40 @@ function strings(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+export function discoveryLeadsFromNarrative(
+  narrative: Record<string, unknown>,
+): DiscoveryLeads | null {
+  const leads = record(narrative.discovery_leads);
+  const parsed = {
+    tool_discovery_keywords: strings(leads.tool_discovery_keywords),
+    supporting_context_keywords: strings(leads.supporting_context_keywords),
+    tools_and_frameworks: strings(leads.tools_and_frameworks),
+    techniques: strings(leads.techniques),
+    candidate_work_titles: strings(leads.candidate_work_titles),
+    aliases: strings(leads.aliases),
+  };
+  return Object.values(parsed).some((items) => items.length > 0) ? parsed : null;
+}
+
+export function toolCoverageFromNarrative(
+  narrative: Record<string, unknown>,
+): ToolCoverage[] {
+  const value = narrative.tool_coverage;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    const item = record(raw);
+    if (typeof item.tool !== "string") return [];
+    return [
+      {
+        tool: item.tool,
+        status: item.status === "matched_citation" ? "matched_citation" : "not_found",
+        citation_key: optionalString(item.citation_key),
+        article_title: optionalString(item.article_title),
+      },
+    ];
+  });
 }
 
 function record(value: unknown): Record<string, unknown> {
