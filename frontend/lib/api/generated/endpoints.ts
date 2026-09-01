@@ -60,6 +60,8 @@ import type {
   RelatedWorkFindingResponse,
   ReplaceCardsRequest,
   RootHealthHealthGet200,
+  SpecArtifactExportRequest,
+  SpecArtifactResponse,
   TokenResponse,
   WorkingDraftPatchRequest
 } from './model';
@@ -1645,6 +1647,103 @@ export function useListDecisionsApiLoopSessionsSessionIdDecisionsGet<TData = Awa
 
 
 
+
+export type exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse200 = {
+  data: SpecArtifactResponse
+  status: 200
+}
+
+export type exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponseSuccess = (exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse200) & {
+  headers: Headers;
+};
+export type exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponseError = (exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse409 | exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse422) & {
+  headers: Headers;
+};
+
+export type exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse = (exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponseSuccess | exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponseError)
+
+export const getExportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostUrl = (sessionId: string,) => {
+
+
+
+
+  return `/api/loop/sessions/${sessionId}/spec-artifact`
+}
+
+/**
+ * @summary Export Spec Artifact
+ */
+export const exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost = async (sessionId: string,
+    specArtifactExportRequest?: SpecArtifactExportRequest, options?: Parameters<typeof customFetch>[1]): Promise<exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse> => {
+
+  return customFetch<exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse>(getExportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostUrl(sessionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: specArtifactExportRequest === undefined ? options?.headers : { 'Content-Type': 'application/json', ...options?.headers },
+    body: specArtifactExportRequest === undefined ? undefined : JSON.stringify(
+      specArtifactExportRequest)
+  }
+);}
+
+
+
+
+
+export const getExportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest>}, TContext> => {
+
+const mutationKey = ['exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost>>, {sessionId: string;data?: BodyType<SpecArtifactExportRequest>}> = (props) => {
+          const {sessionId,data} = props ?? {};
+
+          return  exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost(sessionId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ExportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostMutationResult = NonNullable<Awaited<ReturnType<typeof exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost>>>
+    export type ExportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostMutationBody = BodyType<SpecArtifactExportRequest>
+    export type ExportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostMutationError = ErrorType<OperationalError | HTTPValidationError>
+
+    /**
+ * @summary Export Spec Artifact
+ */
+export const useExportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost>>,
+        TError,
+        {sessionId: string;data?: BodyType<SpecArtifactExportRequest>},
+        TContext
+      > => {
+      return useMutation(getExportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostMutationOptions(options), queryClient);
+    }
 
 export type confirmApiLoopSessionsSessionIdConfirmPostResponse200 = {
   data: LoopSessionResponse

@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import OperationalError
@@ -25,6 +25,7 @@ from app.modules.loop.schemas import (
     PatchSessionRequest,
     PrepareRequest,
     ReplaceCardsRequest,
+    SpecArtifactExportRequest,
     SpecArtifactResponse,
     WorkingDraftPatchRequest,
 )
@@ -256,7 +257,11 @@ async def export_spec_artifact(
     session_id: UUID,
     account: Annotated[Account, Depends(get_current_account)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    body: Annotated[SpecArtifactExportRequest | None, Body()] = None,
 ) -> SpecArtifactResponse:
+    ack = False if body is None else body.critical_export_ack
     return await _service(db).export_spec_artifact(
-        session_id=session_id, account_id=account.id
+        session_id=session_id,
+        account_id=account.id,
+        critical_export_ack=ack,
     )

@@ -106,6 +106,10 @@ class ReadinessSummary(BaseModel):
     scores: dict[str, int] | None = None
 
 
+class SpecArtifactExportRequest(BaseModel):
+    critical_export_ack: bool = False
+
+
 class SpecArtifactResponse(BaseModel):
     spec_version_id: UUID
     document: dict[str, Any]
@@ -116,6 +120,7 @@ class DecisionResponse(BaseModel):
     kind: str
     node: WorkflowNode | None
     stage_revision_id: UUID | None
+    detail: dict[str, Any] | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

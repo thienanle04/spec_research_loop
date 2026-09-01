@@ -30,16 +30,33 @@ export function ReadinessStageView({
   const scores = (readiness?.scores ?? null) as ConferenceScores | null;
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportOk, setExportOk] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
-  async function exportArtifact() {
+  async function exportArtifact(ack: boolean) {
     setExportError(null);
     setExportOk(false);
     try {
-      await customFetch(`/api/loop/sessions/${sessionId}/spec-artifact`, { method: "POST" });
+      await customFetch(
+        `/api/loop/sessions/${sessionId}/spec-artifact`,
+        ack
+          ? { method: "POST", body: JSON.stringify({ critical_export_ack: true }) }
+          : { method: "POST" },
+      );
+      setConfirmOpen(false);
       setExportOk(true);
     } catch (error) {
       setExportError(getApiErrorMessage(error));
     }
+  }
+
+  function onExportClick() {
+    setExportError(null);
+    setExportOk(false);
+    if (state === "blocked") {
+      setConfirmOpen(true);
+      return;
+    }
+    void exportArtifact(false);
   }
 
   return (
@@ -52,17 +69,21 @@ export function ReadinessStageView({
         <CardContent className="grid gap-4">
           <p className="text-sm font-medium">{STATE_LABEL[state]}</p>
           {scores ? <ConferenceScoreList scores={scores} /> : null}
-          {state === "ready" ? (
-            <Button type="button" className="justify-self-start" onClick={() => void exportArtifact()}>
+          {state === "ready" || state === "blocked" ? (
+            <Button type="button" className="justify-self-start" onClick={onExportClick}>
               Export Spec Artifact
             </Button>
           ) : (
             <p className="text-sm text-muted-foreground">
-              {state === "blocked"
-                ? "CRITICAL Judge Issues block Spec Artifact export until they are gone from the current Aggregator Report."
-                : "Readiness is derived from the current Aggregator Report."}
+              Readiness is derived from the current Aggregator Report.
             </p>
           )}
+          {state === "blocked" ? (
+            <p className="text-sm text-muted-foreground">
+              CRITICAL Judge Issues fail Readiness. Spec Artifact export of the unedited Valid Spec
+              Version requires a Critical Export Confirmation.
+            </p>
+          ) : null}
           {exportOk ? (
             <p role="status" className="text-sm text-muted-foreground">
               Spec Artifact exported.
@@ -75,6 +96,32 @@ export function ReadinessStageView({
           ) : null}
         </CardContent>
       </Card>
+      {confirmOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="critical-export-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+        >
+          <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-lg">
+            <h2 id="critical-export-title" className="font-serif text-lg text-navy">
+              Critical Export Confirmation
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Readiness stays blocked. This records a Critical Export Confirmation and exports the
+              unedited Valid Spec Version as Spec Artifact JSON.
+            </p>
+            <div className="mt-4 grid gap-2">
+              <Button type="button" onClick={() => void exportArtifact(true)}>
+                Confirm export
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => setConfirmOpen(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

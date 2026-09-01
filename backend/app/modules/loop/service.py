@@ -1182,7 +1182,11 @@ class LoopService:
         return {"nodes": nodes}
 
     async def export_spec_artifact(
-        self, *, session_id: UUID, account_id: UUID
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        critical_export_ack: bool = False,
     ) -> SpecArtifactResponse:
         session = await self._load_session(session_id, account_id)
         readiness = await self._readiness(session)
@@ -1192,13 +1196,13 @@ class LoopService:
                 code="readiness_not_evaluated",
                 detail="Spec Artifact export requires a current Aggregator Report",
             )
-        if readiness.state == "blocked":
+        if readiness.state == "blocked" and not critical_export_ack:
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,
-                code="critical_issues_block_export",
+                code="critical_export_confirmation_required",
                 detail=(
-                    "CRITICAL Judge Issues on the current Aggregator Report "
-                    "block Spec Artifact export"
+                    "Spec Artifact export while Readiness is blocked requires "
+                    "a Critical Export Confirmation"
                 ),
             )
         if session.valid_spec_version_id is None:
@@ -1219,6 +1223,21 @@ class LoopService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Spec Version not found"
             )
+        if readiness.state == "blocked":
+            self._db.add(
+                Decision(
+                    session_id=session.id,
+                    kind=DecisionKind.EXPORT_ACK.value,
+                    node=None,
+                    stage_revision_id=None,
+                    detail={
+                        "target": "spec_artifact",
+                        "format": "json",
+                        "spec_version_id": str(spec.id),
+                    },
+                )
+            )
+            await self._db.commit()
         return SpecArtifactResponse(spec_version_id=spec.id, document=spec.document)
 
     async def _readiness(self, session: LoopSession) -> ReadinessSummary:

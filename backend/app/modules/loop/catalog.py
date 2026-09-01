@@ -56,6 +56,7 @@ class DecisionKind(StrEnum):
     EDIT = "edit"
     PICK = "pick"
     REVERT = "revert"
+    EXPORT_ACK = "export_ack"
 
 
 WORKFLOW_NODES: tuple[WorkflowNode, ...] = tuple(WorkflowNode)

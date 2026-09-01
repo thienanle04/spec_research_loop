@@ -288,7 +288,7 @@ async def test_pick_does_not_clear_critical_export_gate(client: AsyncClient) -> 
     assert picked.json()["readiness"]["state"] == "blocked"
     denied = await client.post(f"/api/loop/sessions/{blocked['id']}/spec-artifact")
     assert denied.status_code == 409
-    assert denied.json()["code"] == "critical_issues_block_export"
+    assert denied.json()["code"] == "critical_export_confirmation_required"
 
     draft = await _prepare_gap_judge(client)
     session = await _advance_to_aggregator(client, draft)
