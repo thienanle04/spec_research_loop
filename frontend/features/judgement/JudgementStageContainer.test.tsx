@@ -143,23 +143,42 @@ describe("JudgementStageContainer", () => {
       </QueryClientProvider>,
     );
     const heads = await screen.findByRole("list", { name: "Judge Node Heads" });
-    expect(within(heads).getByRole("listitem", { name: "Gap Judge" })).toHaveTextContent(
-      "Check whether the gap is actually supported by the literature.",
+    const gap = within(heads).getByRole("listitem", { name: "Gap Judge" });
+    expect(gap).toHaveTextContent("Gap Judge");
+    expect(gap).toHaveTextContent("Check whether the gap is actually supported by the literature.");
+    expect(within(heads).getByRole("listitem", { name: "Contribution Judge" })).toHaveTextContent(
+      "Contribution Judge",
     );
     expect(within(heads).getByRole("listitem", { name: "Contribution Judge" })).toHaveTextContent(
       "Check whether the contribution is new, clear, and overstated.",
     );
     expect(within(heads).getByRole("listitem", { name: "Evidence Judge" })).toHaveTextContent(
+      "Evidence Judge",
+    );
+    expect(within(heads).getByRole("listitem", { name: "Evidence Judge" })).toHaveTextContent(
       "Check whether citations actually support the accompanying content.",
+    );
+    expect(within(heads).getByRole("listitem", { name: "Experiment Judge" })).toHaveTextContent(
+      "Experiment Judge",
     );
     expect(within(heads).getByRole("listitem", { name: "Experiment Judge" })).toHaveTextContent(
       "Check whether the experiments are sufficient to support the claim.",
     );
     expect(within(heads).getByRole("listitem", { name: "Conference Judge" })).toHaveTextContent(
+      "Conference Judge",
+    );
+    expect(within(heads).getByRole("listitem", { name: "Conference Judge" })).toHaveTextContent(
       "Evaluate originality, significance, soundness, clarity, and reproducibility.",
     );
-    expect(within(heads).queryByText("Gap Judge")).not.toBeInTheDocument();
-    expect(within(heads).getAllByText("none")).toHaveLength(5);
+    expect(within(heads).getByText("Gap Judge")).toBeInTheDocument();
+    expect(within(heads).getByText("Contribution Judge")).toBeInTheDocument();
+    expect(within(heads).getByText("Evidence Judge")).toBeInTheDocument();
+    expect(within(heads).getByText("Experiment Judge")).toBeInTheDocument();
+    expect(within(heads).getByText("Conference Judge")).toBeInTheDocument();
+    const name = within(gap).getByText("Gap Judge");
+    const status = within(gap).getByText("None");
+    expect(name.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(heads).getAllByText("None")).toHaveLength(5);
     expect(screen.queryByRole("button", { name: "Generate Gap Judge" })).not.toBeInTheDocument();
     const runButton = screen.getByRole("button", { name: "Run evaluation" });
     expect(runButton).toHaveClass("w-full");
@@ -183,7 +202,7 @@ describe("JudgementStageContainer", () => {
     );
     expect(await screen.findByRole("list", { name: "Judge Node Heads" })).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "Gap Judge" })).toBeInTheDocument();
-    expect(screen.queryByText("Gap Judge")).not.toBeInTheDocument();
+    expect(screen.getByText("Gap Judge")).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /Working Draft/i })).not.toBeInTheDocument();
   });
 
@@ -593,7 +612,7 @@ describe("JudgementStageContainer", () => {
     });
     const gap = within(heads).getByRole("listitem", { name: "Gap Judge" });
     await waitFor(() =>
-      expect(within(gap).getByText("evaluating")).toBeInTheDocument(),
+      expect(within(gap).getByText("Evaluating")).toBeInTheDocument(),
     );
     emit?.({
       type: "draft_patch",
@@ -611,7 +630,7 @@ describe("JudgementStageContainer", () => {
     });
     emit?.({ type: "done", node: "gap_judge", version: 5 });
     await waitFor(() =>
-      expect(within(gap).getByText("done")).toBeInTheDocument(),
+      expect(within(gap).getByText("Done")).toBeInTheDocument(),
     );
     expect(within(gap).queryByText(/1 CRITICAL/)).not.toBeInTheDocument();
     emit?.({
@@ -622,7 +641,7 @@ describe("JudgementStageContainer", () => {
     });
     const contribution = within(heads).getByRole("listitem", { name: "Contribution Judge" });
     await waitFor(() =>
-      expect(within(contribution).getByText("evaluating")).toBeInTheDocument(),
+      expect(within(contribution).getByText("Evaluating")).toBeInTheDocument(),
     );
     emit?.({
       type: "draft_patch",
@@ -631,7 +650,7 @@ describe("JudgementStageContainer", () => {
     });
     emit?.({ type: "done", node: "contribution_judge", version: 5 });
     await waitFor(() =>
-      expect(within(contribution).getByText("done")).toBeInTheDocument(),
+      expect(within(contribution).getByText("Done")).toBeInTheDocument(),
     );
     emit?.({
       type: "draft_patch",
@@ -648,10 +667,10 @@ describe("JudgementStageContainer", () => {
     emit?.({ type: "done", node: "conference_judge", version: 5 });
     const conference = within(heads).getByRole("listitem", { name: "Conference Judge" });
     await waitFor(() =>
-      expect(within(conference).getByText("done")).toBeInTheDocument(),
+      expect(within(conference).getByText("Done")).toBeInTheDocument(),
     );
     expect(within(conference).queryByText("7/10")).not.toBeInTheDocument();
-    expect(within(gap).getByText("done")).toBeInTheDocument();
+    expect(within(gap).getByText("Done")).toBeInTheDocument();
     emit?.({
       type: "draft_patch",
       node: "aggregator",
@@ -854,7 +873,7 @@ describe("JudgementStageContainer", () => {
     );
     expect(await screen.findByText("Revise the claim")).toBeInTheDocument();
     const heads = screen.getByRole("list", { name: "Judge Node Heads" });
-    expect(within(heads).getAllByText("done")).toHaveLength(5);
+    expect(within(heads).getAllByText("Done")).toHaveLength(5);
     expect(within(heads).queryByText("current")).not.toBeInTheDocument();
     expect(within(heads).queryByText("7/10")).not.toBeInTheDocument();
     expect(screen.getAllByText("7/10").length).toBeGreaterThanOrEqual(1);
@@ -888,7 +907,7 @@ describe("JudgementStageContainer", () => {
       </QueryClientProvider>,
     );
     const gap = await screen.findByRole("listitem", { name: "Gap Judge" });
-    expect(within(gap).getByText("stale")).toBeInTheDocument();
+    expect(within(gap).getByText("Stale")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Stale Workflow Node" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Run evaluation" }));
     expect(mocks.streamStart).not.toHaveBeenCalled();
