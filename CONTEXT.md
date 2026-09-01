@@ -65,7 +65,7 @@ A confirmable unit in a Loop Session's invalidation graph (for example idea inte
 _Avoid_: DAG node (in product copy), step, pipeline stage (that is a Loop Stage)
 
 **Node Head**:
-The Loop Session's pointer for one Workflow Node: empty, a current Stage Revision, or a Stale Stage Revision.
+The Loop Session's pointer for one Workflow Node: empty, a current Stage Revision, or a Stale Stage Revision. Independent judges compact heads show empty as none, current as done, and in-flight generate as evaluating.
 _Avoid_: NodeState, stage status, head (when you mean Valid Spec Version)
 
 **Card**:
