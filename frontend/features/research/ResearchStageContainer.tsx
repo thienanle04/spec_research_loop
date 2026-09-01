@@ -20,10 +20,12 @@ import { CardKind, type CitationResponse, type LoopSessionResponse } from "@/lib
 import { useLoopSessionSave } from "../loop/loop-session-save";
 import { ResearchStagePanel } from "./ResearchStagePanel";
 import {
+  discoveryLeadsFromNarrative,
   gapCandidateFrom,
   gapCandidateFromNarrative,
   isCompleteGap,
   researchInputsFrom,
+  toolCoverageFromNarrative,
   type GapCandidate,
   type ResearchStreamEvent,
 } from "./types";
@@ -89,6 +91,8 @@ export function ResearchStageContainer({
   }, [listedCitations, partialCitations]);
   const findings = findingsQuery.data?.status === 200 ? findingsQuery.data.data : [];
   const currentNarrative = narrative(session.working_draft_narrative);
+  const discoveryLeads = discoveryLeadsFromNarrative(currentNarrative);
+  const toolCoverage = toolCoverageFromNarrative(currentNarrative);
   const gapCandidate = gapCandidateFromNarrative(currentNarrative);
   const gapCard = session.cards.find((card) => card.kind === CardKind.gap);
   const selectedGap = gapCandidateFrom(gapCard?.body);
@@ -205,7 +209,6 @@ export function ResearchStageContainer({
         sessionId,
         node: researchNode as "research_inputs" | "related_work" | "gap",
         expectedVersion: expectedVersion(),
-        maxResults: researchNode === "related_work" ? 5 : undefined,
         onEvent: handleStreamEvent,
       });
       await refreshResearchData();
@@ -288,6 +291,8 @@ export function ResearchStageContainer({
       inputs={inputs}
       citations={citations}
       findings={findings}
+      discoveryLeads={discoveryLeads}
+      toolCoverage={toolCoverage}
       gapCandidate={displayedGapCandidate}
       selectedGap={displayedSelectedGap}
       running={stream.running}

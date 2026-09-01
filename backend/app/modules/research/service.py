@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -75,6 +76,8 @@ from app.modules.research.schemas import (
 )
 from app.ports.llm import LlmPort, LlmProviderError
 from app.ports.storage import ObjectStoragePort
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -200,6 +203,67 @@ class _RerankItem(BaseModel):
 
 class _RerankResponse(BaseModel):
     rankings: list[_RerankItem] = Field(min_length=1)
+
+
+class _SearchFacet(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    objective: str = Field(min_length=1, max_length=300)
+    anchors: list[str] = Field(min_length=1)
+    # A facet may be evaluation-only. In tool-oriented search, only the named-tool
+    # facet contributes provider queries; the other facets score candidate relevance.
+    queries: list[str] = Field(default_factory=list)
+    min_results: int = Field(default=2, ge=1, le=2)
+    tool_names: list[str] = Field(default_factory=list)
+    candidate_work_titles: list[str] = Field(default_factory=list)
+
+
+class _SearchPlan(BaseModel):
+    facets: list[_SearchFacet] = Field(min_length=1, max_length=4)
+
+    @property
+    def queries(self) -> list[str]:
+        return list(
+            dict.fromkeys(query for facet in self.facets for query in facet.queries)
+        )
+
+
+class _DiscoveryExpansion(BaseModel):
+    tool_discovery_keywords: list[str] = Field(default_factory=list)
+    supporting_context_keywords: list[str] = Field(default_factory=list)
+    tools_and_frameworks: list[str] = Field(default_factory=list)
+    techniques: list[str] = Field(default_factory=list, max_length=8)
+    candidate_work_titles: list[str] = Field(default_factory=list, max_length=6)
+    aliases: list[str] = Field(default_factory=list, max_length=8)
+
+
+_IMPLEMENTATION_TOOLS_FACET = "implementation_tools"
+_ABSTRACT_ONLY_FINDING_WARNING = (
+    "Finding is grounded only in the provider abstract; full text is required "
+    "before it can support a Gap Candidate."
+)
+
+# Conservative, topic-triggered discovery aliases. These names are search leads,
+# never accepted as Citation evidence until a provider returns a verifiable record.
+_KNOWN_RESEARCH_TOOLS: tuple[tuple[frozenset[str], tuple[str, ...]], ...] = (
+    (
+        frozenset(
+            {
+                "feedback",
+                "gradient",
+                "iterative",
+                "optimization",
+                "optimize",
+                "prompt",
+                "refinement",
+            }
+        ),
+        ("DSPy", "TextGrad", "OPRO", "ProTeGi"),
+    ),
+    (
+        frozenset({"judge", "evaluator", "evaluation", "grading"}),
+        ("G-Eval", "Prometheus"),
+    ),
+)
 
 
 @dataclass(slots=True)
@@ -416,12 +480,22 @@ class ResearchService:
                     citation_count=citation_count,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - stream converts failures to typed events
+        except Exception as exc:
             await self._db.rollback()
+            logger.exception(
+                "Research generation failed for node=%s session_id=%s",
+                run.node.value,
+                run.session_id,
+            )
             message = (
                 str(exc)
                 if isinstance(exc, ResearchGenerationError)
-                else f"Research generation failed: {type(exc).__name__}"
+                else (
+                    "Research generation failed because malformed Unicode text "
+                    "could not be encoded; retry after the source text is normalized"
+                    if isinstance(exc, UnicodeEncodeError)
+                    else f"Research generation failed: {type(exc).__name__}"
+                )
             )
             yield self._event(
                 ErrorEvent(
@@ -435,11 +509,11 @@ class ResearchService:
         self,
         run: GenerationRun,
     ) -> AsyncIterator[dict[str, Any]]:
-        inputs_payload = (
-            run.context.get("upstream", {})
-            .get(WorkflowNode.RESEARCH_INPUTS.value, {})
-            .get("narrative", {})
+        upstream = _dict_payload(run.context.get("upstream"))
+        inputs_node = _dict_payload(
+            upstream.get(WorkflowNode.RESEARCH_INPUTS.value)
         )
+        inputs_payload = _dict_payload(inputs_node.get("narrative"))
         try:
             inputs = ResearchInputs.model_validate(inputs_payload)
         except ValidationError:
@@ -452,9 +526,35 @@ class ResearchService:
 
         idea = _idea_context(run.context)
         output_language = _idea_output_language(idea)
-        queries, query_warnings = await self._generate_queries(inputs, idea)
-        for warning in query_warnings:
+        yield self._event(
+            ProgressEvent(
+                node=run.node,
+                message="Expanding confirmed keywords into named research leads",
+                pct=5,
+            )
+        )
+        discovery, discovery_warnings = await self._generate_discovery_expansion(
+            inputs,
+            idea,
+        )
+        search_plan, query_warnings = await self._generate_search_plan(
+            inputs,
+            idea,
+            discovery=discovery,
+        )
+        queries = search_plan.queries
+        for warning in [*discovery_warnings, *query_warnings]:
             yield self._warning(run.node, "llm_fallback", warning)
+        yield self._event(
+            ProgressEvent(
+                node=run.node,
+                message=(
+                    f"Searching {len(queries)} queries derived from confirmed keywords "
+                    "and named research leads"
+                ),
+                pct=10,
+            )
+        )
 
         preferred = inputs.preferred_sources
         source_preferences = SourcePreferences(
@@ -464,20 +564,27 @@ class ResearchService:
             sourced_surveys=preferred.sourced_surveys,
         )
         settings = get_settings()
+        citation_target = (
+            len(discovery.tools_and_frameworks)
+            if discovery.tools_and_frameworks
+            else (run.body.max_results or max(len(queries), 1))
+        )
         candidate_limit = min(
-            max(settings.research_candidate_limit, run.body.max_results * 5), 100
+            max(settings.research_candidate_limit, citation_target * 5), 100
         )
         records, provider_failures = await self._search_provider_queries(
             queries=queries,
             preferences=source_preferences,
             limit=candidate_limit,
         )
+        retrieved_candidate_count = len(records)
 
         if queries and provider_failures and not records:
             raise ResearchGenerationError(provider_failures[-1])
         for failure in provider_failures:
             yield self._warning(run.node, "provider_error", failure)
 
+        _tag_search_facets(records, search_plan)
         unique_records = _deduplicate_records(records)
         ranked_records, discarded_count = _rank_relevant_records(
             unique_records,
@@ -485,15 +592,93 @@ class ResearchService:
             idea=idea,
             queries=queries,
         )
-        if discarded_count:
-            yield self._warning(
-                run.node,
-                "low_relevance_results",
-                (
-                    f"Discarded {discarded_count} scholarly result(s) that did not "
-                    "cover a distinctive concept from the confirmed research idea."
-                ),
+        evaluation_context = {
+            "tool_discovery_keywords": discovery.tool_discovery_keywords,
+            "supporting_context_keywords": discovery.supporting_context_keywords,
+            "tools_and_frameworks": discovery.tools_and_frameworks,
+            "techniques": discovery.techniques,
+            "aliases": discovery.aliases,
+            "candidate_work_titles": discovery.candidate_work_titles,
+            "facets": [
+                {
+                    "id": facet.id,
+                    "objective": facet.objective,
+                    "anchors": facet.anchors,
+                }
+                for facet in search_plan.facets
+            ],
+        }
+        rerank = await self._rerank_records(
+            ranked_records,
+            idea=idea,
+            inputs=inputs,
+            queries=queries,
+            evaluation_context=evaluation_context,
+            objective=(
+                "For each discovered tool/framework, choose the single paper about that "
+                "tool that is most relevant to the confirmed Idea. Use the conceptual "
+                "facets only as relevance criteria, not as additional retrieval targets."
+                if discovery.tools_and_frameworks
+                else "Find the most useful sources for a source-grounded Related Work comparison."
+            ),
+        )
+        for warning in rerank.warnings:
+            yield self._warning(run.node, "rerank_fallback", warning)
+        ranked_records = rerank.records
+
+        follow_up_queries: dict[str, list[str]] = {}
+        missing_facets = _missing_search_facets(ranked_records, search_plan)
+        if missing_facets and not discovery.tools_and_frameworks:
+            follow_up_queries = _facet_follow_up_queries(
+                missing_facets,
+                existing_queries=queries,
             )
+            if follow_up_queries:
+                _extend_search_plan(search_plan, follow_up_queries)
+                queries = search_plan.queries
+                follow_up_records, follow_up_failures = (
+                    await self._search_provider_queries(
+                        queries=[
+                            query
+                            for facet_queries in follow_up_queries.values()
+                            for query in facet_queries
+                        ],
+                        preferences=source_preferences,
+                        limit=candidate_limit,
+                    )
+                )
+                for failure in follow_up_failures:
+                    yield self._warning(run.node, "provider_error", failure)
+                if follow_up_records:
+                    retrieved_candidate_count += len(follow_up_records)
+                    _tag_search_facets(follow_up_records, search_plan)
+                    unique_records = _deduplicate_records(
+                        [*unique_records, *follow_up_records]
+                    )
+                    ranked_records, follow_up_discarded = _rank_relevant_records(
+                        unique_records,
+                        inputs=inputs,
+                        idea=idea,
+                        queries=queries,
+                    )
+                    discarded_count += follow_up_discarded
+                    rerank = await self._rerank_records(
+                        ranked_records,
+                        idea=idea,
+                        inputs=inputs,
+                        queries=queries,
+                        evaluation_context=evaluation_context,
+                        objective=(
+                            "Select evidence for every SearchPlan facet, prioritizing direct "
+                            "method, evaluation, task/domain, and failure-mitigation coverage."
+                        ),
+                    )
+                    for warning in rerank.warnings:
+                        yield self._warning(run.node, "rerank_fallback", warning)
+                    ranked_records = rerank.records
+
+        # Citation-graph expansion must start from semantically reranked seeds. Using
+        # broad provider/heuristic seeds here amplifies an early query translation error.
         if ranked_records and isinstance(self._source, CitationGraphPort):
             try:
                 expanded = await self._source.expand_related(
@@ -507,6 +692,8 @@ class ResearchService:
                     f"Citation graph expansion failed: {type(exc).__name__}",
                 )
             else:
+                retrieved_candidate_count += len(expanded)
+                _tag_search_facets(expanded, search_plan)
                 unique_records = _deduplicate_records([*unique_records, *expanded])
                 ranked_records, graph_discarded = _rank_relevant_records(
                     unique_records,
@@ -515,16 +702,27 @@ class ResearchService:
                     queries=queries,
                 )
                 discarded_count += graph_discarded
-        rerank = await self._rerank_records(
+                if expanded:
+                    rerank = await self._rerank_records(
+                        ranked_records,
+                        idea=idea,
+                        inputs=inputs,
+                        queries=queries,
+                        evaluation_context=evaluation_context,
+                        objective=(
+                            "Find the most useful sources for a source-grounded Related "
+                            "Work comparison after citation-graph expansion."
+                        ),
+                    )
+                    for warning in rerank.warnings:
+                        yield self._warning(run.node, "rerank_fallback", warning)
+                    ranked_records = rerank.records
+        ranked_records = _facet_balanced_records(ranked_records, search_plan)
+        ranked_records = _diversify_records_by_research_work(
             ranked_records,
-            idea=idea,
-            inputs=inputs,
-            queries=queries,
-            objective="Find the most useful sources for a source-grounded Related Work comparison.",
+            tool_names=discovery.tools_and_frameworks,
+            tool_relevance_keywords=discovery.tool_discovery_keywords,
         )
-        for warning in rerank.warnings:
-            yield self._warning(run.node, "rerank_fallback", warning)
-        ranked_records = rerank.records
         ranked_candidate_count = len(ranked_records)
 
         prepared_records: list[
@@ -532,8 +730,40 @@ class ResearchService:
         ] = []
         skipped_inaccessible_count = 0
         require_full_text = get_settings().research_require_downloadable_full_text
+        verification_by_record_id: dict[int, VerificationResult] = {}
+        if isinstance(self._verifier, BatchCitationVerifier):
+            # Resolve a bounded backfill window before downloading. Federated
+            # verification can add an OpenAlex OA/PDF URL to a Semantic Scholar
+            # discovery record; resolving after download would lose that full text.
+            resolution_window = [
+                record for record in ranked_records if not _record_has_full_text(record)
+            ][: citation_target * 2]
+            try:
+                early_verifications = await self._verifier.verify_many(
+                    citations=resolution_window
+                )
+            except Exception as exc:  # noqa: BLE001 - retrieval still has discovery data
+                yield self._warning(
+                    run.node,
+                    "verification_error",
+                    "Pre-download Citation resolution was deferred: "
+                    + (
+                        str(exc)
+                        if isinstance(exc, ScholarlyProviderError)
+                        else type(exc).__name__
+                    ),
+                )
+            else:
+                for record, verification in zip(
+                    resolution_window,
+                    early_verifications,
+                    strict=True,
+                ):
+                    verification_by_record_id[id(record)] = verification
+                    if verification.record is not None:
+                        _merge_scholarly_records(record, verification.record)
         for record in ranked_records:
-            if len(prepared_records) >= run.body.max_results:
+            if len(prepared_records) >= citation_target:
                 break
             data = self._record_create(record)
             citation, _ = await self._upsert_citation(
@@ -558,19 +788,21 @@ class ResearchService:
 
         unique_records = [record for record, _, _, _ in prepared_records]
         total = max(len(unique_records), 1)
-        batch_verifications = None
-        if isinstance(self._verifier, BatchCitationVerifier):
+        unresolved_records = [
+            record
+            for record in unique_records
+            if id(record) not in verification_by_record_id
+        ]
+        if unresolved_records and isinstance(self._verifier, BatchCitationVerifier):
             try:
-                batch_verifications = await self._verifier.verify_many(
-                    citations=unique_records
+                later_verifications = await self._verifier.verify_many(
+                    citations=unresolved_records
                 )
             except Exception as exc:  # noqa: BLE001 - preserve search without a burst
-                # Do not turn one failed batch request into N individual provider
-                # requests. Keep the citations and mark verification as deferred.
-                batch_verifications = [
-                    VerificationResult(status=VerificationStatus.WARNING)
-                    for _ in unique_records
-                ]
+                for record in unresolved_records:
+                    verification_by_record_id[id(record)] = VerificationResult(
+                        status=VerificationStatus.WARNING
+                    )
                 yield self._warning(
                     run.node,
                     "verification_error",
@@ -581,16 +813,27 @@ class ResearchService:
                         else type(exc).__name__
                     ),
                 )
+            else:
+                verification_by_record_id.update(
+                    {
+                        id(record): verification
+                        for record, verification in zip(
+                            unresolved_records,
+                            later_verifications,
+                            strict=True,
+                        )
+                    }
+                )
+        abstract_only_finding_count = 0
         for index, (record, citation, document, text_warnings) in enumerate(
             prepared_records,
             start=1,
         ):
             try:
-                verification = (
-                    batch_verifications[index - 1]
-                    if batch_verifications is not None
-                    else await self._verifier.verify(citation=record)
-                )
+                verification = verification_by_record_id.get(id(record))
+                if verification is None:
+                    verification = await self._verifier.verify(citation=record)
+                    verification_by_record_id[id(record)] = verification
                 citation.verification_status = verification.status.value
                 if verification.record is not None:
                     self._merge_resolved_record(citation, verification.record)
@@ -619,8 +862,16 @@ class ResearchService:
                 document=document,
                 source_object_key=citation.text_object_key,
             )
+            citation.source_metadata = {
+                **(citation.source_metadata or {}),
+                "research_work_name": record.metadata.get("research_work_name"),
+                "research_work_key": record.metadata.get("research_work_key"),
+            }
             for warning in analysis_warnings:
-                yield self._warning(run.node, "llm_fallback", warning)
+                if warning == _ABSTRACT_ONLY_FINDING_WARNING:
+                    abstract_only_finding_count += 1
+                else:
+                    yield self._warning(run.node, "llm_fallback", warning)
             await self._upsert_finding(run.session_id, finding)
             await self._db.flush()
             # SQLAlchemy expires the on-update timestamp after flushing the
@@ -637,22 +888,75 @@ class ResearchService:
                 )
             )
 
+        if skipped_inaccessible_count:
+            skipped_reason = (
+                "because no downloadable full text could be retrieved after "
+                "cross-provider resolution. Metadata, DOI, and abstract pages do "
+                "not count while strict full-text mode is enabled."
+                if require_full_text
+                else "because no analyzable text could be retrieved from a paper, "
+                "metadata/DOI page, or provider abstract."
+            )
+            yield self._warning(
+                run.node,
+                "full_text_unavailable",
+                (
+                    f"Skipped {skipped_inaccessible_count} scholarly candidate(s) "
+                    f"{skipped_reason}"
+                ),
+            )
+
+        if abstract_only_finding_count:
+            yield self._warning(
+                run.node,
+                "abstract_only_findings",
+                (
+                    f"{abstract_only_finding_count} Citation(s) could only be analyzed "
+                    "from provider abstracts. They remain useful for Related Work, but "
+                    "cannot support a Gap Candidate until full text is retrieved."
+                ),
+            )
+
         narrative = {
             "search_queries": queries,
             "query_language": "en",
             "output_language": output_language,
-            "query_plan": _query_plan(queries),
+            "query_plan": search_plan.model_dump(mode="json"),
+            "discovery_leads": discovery.model_dump(mode="json"),
+            "discovery_leads_status": "unverified_search_leads",
+            "tool_coverage": _selected_tool_coverage(
+                prepared_records,
+                discovery.tools_and_frameworks,
+            ),
+            "query_families": _query_plan(queries),
+            "facet_coverage": _search_facet_coverage(unique_records, search_plan),
+            "adaptive_search_rounds": 1 if follow_up_queries else 0,
+            "missing_facets": [
+                facet.id
+                for facet in _missing_search_facets(unique_records, search_plan)
+            ],
             "citation_count": len(unique_records),
-            "candidate_count": len(records),
+            "citation_target": citation_target,
+            "candidate_count": retrieved_candidate_count,
             "ranked_candidate_count": ranked_candidate_count,
+            "discarded_candidate_count": discarded_count,
             "reranked_candidate_count": rerank.candidate_count,
             "reranking_applied": rerank.applied,
             "analyzed_result_count": len(unique_records),
+            "abstract_only_finding_count": abstract_only_finding_count,
             "skipped_inaccessible_count": skipped_inaccessible_count,
             "selection_rule": (
-                "quality_diversity_portfolio_llm_listwise"
-                if rerank.applied
-                else "quality_diversity_portfolio_heuristic"
+                "one_best_citation_per_discovered_tool_llm_listwise"
+                if discovery.tools_and_frameworks and rerank.applied
+                else (
+                    "one_best_citation_per_discovered_tool_heuristic"
+                    if discovery.tools_and_frameworks
+                    else (
+                        "quality_diversity_portfolio_llm_listwise"
+                        if rerank.applied
+                        else "quality_diversity_portfolio_heuristic"
+                    )
+                )
             ),
             "graph_expansion_enabled": isinstance(self._source, CitationGraphPort),
             "preferred_sources": preferred.model_dump(mode="json"),
@@ -700,8 +1004,9 @@ class ResearchService:
             return data.model_dump(mode="json"), []
         except Exception as exc:  # noqa: BLE001 - vendor-safe deterministic fallback
             try:
+                working_draft = _dict_payload(context.get("working_draft"))
                 current = ResearchInputs.model_validate(
-                    context.get("working_draft", {}).get("narrative", {})
+                    _dict_payload(working_draft.get("narrative"))
                 )
             except ValidationError:
                 current = ResearchInputs()
@@ -784,25 +1089,121 @@ class ResearchService:
         inputs: ResearchInputs,
         idea: dict[str, Any],
     ) -> tuple[list[str], list[str]]:
+        discovery, discovery_warnings = await self._generate_discovery_expansion(
+            inputs,
+            idea,
+        )
+        plan, plan_warnings = await self._generate_search_plan(
+            inputs,
+            idea,
+            discovery=discovery,
+        )
+        return plan.queries, [*discovery_warnings, *plan_warnings]
+
+    async def _generate_discovery_expansion(
+        self,
+        inputs: ResearchInputs,
+        idea: dict[str, Any],
+    ) -> tuple[_DiscoveryExpansion, list[str]]:
+        """Expand confirmed concepts into unverified named search leads."""
         try:
             raw = await self._llm.complete(
                 system=(
-                    "research-query: return only JSON with a queries string array. "
+                    "research-discovery: return only one JSON object with exactly "
+                    "tool_discovery_keywords, supporting_context_keywords, "
+                    "tools_and_frameworks, techniques, candidate_work_titles, and aliases; "
+                    "every value is an array of strings. First partition every confirmed "
+                    "keyword into exactly one keyword group. tool_discovery_keywords must "
+                    "contain only exact confirmed keyword strings that directly express the "
+                    "central intervention, mechanism, or technical approach in the Research "
+                    "Question. supporting_context_keywords must contain all remaining keywords, "
+                    "including task/domain, dataset, outcome, metric, failure mode, evaluation "
+                    "criterion, or secondary context. Starting from the "
+                    "confirmed Research Input keywords and Idea, propose concrete named "
+                    "tools/frameworks, canonical technique names, likely exact scholarly "
+                    "work titles, and precise academic aliases that can improve retrieval. "
+                    "Use English search terminology and preserve official capitalization. "
+                    "Generate tools/frameworks only from tool_discovery_keywords. Never use a "
+                    "supporting_context_keyword to propose an additional tool. Use supporting "
+                    "keywords only to judge which paper about each tool best matches the Idea. "
+                    "Prefer established names directly connected to the central mechanism; "
+                    "omit uncertain or merely generic items. Candidate titles are search "
+                    "leads only: do not invent authors, years, venues, DOI, URL, findings, "
+                    "or citation metadata, and do not claim that any lead exists. "
+                    "Return every directly relevant, established tool/framework you can "
+                    "identify; do not target or pad to a predetermined count."
+                ),
+                prompt=json.dumps(
+                    {
+                        "idea": idea,
+                        "confirmed_keywords": inputs.keywords,
+                        "concept_anchors": _idea_search_concepts(idea),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            return _discovery_expansion_from_payload(
+                _json_value(raw, dict),
+                inputs=inputs,
+                idea=idea,
+            ), []
+        except Exception as exc:  # noqa: BLE001 - safe deterministic fallback
+            return _fallback_discovery_expansion(inputs, idea), [
+                (
+                    "Named research lead expansion used a conservative fallback: "
+                    f"{_llm_failure_summary(exc)}"
+                )
+            ]
+
+    async def _generate_search_plan(
+        self,
+        inputs: ResearchInputs,
+        idea: dict[str, Any],
+        *,
+        discovery: _DiscoveryExpansion | None = None,
+    ) -> tuple[_SearchPlan, list[str]]:
+        """Create evaluation facets and derive retrieval from discovered tools."""
+        discovery = discovery or _DiscoveryExpansion()
+        # This limit only bounds the model-authored evaluation plan. Once named tools
+        # exist, provider query count is derived exactly from that tool list.
+        planning_limit = max(
+            len(discovery.tools_and_frameworks),
+            len(_clean_keywords(inputs.keywords)) * 4,
+            1,
+        )
+        try:
+            raw = await self._llm.complete(
+                system=(
+                    "research-query: return only JSON with a facets array. Each facet must "
+                    "contain id, objective, anchors, queries, and min_results. Produce three "
+                    "or four mutually distinct facets that collectively cover every confirmed "
+                    "Research Input keyword. Group synonyms and overlapping problem terms into "
+                    "one facet; keep implementation tools, evaluation, task/domain, and "
+                    "failure/mitigation dimensions separate when present. When the Idea concerns "
+                    "a method that has named implementations, the first facet must use id "
+                    "implementation_tools and include concrete, established tool/framework/technique "
+                    "names as anchors (for prompt optimization consider DSPy, TextGrad, OPRO, and "
+                    "ProTeGi). Its queries must each name at least one concrete implementation; do "
+                    "not emit a tools/frameworks-only generic query. Set min_results to 2. Give every facet "
+                    "exactly two independent scholarly queries: one direct method or relationship "
+                    "query and one adjacent-method, evaluation, limitation, survey, or benchmark "
+                    "query. Do not repeat the same broad query across facets. "
+                    "Use the supplied discovery_leads as unverified evaluation context. When "
+                    "named tools/frameworks exist, the provider will receive exactly one exact-name "
+                    "query per tool; candidate titles, techniques, aliases, and conceptual facets "
+                    "must only help evaluate which returned paper is most relevant to the Idea. "
+                    "Never treat a discovery lead as a verified Citation. "
                     "Write every query in English regardless of the input language. Translate "
                     "Vietnamese and other non-English concepts into canonical English academic "
                     "terminology while preserving acronyms and technical names. Queries are "
                     "retrieval keys, not user-facing prose; never emit a non-English query. "
-                    "Create separate, concise scholarly queries for background, relationships, "
-                    "solutions, and feasibility or gaps. Problem Cards provide core concepts. "
+                    "Problem Cards provide core concepts. "
                     "Split each Research Question into the smallest useful relationship queries "
                     "instead of forcing all variables into one query. Treat Constraint Cards as "
                     "optional filters and include only externally searchable constraints when a "
                     "query genuinely needs narrowing; never include internal delivery limits. "
                     "Turn Open Question Cards into separate exploratory queries for evidence "
                     "gaps, conflicting findings, mechanisms, limitations, or measurement. Use "
-                    "Return exactly four independent queries and preserve useful synonyms: "
-                    "one core relationship query, one synonym or adjacent-method query, one "
-                    "limitations or future-work query, and one survey or benchmark query. Use "
                     "OR only for precise synonyms and AND between concept groups. Prefer two or "
                     "three concept groups per query. Keep each query at no more than eight "
                     "content words; never concatenate the full idea into one query. Do not "
@@ -814,43 +1215,79 @@ class ResearchService:
                         "idea": idea,
                         "concept_anchors": _idea_search_concepts(idea),
                         "inputs": inputs.model_dump(),
+                        "discovery_leads": (
+                            discovery.model_dump(mode="json") if discovery else {}
+                        ),
                     },
                     ensure_ascii=False,
                 ),
             )
-            payload = _json_value(raw, dict)
-            model_queries = [
-                str(item).strip()
-                for item in payload.get("queries", [])
-                if str(item).strip()
-            ]
-            if not model_queries:
-                raise ValueError("No queries returned")
-            normalized = _normalize_search_queries(model_queries, max_terms=8)
-            if not normalized:
-                raise ValueError(
-                    "All generated queries exceeded the provider query budget"
+            try:
+                payload = _json_value(raw, dict)
+                plan = _search_plan_from_payload(
+                    payload,
+                    inputs=inputs,
+                    idea=idea,
+                    limit=planning_limit,
+                    tool_discovery_keywords=discovery.tool_discovery_keywords,
                 )
-            composed = _compose_search_queries(normalized, inputs, idea)
-            english_queries: list[str] = []
-            for query in composed:
-                try:
-                    english_queries.extend(
-                        _normalize_search_queries([query], max_terms=8)
-                    )
-                except ValueError:
-                    # Non-English confirmed Cards still inform the model prompt. They
-                    # must not leak into provider queries when deterministic coverage
-                    # expansion cannot translate them safely.
-                    continue
-            return _ensure_query_families(
-                english_queries,
-                limit=get_settings().research_search_query_limit,
+            except (
+                ValidationError,
+                json.JSONDecodeError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                repaired_raw = await self._llm.complete(
+                    system=(
+                        "research-query-repair: repair the previous response into exactly "
+                        "one valid JSON object. Return either {\"facets\":[{\"id\":\"...\","
+                        "\"objective\":\"...\",\"anchors\":[\"...\"],\"queries\":[\"...\"],"
+                        "\"min_results\":2}]} or the legacy {\"queries\":[\"...\"]} "
+                        "shape. Preserve English scholarly terminology, confirmed keyword "
+                        "coverage, named tools, and candidate work titles from the request. "
+                        "Every keyword named in validation_error must appear directly in at "
+                        "least one anchor or query; keep conceptual anchors at six words or "
+                        "fewer. Candidate work titles are evaluation context and do not "
+                        "substitute for a missing short concept anchor. "
+                        "Do not include markdown, reasoning, comments, or text outside JSON."
+                    ),
+                    prompt=json.dumps(
+                        {
+                            "validation_error": _structured_failure_detail(exc),
+                            "previous_response": raw[-12_000:],
+                            "confirmed_keywords": inputs.keywords,
+                            "idea": idea,
+                            "discovery_leads": (
+                                discovery.model_dump(mode="json")
+                                if discovery
+                                else {}
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                payload = _json_value(repaired_raw, dict)
+                plan = _search_plan_from_payload(
+                    payload,
+                    inputs=inputs,
+                    idea=idea,
+                    limit=planning_limit,
+                    tool_discovery_keywords=discovery.tool_discovery_keywords,
+                )
+            return _enrich_search_plan_with_discovery(
+                plan,
+                discovery,
             ), []
         except Exception as exc:  # noqa: BLE001 - deterministic fallback
-            return _ensure_query_families(
-                _english_query_fallback(inputs, idea),
-                limit=get_settings().research_search_query_limit,
+            plan = _fallback_search_plan(
+                inputs,
+                idea,
+                limit=planning_limit,
+                tool_discovery_keywords=discovery.tool_discovery_keywords,
+            )
+            return _enrich_search_plan_with_discovery(
+                plan,
+                discovery,
             ), [
                 (
                     "English query generation used a conservative fallback: "
@@ -866,6 +1303,7 @@ class ResearchService:
         inputs: ResearchInputs,
         queries: list[str],
         objective: str,
+        evaluation_context: dict[str, Any] | None = None,
     ) -> _RerankOutcome:
         """Apply a bounded listwise LLM rerank with heuristic-order fallback."""
         settings = get_settings()
@@ -905,10 +1343,22 @@ class ResearchService:
             "research-rerank: return only JSON in exactly this shape: "
             '{"rankings":[{"result_key":"...","relevance_score":0.0}]}. '
             "Rerank every supplied scholarly candidate for the stated objective. "
-            "Use the confirmed Problem, Research Questions, Research Inputs, and "
-            "search queries. Prioritize direct coverage of the research relationship, "
+            "Use the confirmed Problem, Research Questions, Research Inputs, and supplied "
+            "evaluation_context. Treat techniques, aliases, candidate titles, and facets as "
+            "ranking criteria only; they must not imply that another search was performed. "
+            "Prioritize direct coverage of the research relationship, "
             "method, outcome, evaluation, and limitations. Prefer evidence-rich "
-            "candidates over broad keyword matches. Use explicit publication type, "
+            "candidates over broad keyword matches. When candidates are equally relevant, "
+            "strongly prefer papers that explicitly present, evaluate, compare, or apply a "
+            "named implementation tool, framework, or technique over concept-only discussion. "
+            "For a tool-specific objective, compare papers belonging to the same named tool "
+            "against the confirmed Idea and its evaluation facets; do not let a globally popular "
+            "tool displace the best available paper for another discovered tool. "
+            "Within papers for the same tool, treat evaluation_context.tool_discovery_keywords "
+            "as direct relevance criteria. supporting_context_keywords may add context, but "
+            "must not redefine which tools belong to the candidate set. "
+            "A name appearing only in a discovery query is not enough; use the supplied title, "
+            "abstract, tool_mentions, and search_facets. Use explicit publication type, "
             "peer-review, and full-text availability only as tie-breakers; weak topical "
             "coverage must never be rescued by venue or publication metadata. Use only "
             "supplied metadata and never infer venue prestige or missing facts. Return "
@@ -921,6 +1371,7 @@ class ResearchService:
             "idea": idea,
             "research_inputs": inputs.model_dump(mode="json"),
             "search_queries": queries,
+            "evaluation_context": evaluation_context or {},
             "candidates": [
                 {
                     "result_key": key,
@@ -934,6 +1385,13 @@ class ResearchService:
                     "has_full_text": _record_has_full_text(record),
                     "discovery_queries": record.metadata.get("discovery_queries", []),
                     "discovery_types": record.metadata.get("discovery_types", []),
+                    "search_facets": record.metadata.get("search_facets", []),
+                    "tool_mentions": record.metadata.get(
+                        "implementation_tool_mentions", []
+                    ),
+                    "queried_tool_names": record.metadata.get(
+                        "queried_tool_names", []
+                    ),
                 }
                 for key, record in keyed
             ],
@@ -1052,7 +1510,11 @@ class ResearchService:
         )
         analysis_contract = (
             "research-analysis: return only one flat JSON object with exactly "
-            "these keys: what_was_done (non-empty string), "
+            "these keys: study_name (non-empty string naming the specific research "
+            "work, tool, framework, or technique—not the article title; use its "
+            "canonical short name such as DSPy, TextGrad, ProTeGi, or SAPO and no "
+            "more than six words), "
+            "what_was_done (non-empty string), "
             "method_or_feedback (non-empty string describing the method, "
             "feedback, or evaluation type), limitation (non-empty string), "
             "relevance (non-empty string), supporting_passage (non-empty "
@@ -1074,7 +1536,11 @@ class ResearchService:
             "most relevant one. Assess relevance "
             "and limitation against the supplied Problem, Research "
             "Questions, and Research Inputs. If the source does not state a "
-            "method or feedback type, say so in the required output language."
+            "method or feedback type, say so in the required output language. "
+            "When citation.metadata.implementation_tool_mentions is non-empty and "
+            "retrieved_text supports the name, what_was_done and method_or_feedback "
+            "must explicitly name the tool/framework/technique and explain its role; "
+            "do not replace it with a generic phrase such as method or framework."
         )
         try:
             raw = await self._llm.complete(
@@ -1129,6 +1595,11 @@ class ResearchService:
                     raise ValueError(
                         "The model did not follow the required output language"
                     )
+            proposed_study_name = str(payload.pop("study_name", "")).strip()
+            record.metadata["research_work_name"] = _normalized_study_name(
+                proposed_study_name,
+                record,
+            )
             for key, item in payload["evidence"].items():
                 item["passage"] = _verbatim_source_passage(
                     source_text,
@@ -1147,7 +1618,20 @@ class ResearchService:
                 source_text, payload["evidence"]
             )
             warnings = []
-            if grounding_status is not GroundingStatus.GROUNDED:
+            if (
+                document is not None
+                and document.source_kind == "abstract"
+                and grounding_status is GroundingStatus.GROUNDED
+                and get_settings().research_require_downloadable_full_text
+            ):
+                grounding_status = GroundingStatus.WARNING
+                warnings.append(
+                    _ABSTRACT_ONLY_FINDING_WARNING
+                )
+            if (
+                grounding_status is not GroundingStatus.GROUNDED
+                and (document is None or document.source_kind != "abstract")
+            ):
                 warnings.append(
                     "Finding passage could not be matched exactly to the retrieved source text"
                 )
@@ -1162,6 +1646,9 @@ class ResearchService:
                 warnings,
             )
         except Exception as exc:  # noqa: BLE001 - deterministic grounded fallback
+            record.metadata["research_work_name"] = (
+                _record_research_work_name(record) or "Unnamed approach"
+            )
             passage = _verbatim_source_passage(
                 source_text or record.title,
                 record.abstract or "",
@@ -1212,13 +1699,14 @@ class ResearchService:
         *,
         session_id: UUID | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
-        upstream = context.get("upstream", {})
-        related_node = upstream.get(WorkflowNode.RELATED_WORK.value, {})
-        related = related_node.get("projected", {})
-        related_narrative = related_node.get("narrative", {})
-        raw_research_inputs = upstream.get(WorkflowNode.RESEARCH_INPUTS.value, {}).get(
-            "narrative", {}
+        upstream = _dict_payload(context.get("upstream"))
+        related_node = _dict_payload(upstream.get(WorkflowNode.RELATED_WORK.value))
+        related = _dict_payload(related_node.get("projected"))
+        related_narrative = _dict_payload(related_node.get("narrative"))
+        research_inputs_node = _dict_payload(
+            upstream.get(WorkflowNode.RESEARCH_INPUTS.value)
         )
+        raw_research_inputs = _dict_payload(research_inputs_node.get("narrative"))
         try:
             inputs = ResearchInputs.model_validate(raw_research_inputs)
         except ValidationError:
@@ -4332,6 +4820,16 @@ def _normalize_finding_payload(
                 confidence = parsed_confidence
 
     normalized = {
+        "study_name": _first_text(
+            payload,
+            "study_name",
+            "work_name",
+            "tool_name",
+            "framework_name",
+            "technique_name",
+        )
+        or _record_research_work_name(record)
+        or "Unnamed approach",
         "what_was_done": _first_text(
             payload,
             "what_was_done",
@@ -4517,6 +5015,11 @@ def _comparison_text(value: str) -> str:
     return " ".join(re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE))
 
 
+def _dict_payload(value: object) -> dict[str, Any]:
+    """Narrow an untrusted JSON/context value to a mapping."""
+    return value if isinstance(value, dict) else {}
+
+
 def _gap_citations(citations: object) -> list[dict[str, Any]]:
     if not isinstance(citations, list):
         return []
@@ -4524,6 +5027,7 @@ def _gap_citations(citations: object) -> list[dict[str, Any]]:
     for item in citations:
         if not isinstance(item, dict):
             continue
+        metadata = _dict_payload(item.get("metadata"))
         compact.append(
             {
                 "id": item.get("id"),
@@ -4539,11 +5043,7 @@ def _gap_citations(citations: object) -> list[dict[str, Any]]:
                 "verification_status": item.get("verification_status"),
                 "provider": item.get("provider"),
                 "retrieval_score": item.get("retrieval_score"),
-                "relevance_rank": (
-                    item.get("metadata", {}).get("relevance_rank")
-                    if isinstance(item.get("metadata"), dict)
-                    else None
-                ),
+                "relevance_rank": metadata.get("relevance_rank"),
             }
         )
     return compact
@@ -5271,7 +5771,12 @@ def _merge_scholarly_records(
     if incoming.provider and incoming.provider_source_id:
         provider_ids[incoming.provider] = incoming.provider_source_id
     merged = {**incoming.metadata, **target.metadata, "provider_ids": provider_ids}
-    for key in ("discovery_queries", "discovery_types", "citation_graph_seeds"):
+    for key in (
+        "discovery_queries",
+        "discovery_types",
+        "citation_graph_seeds",
+        "search_facets",
+    ):
         merged[key] = list(
             dict.fromkeys(
                 [
@@ -5286,8 +5791,9 @@ def _merge_scholarly_records(
 
 
 def _idea_context(context: dict[str, Any]) -> dict[str, Any]:
-    decomposition = context.get("upstream", {}).get(
-        WorkflowNode.IDEA_DECOMPOSITION.value, {}
+    upstream = _dict_payload(context.get("upstream"))
+    decomposition = _dict_payload(
+        upstream.get(WorkflowNode.IDEA_DECOMPOSITION.value)
     )
     cards = decomposition.get("card_snapshot", [])
     groups: dict[str, list[str]] = {
@@ -5770,6 +6276,1002 @@ def _idea_exploratory_concepts(idea: dict[str, Any]) -> list[str]:
     ]
 
 
+def _search_plan_from_payload(
+    payload: dict[str, Any],
+    *,
+    inputs: ResearchInputs,
+    idea: dict[str, Any],
+    limit: int,
+    tool_discovery_keywords: list[str] | None = None,
+) -> _SearchPlan:
+    raw_facets = payload.get("facets")
+    facets: list[_SearchFacet] = []
+    if isinstance(raw_facets, list):
+        for index, raw_facet in enumerate(raw_facets[:4], start=1):
+            if not isinstance(raw_facet, dict):
+                continue
+            anchors = _clean_keywords(_string_list(raw_facet.get("anchors")))
+            raw_id = re.sub(
+                r"[^a-z0-9]+",
+                "_",
+                str(raw_facet.get("id") or f"facet_{index}").casefold(),
+            ).strip("_")
+            raw_id = _canonical_search_facet_id(raw_id)
+            queries = _facet_seed_queries(
+                raw_id or f"facet_{index}",
+                anchors,
+                _normalize_search_queries(
+                    _string_list(raw_facet.get("queries")),
+                    max_terms=8,
+                ),
+            ) if anchors else []
+            if not anchors or not queries:
+                continue
+            objective = str(raw_facet.get("objective") or "").strip()
+            facets.append(
+                _SearchFacet(
+                    id=raw_id or f"facet_{index}",
+                    objective=objective or f"Find evidence for {anchors[0]}",
+                    anchors=anchors,
+                    queries=queries,
+                    min_results=2,
+                    tool_names=(
+                        _implementation_tool_names(anchors)
+                        if raw_id == _IMPLEMENTATION_TOOLS_FACET
+                        else []
+                    ),
+                )
+            )
+    if facets:
+        if len({facet.id for facet in facets}) != len(facets):
+            raise ValueError("SearchPlan returned duplicate facet identifiers")
+        confirmed_keywords: list[str] = []
+        for keyword in _clean_keywords(inputs.keywords):
+            try:
+                confirmed_keywords.extend(
+                    _normalize_search_queries([keyword], max_terms=8)
+                )
+            except ValueError:
+                continue
+        uncovered = [
+            keyword
+            for keyword in confirmed_keywords
+            if not any(
+                _search_tokens(keyword) & _search_tokens(search_term)
+                for facet in facets
+                for search_term in [*facet.anchors, *facet.queries]
+            )
+        ]
+        if uncovered:
+            raise ValueError(
+                "SearchPlan did not cover confirmed Research Input(s): "
+                + ", ".join(uncovered)
+            )
+        if len(confirmed_keywords) >= 4 and len(facets) < 3:
+            raise ValueError("SearchPlan collapsed a multi-dimensional Idea too aggressively")
+        return _bounded_search_plan(_SearchPlan(facets=facets), limit=limit)
+
+    legacy_queries = _string_list(payload.get("queries"))
+    if not legacy_queries:
+        raise ValueError("The query model returned neither facets nor queries")
+    normalized = _normalize_search_queries(legacy_queries, max_terms=8)
+    if not normalized:
+        raise ValueError("All generated queries exceeded the provider query budget")
+    return _fallback_search_plan(
+        inputs,
+        idea,
+        limit=limit,
+        model_queries=normalized,
+        tool_discovery_keywords=tool_discovery_keywords,
+    )
+
+
+def _discovery_expansion_from_payload(
+    payload: dict[str, Any],
+    *,
+    inputs: ResearchInputs,
+    idea: dict[str, Any],
+) -> _DiscoveryExpansion:
+    tool_keywords, supporting_keywords = _discovery_keyword_partition(
+        payload,
+        inputs=inputs,
+    )
+    model_tools = _clean_discovery_leads(
+        _string_list(payload.get("tools_and_frameworks")),
+        max_items=None,
+        max_chars=80,
+    )
+    model_tools = _filter_known_tools_by_discovery_keywords(
+        model_tools,
+        tool_keywords,
+    )
+    known_tools = _known_research_tools(tool_keywords)
+    techniques = _clean_discovery_leads(
+        _string_list(payload.get("techniques")),
+        max_items=8,
+        max_chars=100,
+    )
+    work_titles = _clean_discovery_leads(
+        _string_list(payload.get("candidate_work_titles")),
+        max_items=6,
+        max_chars=200,
+        min_words=3,
+    )
+    aliases = _clean_discovery_leads(
+        _string_list(payload.get("aliases")),
+        max_items=8,
+        max_chars=100,
+    )
+    expansion = _DiscoveryExpansion(
+        tool_discovery_keywords=tool_keywords,
+        supporting_context_keywords=supporting_keywords,
+        tools_and_frameworks=list(dict.fromkeys([*model_tools, *known_tools])),
+        techniques=techniques,
+        candidate_work_titles=work_titles,
+        aliases=aliases,
+    )
+    if not any(expansion.model_dump().values()):
+        raise ValueError("The discovery model returned no usable research leads")
+    return expansion
+
+
+def _fallback_discovery_expansion(
+    inputs: ResearchInputs,
+    idea: dict[str, Any],
+) -> _DiscoveryExpansion:
+    concepts = [*inputs.keywords, *_idea_search_concepts(idea)]
+    tool_keywords, supporting_keywords = _discovery_keyword_partition(
+        {},
+        inputs=inputs,
+    )
+    techniques: list[str] = []
+    for concept in concepts:
+        try:
+            techniques.extend(_normalize_search_queries([concept], max_terms=8))
+        except ValueError:
+            continue
+    if not techniques:
+        techniques = _english_query_fallback(inputs, idea)
+    return _DiscoveryExpansion(
+        tool_discovery_keywords=tool_keywords,
+        supporting_context_keywords=supporting_keywords,
+        tools_and_frameworks=_known_research_tools(tool_keywords),
+        techniques=list(dict.fromkeys(techniques))[:8],
+    )
+
+
+def _discovery_keyword_partition(
+    payload: dict[str, Any],
+    *,
+    inputs: ResearchInputs,
+) -> tuple[list[str], list[str]]:
+    """Separate tool-generating mechanisms from context used only for reranking."""
+
+    confirmed = _clean_keywords(inputs.keywords)
+    confirmed_by_key = {keyword.casefold(): keyword for keyword in confirmed}
+    selected = _clean_discovery_leads(
+        _string_list(payload.get("tool_discovery_keywords")),
+        max_items=None,
+        max_chars=100,
+    )
+    tool_keywords = list(
+        dict.fromkeys(
+            confirmed_by_key[keyword.casefold()]
+            for keyword in selected
+            if keyword.casefold() in confirmed_by_key
+        )
+    )
+    if not tool_keywords:
+        # Conservative fallback: only a keyword that activates a known tool family
+        # may generate tools. Task/domain and outcome keywords stay ranking-only.
+        tool_keywords = [
+            keyword for keyword in confirmed if _known_research_tools([keyword])
+        ]
+    tool_keys = {keyword.casefold() for keyword in tool_keywords}
+    supporting_keywords = [
+        keyword for keyword in confirmed if keyword.casefold() not in tool_keys
+    ]
+    return tool_keywords, supporting_keywords
+
+
+def _filter_known_tools_by_discovery_keywords(
+    tools: list[str],
+    tool_keywords: list[str],
+) -> list[str]:
+    """Reject known-family tools when only a supporting keyword activates them."""
+
+    allowed_known = {
+        tool.casefold() for tool in _known_research_tools(tool_keywords)
+    }
+    all_known = {
+        tool.casefold()
+        for _, names in _KNOWN_RESEARCH_TOOLS
+        for tool in names
+    }
+    return [
+        tool
+        for tool in tools
+        if tool.casefold() not in all_known or tool.casefold() in allowed_known
+    ]
+
+
+def _clean_discovery_leads(
+    values: list[str],
+    *,
+    max_items: int | None,
+    max_chars: int,
+    min_words: int = 1,
+) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        lead = re.sub(r"\s+", " ", value.strip(" \t\r\n`'\""))
+        folded = lead.casefold()
+        words = re.findall(r"[^\W_]+", lead, flags=re.UNICODE)
+        if (
+            not lead
+            or folded in seen
+            or len(lead) > max_chars
+            or len(words) < min_words
+        ):
+            continue
+        cleaned.append(lead)
+        seen.add(folded)
+        if max_items is not None and len(cleaned) >= max_items:
+            break
+    return cleaned
+
+
+def _enrich_search_plan_with_discovery(
+    plan: _SearchPlan,
+    discovery: _DiscoveryExpansion,
+) -> _SearchPlan:
+    tools = discovery.tools_and_frameworks
+    work_titles = discovery.candidate_work_titles
+    if not tools:
+        return plan
+
+    facets = list(plan.facets)
+    implementation = next(
+        (facet for facet in facets if facet.id == _IMPLEMENTATION_TOOLS_FACET),
+        None,
+    )
+    if implementation is None:
+        if len(facets) >= 4:
+            replace_index = next(
+                (
+                    index
+                    for index, facet in enumerate(facets)
+                    if facet.id == "optimization_method"
+                ),
+                len(facets) - 1,
+            )
+            facets.pop(replace_index)
+        seed_anchor = next(
+            iter(discovery.techniques or discovery.aliases or tools or work_titles)
+        )
+        implementation = _SearchFacet(
+            id=_IMPLEMENTATION_TOOLS_FACET,
+            objective=(
+                "Verify named tools, frameworks, techniques, and candidate scholarly works"
+            ),
+            anchors=[seed_anchor],
+            queries=[_quoted_search_lead(seed_anchor)],
+            min_results=2,
+        )
+        facets.insert(0, implementation)
+
+    implementation.tool_names = list(
+        dict.fromkeys([*tools, *implementation.tool_names])
+    )
+    implementation.candidate_work_titles = list(
+        dict.fromkeys([*work_titles, *implementation.candidate_work_titles])
+    )
+    implementation.anchors = list(
+        dict.fromkeys(
+            [
+                *implementation.anchors,
+                *implementation.tool_names,
+                *implementation.candidate_work_titles,
+            ]
+        )
+    )
+    # Provider calls are dynamic and strictly one-per-tool. Candidate work titles,
+    # techniques, aliases, and conceptual facets remain in the plan as evaluation
+    # context, but they must not create additional provider queries.
+    implementation.queries = list(
+        dict.fromkeys(_quoted_search_lead(tool) for tool in tools)
+    )
+    for facet in facets:
+        if facet is not implementation:
+            facet.queries = []
+    return _SearchPlan(facets=facets)
+
+
+def _quoted_search_lead(value: str) -> str:
+    lead = re.sub(r'["\r\n]+', " ", value)
+    lead = re.sub(r"\s+", " ", lead).strip()
+    return f'"{lead[:200]}"'
+
+
+def _canonical_search_facet_id(facet_id: str) -> str:
+    if any(
+        token in facet_id
+        for token in ("tool", "framework", "implementation", "technique")
+    ):
+        return _IMPLEMENTATION_TOOLS_FACET
+    return facet_id
+
+
+def _known_research_tools(concepts: list[str]) -> list[str]:
+    concept_tokens = _search_tokens(" ".join(concepts))
+    tools: list[str] = []
+    for triggers, names in _KNOWN_RESEARCH_TOOLS:
+        if concept_tokens & triggers:
+            tools.extend(names)
+    return list(dict.fromkeys(tools))
+
+
+def _implementation_tool_names(anchors: list[str]) -> list[str]:
+    known_by_name = {
+        name.casefold(): name
+        for _, names in _KNOWN_RESEARCH_TOOLS
+        for name in names
+    }
+    matched: list[str] = []
+    for anchor in anchors:
+        canonical = known_by_name.get(anchor.casefold())
+        candidate = canonical or anchor.strip()
+        words = re.findall(r"[^\W_]+", candidate, flags=re.UNICODE)
+        looks_named = (
+            1 <= len(words) <= 3
+            and len(candidate) <= 40
+            and any(character.isupper() for character in candidate)
+            and candidate.casefold()
+            not in {"ai", "llm", "nlp", "rag", "api", "framework", "tool"}
+        )
+        if (canonical or looks_named) and candidate not in matched:
+            matched.append(candidate)
+    return matched
+
+
+def _tool_name_appears(tool_name: str, text: str) -> bool:
+    return bool(
+        re.search(
+            rf"(?<!\w){re.escape(tool_name)}(?!\w)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _fallback_search_plan(
+    inputs: ResearchInputs,
+    idea: dict[str, Any],
+    *,
+    limit: int,
+    model_queries: list[str] | None = None,
+    tool_discovery_keywords: list[str] | None = None,
+) -> _SearchPlan:
+    raw_concepts = _clean_keywords(
+        [*inputs.keywords, *_idea_search_concepts(idea)]
+    )
+    concepts: list[str] = []
+    for concept in raw_concepts:
+        try:
+            concepts.extend(_normalize_search_queries([concept], max_terms=8))
+        except ValueError:
+            continue
+    if not concepts:
+        concepts = _normalize_search_queries(
+            model_queries or _english_query_fallback(inputs, idea),
+            max_terms=8,
+        )
+
+    buckets: dict[str, list[str]] = {
+        "optimization_method": [],
+        "evaluation_verification": [],
+        "task_domain": [],
+        "failure_mitigation": [],
+    }
+    patterns = {
+        "optimization_method": {
+            "feedback",
+            "gradient",
+            "iterative",
+            "optimization",
+            "optimize",
+            "prompt",
+            "refinement",
+        },
+        "evaluation_verification": {
+            "critic",
+            "evaluation",
+            "ground",
+            "judge",
+            "score",
+            "truth",
+            "verification",
+        },
+        "task_domain": {
+            "biomedical",
+            "dataset",
+            "extraction",
+            "information",
+            "relation",
+            "scientific",
+        },
+        "failure_mitigation": {
+            "error",
+            "fabrication",
+            "factuality",
+            "hallucination",
+            "mitigation",
+            "unsupported",
+        },
+    }
+    unassigned: list[str] = []
+    for concept in concepts:
+        tokens = _search_tokens(concept)
+        best = max(patterns, key=lambda key: len(tokens & patterns[key]))
+        if tokens & patterns[best]:
+            buckets[best].append(concept)
+        else:
+            unassigned.append(concept)
+
+    active = {key: values for key, values in buckets.items() if values}
+    for concept in unassigned:
+        if len(active) < 4:
+            active[f"topic_{len(active) + 1}"] = [concept]
+        else:
+            min(active.values(), key=len).append(concept)
+    if not active:
+        active = {"core_topic": concepts[:2]}
+
+    known_tools = _known_research_tools(
+        tool_discovery_keywords
+        if tool_discovery_keywords is not None
+        else concepts
+    )
+    tool_source_facet = next(
+        (
+            facet_id
+            for facet_id in ("optimization_method", "evaluation_verification")
+            if active.get(facet_id)
+        ),
+        None,
+    )
+    if known_tools and tool_source_facet:
+        method_anchors = active[tool_source_facet]
+        if len(active) >= 4:
+            active.pop(tool_source_facet)
+        active = {
+            _IMPLEMENTATION_TOOLS_FACET: [*method_anchors, *known_tools],
+            **active,
+        }
+
+    objectives = {
+        _IMPLEMENTATION_TOOLS_FACET: (
+            "Find papers that present, evaluate, compare, or apply named implementations"
+        ),
+        "optimization_method": "Find automatic and iterative optimization methods",
+        "evaluation_verification": "Find evaluator and ground-truth verification methods",
+        "task_domain": "Find methods and benchmarks in the target task or domain",
+        "failure_mitigation": "Find evidence about the target failure and its mitigation",
+    }
+    normalized_model = _normalize_search_queries(model_queries or [], max_terms=8)
+    facets: list[_SearchFacet] = []
+    for facet_id, anchors in list(active.items())[:4]:
+        matched_model_queries = [
+            query
+            for query in normalized_model
+            if any(_search_tokens(anchor) & _search_tokens(query) for anchor in anchors)
+        ]
+        queries = _facet_seed_queries(
+            facet_id,
+            anchors,
+            matched_model_queries,
+        )
+        facets.append(
+            _SearchFacet(
+                id=facet_id,
+                objective=objectives.get(
+                    facet_id,
+                    f"Find direct scholarly evidence for {anchors[0]}",
+                ),
+                anchors=anchors,
+                queries=queries,
+                min_results=2,
+                tool_names=(
+                    _implementation_tool_names(anchors)
+                    if facet_id == _IMPLEMENTATION_TOOLS_FACET
+                    else []
+                ),
+            )
+        )
+    return _bounded_search_plan(_SearchPlan(facets=facets), limit=limit)
+
+
+def _facet_seed_queries(
+    facet_id: str,
+    anchors: list[str],
+    model_queries: list[str],
+) -> list[str]:
+    primary = _query_anchor(anchors[0])
+    if facet_id == _IMPLEMENTATION_TOOLS_FACET:
+        tool_names = _implementation_tool_names(anchors)
+        # Exact implementation names maximize recall for seminal papers whose title
+        # and abstract may never use the broader concept label (for example DSPy's
+        # paper describes self-improving pipelines, not "prompt optimization").
+        tool_queries = [f'"{tool_name}"' for tool_name in tool_names[:2]]
+        queries = _normalize_search_queries(
+            [*tool_queries, *model_queries],
+            max_terms=8,
+        )
+        return queries or [f'"{primary}" AND (framework OR implementation)']
+    partner = _query_anchor(anchors[1]) if len(anchors) > 1 else ""
+    direct = f'"{primary}"' + (f' AND "{partner}"' if partner else "")
+    branch_terms = {
+        "optimization_method": "textual feedback method",
+        "evaluation_verification": "benchmark reliability",
+        "task_domain": "methods benchmark",
+        "failure_mitigation": "mitigation evaluation",
+    }.get(facet_id, "survey review")
+    generated = [direct, f'"{primary}" AND ({branch_terms.replace(" ", " OR ")})']
+    queries = _normalize_search_queries(
+        [generated[0], *model_queries, generated[1]],
+        max_terms=8,
+    )
+    return queries or ["scholarly evidence review"]
+
+
+def _bounded_search_plan(plan: _SearchPlan, *, limit: int) -> _SearchPlan:
+    budget = max(limit, 1)
+    selected: dict[str, list[str]] = {facet.id: [] for facet in plan.facets}
+    seen: set[str] = set()
+    max_depth = max(len(facet.queries) for facet in plan.facets)
+    for depth in range(max_depth):
+        for facet in plan.facets:
+            facet_limit = (
+                max(
+                    4,
+                    len(facet.tool_names) * 2
+                    + len(facet.candidate_work_titles),
+                )
+                if facet.id == _IMPLEMENTATION_TOOLS_FACET
+                else 2
+            )
+            if len(selected[facet.id]) >= facet_limit:
+                continue
+            if depth >= len(facet.queries):
+                continue
+            query = facet.queries[depth]
+            folded = query.casefold()
+            if folded in seen:
+                continue
+            selected[facet.id].append(query)
+            seen.add(folded)
+            if len(seen) >= budget:
+                break
+        if len(seen) >= budget:
+            break
+    facets = [
+        facet.model_copy(update={"queries": selected[facet.id]})
+        for facet in plan.facets
+        if selected[facet.id]
+    ]
+    return _SearchPlan(facets=facets)
+
+
+def _tag_search_facets(records: list[ScholarlyRecord], plan: _SearchPlan) -> None:
+    facet_by_query = {
+        query.casefold(): facet.id
+        for facet in plan.facets
+        for query in facet.queries
+    }
+    for record in records:
+        matched = set(_string_list(record.metadata.get("search_facets")))
+        record_text = f"{record.title} {record.abstract or ''}"
+        text_tokens = _search_tokens(record_text)
+        tool_names = list(
+            dict.fromkeys(
+                tool_name
+                for facet in plan.facets
+                if facet.id == _IMPLEMENTATION_TOOLS_FACET
+                for tool_name in (
+                    facet.tool_names or _implementation_tool_names(facet.anchors)
+                )
+            )
+        )
+        tool_mentions = [
+            tool_name
+            for tool_name in tool_names
+            if _tool_name_appears(tool_name, record_text)
+        ]
+        merged_tool_mentions = list(
+            dict.fromkeys(
+                [
+                    *_string_list(
+                        record.metadata.get("implementation_tool_mentions")
+                    ),
+                    *tool_mentions,
+                ]
+            )
+        )
+        discovery_queries = {
+            query.casefold()
+            for query in _string_list(record.metadata.get("discovery_queries"))
+        }
+        queried_tool_names = [
+            tool_name
+            for tool_name in tool_names
+            if _quoted_search_lead(tool_name).casefold() in discovery_queries
+        ]
+        record.metadata["discovery_tool_names"] = tool_names
+        record.metadata["queried_tool_names"] = queried_tool_names
+        record.metadata["implementation_tool_mentions"] = merged_tool_mentions
+        record.metadata["tool_specific_evidence"] = bool(merged_tool_mentions)
+        for query in _string_list(record.metadata.get("discovery_queries")):
+            facet_id = facet_by_query.get(query.casefold())
+            if facet_id:
+                matched.add(facet_id)
+        for facet in plan.facets:
+            anchors = (
+                facet.tool_names or _implementation_tool_names(facet.anchors)
+                if facet.id == _IMPLEMENTATION_TOOLS_FACET
+                else facet.anchors
+            )
+            if any(
+                _matched_concept_indexes([_search_tokens(anchor)], text_tokens)
+                for anchor in anchors
+            ):
+                matched.add(facet.id)
+        record.metadata["search_facets"] = sorted(matched)
+
+
+def _search_facet_coverage(
+    records: list[ScholarlyRecord],
+    plan: _SearchPlan,
+) -> dict[str, int]:
+    return {
+        facet.id: sum(
+            facet.id in _string_list(record.metadata.get("search_facets"))
+            and (
+                facet.id != _IMPLEMENTATION_TOOLS_FACET
+                or bool(_record_candidate_tool_names(record))
+            )
+            for record in records
+        )
+        for facet in plan.facets
+    }
+
+
+def _missing_search_facets(
+    records: list[ScholarlyRecord],
+    plan: _SearchPlan,
+) -> list[_SearchFacet]:
+    coverage = _search_facet_coverage(records, plan)
+    return [
+        facet
+        for facet in plan.facets
+        if coverage.get(facet.id, 0) < facet.min_results
+    ]
+
+
+def _facet_follow_up_queries(
+    facets: list[_SearchFacet],
+    *,
+    existing_queries: list[str],
+) -> dict[str, list[str]]:
+    seen = {query.casefold() for query in existing_queries}
+    result: dict[str, list[str]] = {}
+    for facet in facets:
+        anchor = _query_anchor(facet.anchors[0])
+        if facet.id == _IMPLEMENTATION_TOOLS_FACET:
+            tool_names = facet.tool_names or _implementation_tool_names(facet.anchors)
+            candidates = _normalize_search_queries(
+                [f'"{tool_name}"' for tool_name in tool_names[2:]]
+                or [
+                    (
+                        f'"{tool_names[0]}" AND (comparison OR benchmark)'
+                        if tool_names
+                        else f'"{anchor}" AND (implementation OR framework)'
+                    )
+                ],
+                max_terms=8,
+            )
+        else:
+            candidates = _normalize_search_queries(
+                [
+                    f'"{anchor}" AND (framework OR method)',
+                    f'"{anchor}" AND (comparison OR benchmark)',
+                    f'"{anchor}" AND (limitations OR evidence)',
+                ],
+                max_terms=8,
+            )
+        query = next((item for item in candidates if item.casefold() not in seen), None)
+        if query is None:
+            continue
+        result[facet.id] = [query]
+        seen.add(query.casefold())
+    return result
+
+
+def _extend_search_plan(
+    plan: _SearchPlan,
+    queries_by_facet: dict[str, list[str]],
+) -> None:
+    for facet in plan.facets:
+        facet.queries = list(
+            dict.fromkeys([*facet.queries, *queries_by_facet.get(facet.id, [])])
+        )
+
+
+def _facet_balanced_records(
+    records: list[ScholarlyRecord],
+    plan: _SearchPlan,
+) -> list[ScholarlyRecord]:
+    remaining = list(records)
+    selected: list[ScholarlyRecord] = []
+    selected_counts = {facet.id: 0 for facet in plan.facets}
+    while remaining:
+        progressed = False
+        for facet in plan.facets:
+            if selected_counts[facet.id] >= facet.min_results:
+                continue
+            position = next(
+                (
+                    index
+                    for index, record in enumerate(remaining)
+                    if facet.id
+                    in _string_list(record.metadata.get("search_facets"))
+                    and (
+                        facet.id != _IMPLEMENTATION_TOOLS_FACET
+                        or bool(_record_candidate_tool_names(record))
+                    )
+                ),
+                None,
+            )
+            if position is None:
+                continue
+            record = remaining.pop(position)
+            selected.append(record)
+            for matched_id in _string_list(record.metadata.get("search_facets")):
+                if matched_id in selected_counts:
+                    selected_counts[matched_id] += 1
+            record.metadata["facet_selection"] = "coverage_quota"
+            progressed = True
+        if not progressed:
+            break
+    return [*selected, *remaining]
+
+
+def _diversify_records_by_research_work(
+    records: list[ScholarlyRecord],
+    *,
+    tool_names: list[str] | None = None,
+    tool_relevance_keywords: list[str] | None = None,
+) -> list[ScholarlyRecord]:
+    """Keep at most one article per work and reserve the best hit per named tool."""
+
+    selected: list[ScholarlyRecord] = []
+    selected_ids: set[int] = set()
+    seen_work_keys: set[str] = set()
+    seen_tool_keys: set[str] = set()
+
+    def add(record: ScholarlyRecord, *, tool_quota: str | None = None) -> bool:
+        mention_keys = {
+            mention.casefold()
+            for mention in _string_list(
+                record.metadata.get("implementation_tool_mentions")
+            )
+        }
+        work_name = tool_quota or _record_research_work_name(record)
+        key = _comparison_text(work_name) if work_name else None
+        quota_key = tool_quota.casefold() if tool_quota else None
+        if (
+            id(record) in selected_ids
+            or (key and key in seen_work_keys)
+            or (quota_key and quota_key in seen_tool_keys)
+            or bool(mention_keys & seen_tool_keys)
+        ):
+            record.metadata["work_selection"] = "same_work_excluded"
+            return False
+        if work_name and key:
+            record.metadata["research_work_name"] = work_name
+            record.metadata["research_work_key"] = key
+            seen_work_keys.add(key)
+        record.metadata["work_selection"] = (
+            "named_tool_quota" if tool_quota else "unique_work_priority"
+        )
+        if tool_quota:
+            record.metadata["tool_quota_name"] = tool_quota
+            record.metadata["selected_tool_name"] = tool_quota
+            seen_tool_keys.add(tool_quota.casefold())
+        else:
+            seen_tool_keys.update(mention_keys)
+        selected.append(record)
+        selected_ids.add(id(record))
+        return True
+
+    # Records are already semantically reranked. The explicit rank key protects
+    # per-tool choice from the later facet-balancing reorder.
+    for tool_name in tool_names or []:
+        candidates = [
+            record
+            for record in records
+            if any(
+                mention.casefold() == tool_name.casefold()
+                for mention in _record_candidate_tool_names(record)
+            )
+        ]
+        for candidate in sorted(
+            candidates,
+            key=lambda record: _tool_candidate_rank(
+                record,
+                tool_name,
+                relevance_keywords=tool_relevance_keywords,
+            ),
+        ):
+            if add(candidate, tool_quota=tool_name):
+                break
+
+    if tool_names:
+        for record in records:
+            if id(record) not in selected_ids and any(
+                mention.casefold() in seen_tool_keys
+                for mention in _string_list(
+                    record.metadata.get("implementation_tool_mentions")
+                )
+            ):
+                record.metadata["work_selection"] = "same_work_excluded"
+        return selected
+
+    for record in records:
+        add(record)
+    return selected
+
+
+def _record_semantic_rank(record: ScholarlyRecord) -> tuple[int, int, int]:
+    reranker_rank = record.metadata.get("reranker_rank")
+    heuristic_rank = record.metadata.get("heuristic_rank")
+    return (
+        int(reranker_rank) if isinstance(reranker_rank, int) else 1_000_000,
+        int(heuristic_rank) if isinstance(heuristic_rank, int) else 1_000_000,
+        int(record.metadata.get("portfolio_rank") or 1_000_000),
+    )
+
+
+def _record_candidate_tool_names(record: ScholarlyRecord) -> list[str]:
+    return list(
+        dict.fromkeys(
+            [
+                *_string_list(record.metadata.get("implementation_tool_mentions")),
+                *_string_list(record.metadata.get("queried_tool_names")),
+            ]
+        )
+    )
+
+
+def _tool_candidate_rank(
+    record: ScholarlyRecord,
+    tool_name: str,
+    *,
+    relevance_keywords: list[str] | None = None,
+) -> tuple[int, int, int, int, int, int]:
+    explicit_mentions = _string_list(
+        record.metadata.get("implementation_tool_mentions")
+    )
+    mention_count = len(explicit_mentions)
+    keyword_groups = _concept_groups(_clean_keywords(relevance_keywords or []))
+    text_tokens = _search_tokens(f"{record.title} {record.abstract or ''}")
+    matched_keyword_indexes = _matched_concept_indexes(
+        keyword_groups,
+        text_tokens,
+    )
+    record.metadata["matched_tool_relevance_keyword_indexes"] = sorted(
+        matched_keyword_indexes
+    )
+    record.metadata["tool_relevance_keyword_match_count"] = len(
+        matched_keyword_indexes
+    )
+    has_explicit_mention = any(
+        mention.casefold() == tool_name.casefold() for mention in explicit_mentions
+    )
+    return (
+        0 if has_explicit_mention else 1,
+        -len(matched_keyword_indexes),
+        mention_count or 1_000_000,
+        *_record_semantic_rank(record),
+    )
+
+
+def _selected_tool_coverage(
+    prepared_records: list[tuple[ScholarlyRecord, Citation, DocumentText, list[str]]],
+    tool_names: list[str],
+) -> list[dict[str, Any]]:
+    coverage: list[dict[str, Any]] = []
+    for tool_name in tool_names:
+        match = next(
+            (
+                (record, citation)
+                for record, citation, _, _ in prepared_records
+                if str(record.metadata.get("selected_tool_name") or "").casefold()
+                == tool_name.casefold()
+            ),
+            None,
+        )
+        coverage.append(
+            {
+                "tool": tool_name,
+                "status": "matched_citation" if match else "not_found",
+                "citation_key": match[1].citation_key if match else None,
+                "article_title": match[0].title if match else None,
+            }
+        )
+    return coverage
+
+
+def _record_research_work_name(record: ScholarlyRecord) -> str | None:
+    mentions = _string_list(record.metadata.get("implementation_tool_mentions"))
+    if mentions:
+        folded_title = record.title.casefold()
+        return min(
+            mentions,
+            key=lambda name: (
+                folded_title.find(name.casefold())
+                if name.casefold() in folded_title
+                else len(folded_title) + mentions.index(name)
+            ),
+        )
+    explicit = str(record.metadata.get("research_work_name") or "").strip()
+    if explicit:
+        return explicit
+    prefix, separator, _ = record.title.partition(":")
+    prefix_words = re.findall(r"[^\W_]+", prefix, flags=re.UNICODE)
+    if separator and 1 <= len(prefix_words) <= 6 and len(prefix) <= 60:
+        return prefix.strip()
+    return None
+
+
+def _normalized_study_name(candidate: str, record: ScholarlyRecord) -> str:
+    """Prefer a canonical method/tool identifier and reject article-title labels."""
+
+    work_name = _record_research_work_name(record)
+    if _string_list(record.metadata.get("implementation_tool_mentions")) and work_name:
+        return work_name
+    cleaned = re.sub(r"\s+", " ", candidate).strip(" \t\r\n`'\".,:;")
+    words = re.findall(r"[^\W_]+", cleaned, flags=re.UNICODE)
+    if (
+        cleaned
+        and _comparison_text(cleaned) != _comparison_text(record.title)
+        and len(words) <= 6
+        and len(cleaned) <= 60
+    ):
+        return cleaned
+    identifier = _record_method_identifier(record)
+    return identifier or work_name or "Unnamed approach"
+
+
+def _record_method_identifier(record: ScholarlyRecord) -> str | None:
+    ignored = {
+        "AI",
+        "API",
+        "BERT",
+        "GPT",
+        "LLM",
+        "LLMS",
+        "NER",
+        "NLP",
+        "PDF",
+        "RAG",
+        "RE",
+    }
+    text = f"{record.title} {record.abstract or ''}"
+    identifiers = re.findall(r"\b[A-Z][A-Z0-9-]{2,}\b", text)
+    return next((item for item in identifiers if item.upper() not in ignored), None)
+
+
 def _compose_search_queries(
     model_queries: list[str],
     inputs: ResearchInputs,
@@ -6209,21 +7711,48 @@ def _rank_relevant_records(
 ) -> tuple[list[ScholarlyRecord], int]:
     """Rank by concept coverage and reject idea-mismatched provider results."""
     query_concepts = _domain_query_concepts(queries or [])
-    idea_groups = _concept_groups(query_concepts or _idea_search_concepts(idea))
+    idea_concepts = _clean_keywords(_idea_search_concepts(idea))
+    input_concepts = _clean_keywords(inputs.keywords)
+    idea_groups = _concept_groups(idea_concepts)
+    input_groups = _concept_groups(input_concepts)
+    query_groups = _concept_groups(query_concepts)
     all_groups = _concept_groups(
-        query_concepts
-        or [*_idea_search_concepts(idea), *_clean_keywords(inputs.keywords)]
+        [*idea_concepts, *input_concepts, *query_concepts]
     )
-    scored: list[tuple[tuple[float, ...], int, set[int], ScholarlyRecord]] = []
+    scored: list[tuple[tuple[float, ...], int, ScholarlyRecord]] = []
     discarded = 0
     for index, record in enumerate(records):
         title_tokens = _search_tokens(record.title)
         text_tokens = title_tokens | _search_tokens(record.abstract or "")
         matched_idea = _matched_concept_indexes(idea_groups, text_tokens)
-        # A broad provider query can return records from an unrelated domain. Keep
-        # semantic variants, but require at least one domain-bearing query concept to
-        # occur in the title or abstract before an LLM reranker can rescue the record.
-        if idea_groups and not matched_idea and (require_domain_match or not queries):
+        matched_inputs = _matched_concept_indexes(input_groups, text_tokens)
+        matched_query = _matched_concept_indexes(query_groups, text_tokens)
+        matched_all = _matched_concept_indexes(all_groups, text_tokens)
+        tool_specific_match = bool(
+            record.metadata.get("implementation_tool_mentions")
+            and _IMPLEMENTATION_TOOLS_FACET
+            in _string_list(record.metadata.get("search_facets"))
+        )
+        # Confirmed Idea and Research Inputs are both trusted anchors. Generated
+        # queries may broaden recall, but cannot become the sole Related Work gate.
+        # Counter-evidence searches deliberately add their claim-specific query.
+        idea_is_english = _idea_output_language(idea) == "en"
+        if require_domain_match:
+            has_required_match = bool(matched_idea or matched_query)
+        elif idea_groups:
+            has_required_match = (
+                bool(matched_idea or matched_inputs or tool_specific_match)
+                if idea_is_english
+                else bool(matched_idea or matched_inputs or matched_query)
+            )
+        elif input_groups:
+            has_required_match = bool(matched_inputs or tool_specific_match)
+        else:
+            # Legacy/incomplete sessions may not yet contain a confirmed Idea or
+            # Research Inputs. Generated queries can still score provider results,
+            # but must not become an accidental hard filter on their own.
+            has_required_match = True
+        if (idea_groups or input_groups or query_groups) and not has_required_match:
             discarded += 1
             continue
         concept_matches = _concept_match_count(all_groups, text_tokens)
@@ -6233,11 +7762,20 @@ def _rank_relevant_records(
         title_hits = len(set().union(*all_groups) & title_tokens) if all_groups else 0
         query_hits = len(record.metadata.get("discovery_queries") or [])
         graph_hits = len(record.metadata.get("citation_graph_seeds") or [])
-        denominator = max(len(all_groups) * 2 + 4, 1)
+        denominator = max(
+            len(idea_groups) * 3
+            + len(input_groups) * 2
+            + len(query_groups) * 2
+            + 8,
+            1,
+        )
         retrieval_score = min(
             1.0,
             (
-                len(matched_idea) * 2
+                len(matched_idea) * 3
+                + len(matched_inputs) * 2
+                + len(matched_query) * 2
+                + int(tool_specific_match) * 4
                 + concept_matches
                 + min(title_hits, 2)
                 + min(query_hits, 2) * 0.5
@@ -6246,11 +7784,18 @@ def _rank_relevant_records(
             / denominator,
         )
         record.metadata["retrieval_score"] = round(retrieval_score, 4)
-        record.metadata["matched_concept_indexes"] = sorted(matched_idea)
+        record.metadata["matched_idea_concept_indexes"] = sorted(matched_idea)
+        record.metadata["matched_input_concept_indexes"] = sorted(matched_inputs)
+        record.metadata["matched_query_concept_indexes"] = sorted(matched_query)
+        record.metadata["matched_concept_indexes"] = sorted(matched_all)
+        record.metadata["tool_specific_relevance"] = tool_specific_match
         scored.append(
             (
                 (
+                    int(tool_specific_match),
                     len(matched_idea),
+                    len(matched_inputs),
+                    len(matched_query),
                     concept_matches,
                     title_hits,
                     query_hits,
@@ -6258,12 +7803,11 @@ def _rank_relevant_records(
                     covered_tokens,
                 ),
                 -index,
-                matched_idea,
                 record,
             )
         )
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [item[3] for item in scored], discarded
+    return [item[2] for item in scored], discarded
 
 
 def _query_plan(queries: list[str]) -> list[dict[str, str]]:
@@ -6295,8 +7839,10 @@ def _text_values(value: object) -> list[str]:
 def _llm_failure_summary(exc: Exception) -> str:
     if isinstance(exc, ValidationError):
         return "the model response did not match the required fields"
-    if isinstance(exc, (json.JSONDecodeError, TypeError, ValueError)):
+    if isinstance(exc, (json.JSONDecodeError, TypeError)):
         return "the model response was not valid structured JSON"
+    if isinstance(exc, ValueError):
+        return "the model response did not satisfy the structured response constraints"
     if not isinstance(exc, LlmProviderError):
         return type(exc).__name__
     details = []

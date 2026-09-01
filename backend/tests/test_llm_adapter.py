@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.adapters.llm import TracingLlm
 from app.adapters.llm.fit_webui import (
     FitWebUiLlmPort,
+    _utf8_safe,
 )
 from app.adapters.llm.fit_webui import (
     _raise_for_status as raise_fit_webui_for_status,
@@ -20,7 +21,7 @@ from app.adapters.llm.fit_webui import (
 from app.core.config import get_settings
 from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.research.deps import get_research_llm
-from app.modules.spec.deps import FakeSpecLlmPort
+from app.modules.spec.deps import FakeSpecLlmPort, get_spec_llm
 from app.modules.spec.schemas import (
     FeasibilityReport,
     GenerateClaimsResponse,
@@ -48,9 +49,49 @@ def test_fit_webui_response_text_reads_chat_completion() -> None:
     assert fit_webui_response_text(payload) == '{"queries":["claim evidence"]}'
 
 
+def test_fit_webui_response_text_serializes_structured_content() -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": {"queries": ["claim evidence"]},
+                }
+            }
+        ]
+    }
+
+    assert json.loads(fit_webui_response_text(payload)) == {
+        "queries": ["claim evidence"]
+    }
+
+
+def test_fit_webui_response_text_reads_text_content_blocks() -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": '{"queries":'},
+                        {"type": "output_text", "text": '["claim evidence"]}'},
+                    ],
+                }
+            }
+        ]
+    }
+
+    assert fit_webui_response_text(payload) == '{"queries":["claim evidence"]}'
+
+
 def test_fit_webui_response_text_rejects_empty_output() -> None:
     with pytest.raises(ValueError, match="output text"):
         fit_webui_response_text({"choices": []})
+
+
+def test_fit_webui_normalizes_surrogates_without_damaging_valid_unicode() -> None:
+    assert _utf8_safe("Tiếng Việt \ud800") == "Tiếng Việt �"
+    assert _utf8_safe("emoji \ud83d\ude00") == "emoji 😀"
 
 
 def test_fit_webui_auth_error_is_safe() -> None:
@@ -199,6 +240,24 @@ def test_research_llm_binding_enables_trace(
         get_settings.cache_clear()
 
 
+def test_spec_llm_binding_uses_fit_adapter_and_configured_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "fit_webui")
+    monkeypatch.setenv("RESEARCH_LLM_MODEL", "Qwen3.6-27B")
+    monkeypatch.setenv("FIT_WEBUI_API_KEY", "sk-test")
+    monkeypatch.setenv("FIT_WEBUI_MAX_TOKENS", "4321")
+    monkeypatch.setenv("LLM_TRACE", "false")
+    get_settings.cache_clear()
+
+    try:
+        adapter = get_spec_llm()
+        assert isinstance(adapter, FitWebUiLlmPort)
+        assert adapter._max_tokens == 4_321
+    finally:
+        get_settings.cache_clear()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "adapter",
@@ -240,7 +299,7 @@ async def test_fake_spec_llm_implements_port() -> None:
         async for chunk in adapter.stream(system="directions", prompt="{}")
     ]
     assert len(chunks) == 1
-    assert len(json.loads(chunks[0])) == 3
+    assert len(json.loads(chunks[0])["directions"]) == 3
 
     claims = await adapter.complete_structured(
         system="claims",
@@ -259,5 +318,5 @@ async def test_fake_spec_llm_implements_port() -> None:
     )
 
     assert claims.cards[0].id == "claim-1"
-    assert experiment.plan.metrics == ["Unsupported claim rate"]
+    assert experiment.plan.experiments[0].claim.startswith("Claim-level verification")
     assert feasibility.is_feasible is True

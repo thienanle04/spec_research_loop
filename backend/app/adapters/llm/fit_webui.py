@@ -1,5 +1,6 @@
 """FIT@HCMUS WebUI OpenAI-compatible chat-completions adapter."""
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -52,10 +53,10 @@ class FitWebUiLlmPort:
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": model or self._default_model,
+                        "model": _utf8_safe(model or self._default_model),
                         "messages": [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": prompt},
+                            {"role": "system", "content": _utf8_safe(system)},
+                            {"role": "user", "content": _utf8_safe(prompt)},
                         ],
                         "max_tokens": self._max_tokens,
                         "response_format": {"type": "json_object"},
@@ -73,6 +74,12 @@ class FitWebUiLlmPort:
                 "FIT WebUI could not be reached",
                 provider="fit_webui",
                 code="connection_error",
+            ) from exc
+        except UnicodeEncodeError as exc:
+            raise LlmProviderError(
+                "FIT WebUI request contained malformed Unicode text",
+                provider="fit_webui",
+                code="encoding_error",
             ) from exc
         _raise_for_status(response)
         return _response_text(response.json())
@@ -121,6 +128,30 @@ def _response_text(payload: dict[str, Any]) -> str:
     choices = payload.get("choices", [])
     if choices and isinstance(choices[0], dict):
         message = choices[0].get("message", {})
-        if isinstance(message, dict) and message.get("content"):
-            return str(message["content"]).strip()
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return _utf8_safe(content.strip())
+            if isinstance(content, dict) and content:
+                return _utf8_safe(json.dumps(content, ensure_ascii=False))
+            if isinstance(content, list) and content:
+                text_blocks = [
+                    str(block.get("text") or "")
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") in {"text", "output_text"}
+                ]
+                joined = "".join(text_blocks).strip()
+                if joined:
+                    return _utf8_safe(joined)
+                return _utf8_safe(json.dumps(content, ensure_ascii=False))
     raise ValueError("FIT WebUI response did not contain output text")
+
+
+def _utf8_safe(value: str) -> str:
+    """Preserve valid Unicode while replacing unpaired surrogate code points."""
+
+    return value.encode("utf-16-le", errors="surrogatepass").decode(
+        "utf-16-le",
+        errors="replace",
+    )

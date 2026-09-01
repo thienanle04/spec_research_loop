@@ -3,6 +3,7 @@
 import asyncio
 
 from app.modules.research.ports import (
+    BatchScholarlySourcePort,
     CitationGraphPort,
     MultiQueryScholarlySourcePort,
     ScholarlyProviderError,
@@ -59,18 +60,24 @@ class CompositeScholarlySource:
                     preferences=preferences,
                     limit=limit,
                 )
+            normalized_queries = [query for query in queries if query.strip()]
+            per_query_limit = max(
+                1,
+                (max(limit, 1) + len(normalized_queries) - 1)
+                // max(len(normalized_queries), 1),
+            )
             batches = await asyncio.gather(
                 *(
                     source.search(
                         query=query,
                         preferences=preferences,
-                        limit=limit,
+                        limit=per_query_limit,
                     )
-                    for query in queries
+                    for query in normalized_queries
                 )
             )
             records: list[ScholarlyRecord] = []
-            for query, batch in zip(queries, batches, strict=True):
+            for query, batch in zip(normalized_queries, batches, strict=True):
                 for record in batch:
                     discovery = record.metadata.setdefault("discovery_queries", [])
                     if query not in discovery:
@@ -109,6 +116,44 @@ class CompositeScholarlySource:
             None,
         )
 
+    async def get_sources(
+        self,
+        *,
+        identifiers: list[str],
+    ) -> list[ScholarlyRecord | None]:
+        """Resolve every identifier across providers while preserving input order."""
+
+        async def resolve_source(
+            source: ScholarlySourcePort,
+        ) -> list[ScholarlyRecord | None]:
+            if isinstance(source, BatchScholarlySourcePort):
+                return await source.get_sources(identifiers=identifiers)
+            return await asyncio.gather(
+                *(source.get_source(identifier=item) for item in identifiers)
+            )
+
+        provider_results = await asyncio.gather(
+            *(resolve_source(source) for source in self._sources),
+            return_exceptions=True,
+        )
+        resolved: list[ScholarlyRecord | None] = []
+        for index in range(len(identifiers)):
+            matches = [
+                batch[index]
+                for batch in provider_results
+                if isinstance(batch, list)
+                and index < len(batch)
+                and isinstance(batch[index], ScholarlyRecord)
+            ]
+            if not matches:
+                resolved.append(None)
+                continue
+            primary = matches[0]
+            for incoming in matches[1:]:
+                _merge_resolved_metadata(primary, incoming)
+            resolved.append(primary)
+        return resolved
+
     async def expand_related(
         self,
         *,
@@ -130,3 +175,28 @@ class CompositeScholarlySource:
             if isinstance(result, list)
             for record in result
         ]
+
+
+def _merge_resolved_metadata(
+    target: ScholarlyRecord,
+    incoming: ScholarlyRecord,
+) -> None:
+    """Combine provider metadata so OA/full-text links survive identity resolution."""
+
+    if len(incoming.abstract or "") > len(target.abstract or ""):
+        target.abstract = incoming.abstract
+    if not target.doi:
+        target.doi = incoming.doi
+    if not target.venue:
+        target.venue = incoming.venue
+    provider_ids = dict(target.metadata.get("provider_ids") or {})
+    provider_ids.update(incoming.metadata.get("provider_ids") or {})
+    if incoming.provider and incoming.provider_source_id:
+        provider_ids[incoming.provider] = incoming.provider_source_id
+    target_full_text = str(target.metadata.get("full_text_url") or "")
+    incoming_full_text = str(incoming.metadata.get("full_text_url") or "")
+    merged = {**incoming.metadata, **target.metadata, "provider_ids": provider_ids}
+    if not target_full_text and incoming_full_text:
+        merged["full_text_url"] = incoming_full_text
+        target.url = incoming.url or target.url
+    target.metadata = merged

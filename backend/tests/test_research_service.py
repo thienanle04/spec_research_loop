@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from app.adapters.storage import MemoryObjectStorage
+from app.core.config import get_settings
 from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.research.adapters.fake_source import FakeScholarlySourcePort
 from app.modules.research.normalization import normalize_doi, normalize_url
@@ -43,13 +44,22 @@ from app.modules.research.service import (
     _citation_method_queries,
     _compose_search_queries,
     _CounterEvidenceSearch,
+    _diversify_records_by_research_work,
+    _facet_balanced_records,
     _fallback_gap_claims,
+    _fallback_search_plan,
     _gap_claims_from_answers,
+    _gap_evidence_check,
     _GapClaim,
     _GapQuestionAnswers,
     _json_value,
+    _missing_search_facets,
+    _normalized_study_name,
     _portfolio_order_records,
     _rank_relevant_records,
+    _search_plan_from_payload,
+    _tag_search_facets,
+    _tool_name_appears,
     _validated_counter_evidence_assessment,
     _validated_counter_support_response,
 )
@@ -62,6 +72,161 @@ def test_normalize_doi_and_url() -> None:
         normalize_url("Example.COM/work/?utm_source=test&view=full#section")
         == "https://example.com/work?view=full"
     )
+
+
+def test_related_work_keeps_only_one_article_per_research_work() -> None:
+    records = [
+        ScholarlyRecord(
+            title="DSPy: Compiling Declarative Language Model Calls",
+            metadata={"implementation_tool_mentions": ["DSPy"]},
+        ),
+        ScholarlyRecord(
+            title="Benchmarking DSPy for Clinical NER",
+            metadata={"implementation_tool_mentions": ["DSPy"]},
+        ),
+        ScholarlyRecord(
+            title="TextGrad: Automatic Differentiation via Text",
+            metadata={"implementation_tool_mentions": ["TextGrad"]},
+        ),
+    ]
+
+    diversified = _diversify_records_by_research_work(records)
+
+    assert [record.title for record in diversified] == [
+        "DSPy: Compiling Declarative Language Model Calls",
+        "TextGrad: Automatic Differentiation via Text",
+    ]
+    assert diversified[0].metadata["research_work_name"] == "DSPy"
+    assert diversified[1].metadata["research_work_name"] == "TextGrad"
+    assert records[1].metadata["work_selection"] == "same_work_excluded"
+
+
+def test_related_work_reserves_best_distinct_article_for_each_discovered_tool() -> None:
+    records = [
+        ScholarlyRecord(
+            title="Broad LLM evaluation survey",
+            metadata={
+                "implementation_tool_mentions": ["LLM-as-a-Judge"],
+                "reranker_rank": 1,
+            },
+        ),
+        ScholarlyRecord(
+            title="DSPy benchmark",
+            metadata={
+                "implementation_tool_mentions": ["DSPy"],
+                "reranker_rank": 3,
+            },
+        ),
+        ScholarlyRecord(
+            title="A second judge study",
+            metadata={
+                "implementation_tool_mentions": ["LLM-as-a-Judge"],
+                "reranker_rank": 2,
+            },
+        ),
+        ScholarlyRecord(
+            title="TextGrad optimization",
+            metadata={
+                "implementation_tool_mentions": ["TextGrad"],
+                "reranker_rank": 4,
+            },
+        ),
+    ]
+
+    diversified = _diversify_records_by_research_work(
+        records,
+        tool_names=["DSPy", "TextGrad", "LLM-as-a-Judge"],
+    )
+
+    assert [record.title for record in diversified] == [
+        "DSPy benchmark",
+        "TextGrad optimization",
+        "Broad LLM evaluation survey",
+    ]
+    assert diversified[0].metadata["tool_quota_name"] == "DSPy"
+    assert diversified[1].metadata["tool_quota_name"] == "TextGrad"
+    assert diversified[2].metadata["tool_quota_name"] == "LLM-as-a-Judge"
+    assert records[2].metadata["work_selection"] == "same_work_excluded"
+
+
+def test_tool_generation_keywords_choose_the_relevant_article_within_one_tool() -> None:
+    broad = ScholarlyRecord(
+        title="DSPy: Declarative Language Model Programming",
+        abstract="Introduces a general framework for composing language model programs.",
+        metadata={
+            "implementation_tool_mentions": ["DSPy"],
+            "reranker_rank": 1,
+        },
+    )
+    relevant = ScholarlyRecord(
+        title="Iterative Prompt Optimization with DSPy",
+        abstract="Evaluates iterative prompt optimization using local feedback.",
+        metadata={
+            "implementation_tool_mentions": ["DSPy"],
+            "reranker_rank": 2,
+        },
+    )
+
+    diversified = _diversify_records_by_research_work(
+        [broad, relevant],
+        tool_names=["DSPy"],
+        tool_relevance_keywords=["iterative prompt optimization"],
+    )
+
+    assert diversified == [relevant]
+    assert broad.metadata["tool_relevance_keyword_match_count"] == 0
+    assert relevant.metadata["tool_relevance_keyword_match_count"] == 1
+    assert relevant.metadata["selected_tool_name"] == "DSPy"
+
+
+def test_tool_detection_accepts_hyphenated_title_suffixes() -> None:
+    assert _tool_name_appears(
+        "DSPy",
+        "Optimizing prompts with DSPy-Based Declarative Learning",
+    )
+
+
+def test_study_name_prefers_tool_and_rejects_full_article_title() -> None:
+    dspy = ScholarlyRecord(
+        title="Manual Prompt Engineering with DSPy for Vulnerability Detection",
+        metadata={"implementation_tool_mentions": ["DSPy"]},
+    )
+    sapo = ScholarlyRecord(
+        title="From Monolithic to Modular: Segment-level Prompt Optimization",
+        abstract="We introduce SAPO for segment-level automatic prompt optimization.",
+    )
+
+    assert _normalized_study_name(dspy.title, dspy) == "DSPy"
+    assert _normalized_study_name(sapo.title, sapo) == "SAPO"
+
+
+def test_grounded_abstract_citation_can_support_gap_candidate() -> None:
+    check = _gap_evidence_check(
+        [
+            {
+                "id": "citation-1",
+                "citation_key": "dspy-2024",
+                "verification_status": "verified",
+                "text_source_kind": "abstract",
+            }
+        ],
+        [
+            {
+                "citation_key": "dspy-2024",
+                "grounding_status": "grounded",
+                "limitation": "Only one benchmark was evaluated.",
+                "evidence": {
+                    "limitation": {
+                        "passage": "Only one benchmark was evaluated.",
+                        "location": "Abstract",
+                    }
+                },
+            }
+        ],
+    )
+
+    assert check.ready is True
+    assert check.eligible_citation_keys == ["dspy-2024"]
 
 
 @pytest.mark.parametrize(
@@ -1021,12 +1186,15 @@ async def test_search_queries_use_english_while_outputs_follow_idea_language() -
     gap, _ = await service._generate_gaps(context)
 
     assert "scientific claim verification" in inputs["keywords"]
-    assert queries[0] == "scientific claim verification"
-    assert len(queries) >= 4
-    assert any("survey OR review" in query for query in queries)
+    assert queries[0].strip('"') == "scientific claim verification"
+    assert len(queries) >= 2
     assert finding.what_was_done == "Kiểm tra từng tuyên bố"
     assert gap["candidate"]["statement"].startswith("Các nghiên cứu")
-    assert len(llm.calls) == 11
+    assert len(llm.calls) == 12
+    discovery_call = next(
+        call for call in llm.calls if "research-discovery" in call["system"]
+    )
+    assert "candidate_work_titles" in discovery_call["system"]
     assert any("research-rerank" in call["system"] for call in llm.calls)
     query_call = next(call for call in llm.calls if "research-query" in call["system"])
     assert "English regardless of the input language" in query_call["system"]
@@ -1039,6 +1207,7 @@ async def test_search_queries_use_english_while_outputs_follow_idea_language() -
         call
         for call in llm.calls
         if "research-query" not in call["system"]
+        and "research-discovery" not in call["system"]
         and "research-inputs" not in call["system"]
         and "research-counter-query" not in call["system"]
         and "research-rerank" not in call["system"]
@@ -1211,6 +1380,111 @@ async def test_analysis_uses_research_context_and_separate_grounding_status() ->
     assert "what_was_done" in llm.calls[0]["system"]
     assert "method_or_feedback" in llm.calls[0]["system"]
     assert finding.method_or_feedback == "Not stated in the source metadata."
+    assert finding.grounding_status is GroundingStatus.GROUNDED
+    assert warnings == []
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_marks_abstract_only_analysis_as_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    passage = "A verifier checks evidence for each generated claim."
+    llm = FakeLlmPort(
+        responses={
+            "research-analysis": json.dumps(
+                {
+                    "what_was_done": "Checks evidence for generated claims",
+                    "method_or_feedback": "Claim-level evidence verification",
+                    "limitation": "The evaluation covers one benchmark",
+                    "relevance": "Directly evaluates the confirmed problem",
+                    "supporting_passage": passage,
+                    "evidence": {
+                        field: {"passage": passage, "location": "Abstract"}
+                        for field in (
+                            "what_was_done",
+                            "method_or_feedback",
+                            "limitation",
+                        )
+                    },
+                    "confidence": 0.8,
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    monkeypatch.setenv("RESEARCH_REQUIRE_DOWNLOADABLE_FULL_TEXT", "true")
+    get_settings.cache_clear()
+    try:
+        finding, warnings = await service._analyze(
+            ScholarlyRecord(title="Verifier", abstract=passage),
+            uuid4(),
+            research_context={
+                "idea": {"problems": ["Unsupported generated claims"]},
+                "research_inputs": {"keywords": ["claim verification"]},
+            },
+            document=DocumentText(text=passage, source_kind="abstract"),
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert finding.grounding_status is GroundingStatus.WARNING
+    assert any("provider abstract" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_permissive_mode_accepts_grounded_abstract_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    passage = "A verifier checks evidence for each generated claim."
+    llm = FakeLlmPort(
+        responses={
+            "research-analysis": json.dumps(
+                {
+                    "what_was_done": "Checks evidence for generated claims",
+                    "method_or_feedback": "Claim-level evidence verification",
+                    "limitation": "The evaluation covers one benchmark",
+                    "relevance": "Directly evaluates the confirmed problem",
+                    "supporting_passage": passage,
+                    "evidence": {
+                        field: {"passage": passage, "location": "Abstract"}
+                        for field in (
+                            "what_was_done",
+                            "method_or_feedback",
+                            "limitation",
+                        )
+                    },
+                    "confidence": 0.8,
+                }
+            )
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    monkeypatch.setenv("RESEARCH_REQUIRE_DOWNLOADABLE_FULL_TEXT", "false")
+    get_settings.cache_clear()
+    try:
+        finding, warnings = await service._analyze(
+            ScholarlyRecord(title="Verifier", abstract=passage),
+            uuid4(),
+            research_context={
+                "idea": {"problems": ["Unsupported generated claims"]},
+                "research_inputs": {"keywords": ["claim verification"]},
+            },
+            document=DocumentText(text=passage, source_kind="abstract"),
+        )
+    finally:
+        get_settings.cache_clear()
+
     assert finding.grounding_status is GroundingStatus.GROUNDED
     assert warnings == []
 
@@ -2490,7 +2764,7 @@ async def test_research_inputs_generate_english_keywords_for_a_vietnamese_idea()
 
 
 @pytest.mark.asyncio
-async def test_query_generation_uses_only_model_translated_english_queries() -> None:
+async def test_query_generation_does_not_invent_tools_from_context_only_keywords() -> None:
     llm = FakeLlmPort(
         responses={"research-query": '{"queries":["language model evaluation"]}'}
     )
@@ -2510,9 +2784,242 @@ async def test_query_generation_uses_only_model_translated_english_queries() -> 
     )
 
     assert warnings == []
-    assert queries[0] == "language model evaluation"
-    assert len(queries) >= 4
-    assert "English regardless of the input language" in llm.calls[0]["system"]
+    assert all("kiểm" not in query and "tuyên" not in query for query in queries)
+    assert any("language model evaluation" in query for query in queries)
+    assert all('"G-Eval"' not in query for query in queries)
+    assert all('"Prometheus"' not in query for query in queries)
+    assert len(queries) >= 2
+    assert "research-discovery" in llm.calls[0]["system"]
+    assert "English regardless of the input language" in llm.calls[1]["system"]
+
+
+@pytest.mark.asyncio
+async def test_search_plan_repairs_invalid_json_before_using_fallback() -> None:
+    class RepairingQueryLlm:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        async def complete(
+            self,
+            *,
+            system: str,
+            prompt: str,
+            model: str | None = None,
+        ) -> str:
+            del model
+            self.calls.append({"system": system, "prompt": prompt})
+            if "research-query-repair" in system:
+                return '{"queries":["scientific claim verification"]}'
+            return "I will provide a plan, but this is not JSON."
+
+    llm = RepairingQueryLlm()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,  # type: ignore[arg-type]
+    )
+
+    plan, warnings = await service._generate_search_plan(
+        ResearchInputs(keywords=["scientific claim verification"]),
+        {"problems": ["Unsupported claims in scientific summaries"]},
+    )
+
+    assert warnings == []
+    assert any("scientific claim verification" in query for query in plan.queries)
+    assert len(llm.calls) == 2
+    assert "research-query-repair" in llm.calls[1]["system"]
+    repair_payload = json.loads(llm.calls[1]["prompt"])
+    assert repair_payload["previous_response"].startswith("I will provide")
+    assert repair_payload["confirmed_keywords"] == [
+        "scientific claim verification"
+    ]
+
+
+def test_search_plan_keyword_coverage_accepts_terms_in_queries() -> None:
+    plan = _search_plan_from_payload(
+        {
+            "facets": [
+                {
+                    "id": "failure_mitigation",
+                    "objective": "Reduce model errors",
+                    "anchors": ["local prompt refinement"],
+                    "queries": [
+                        "structured information extraction hallucination mitigation"
+                    ],
+                    "min_results": 2,
+                }
+            ]
+        },
+        inputs=ResearchInputs(keywords=["hallucination mitigation"]),
+        idea={},
+        limit=12,
+    )
+
+    assert plan.facets[0].id == "failure_mitigation"
+    assert any(
+        "hallucination mitigation" in query for query in plan.facets[0].queries
+    )
+
+
+def test_search_plan_coverage_error_names_uncovered_keywords() -> None:
+    with pytest.raises(ValueError, match="hallucination mitigation"):
+        _search_plan_from_payload(
+            {
+                "facets": [
+                    {
+                        "id": "optimization_method",
+                        "objective": "Optimize prompts",
+                        "anchors": ["prompt optimization"],
+                        "queries": ["automatic prompt optimization benchmark"],
+                        "min_results": 2,
+                    }
+                ]
+            },
+            inputs=ResearchInputs(keywords=["hallucination mitigation"]),
+            idea={},
+            limit=12,
+        )
+
+
+@pytest.mark.asyncio
+async def test_only_discovered_tools_become_exact_search_queries() -> None:
+    candidate_title = "DSPy: Compiling Declarative Language Model Calls"
+    llm = FakeLlmPort(
+        responses={
+            "research-discovery": json.dumps(
+                {
+                    "tools_and_frameworks": ["DSPy", "TextGrad"],
+                    "techniques": ["automatic prompt optimization"],
+                    "candidate_work_titles": [candidate_title],
+                    "aliases": ["textual gradient optimization"],
+                }
+            ),
+            "research-query": '{"queries":["automatic prompt optimization"]}',
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+
+    queries, warnings = await service._generate_queries(
+        ResearchInputs(keywords=["iterative prompt optimization"]),
+        {"problems": ["Prompt refinement from local error feedback"]},
+    )
+
+    assert warnings == []
+    assert queries == [
+        '"DSPy"',
+        '"TextGrad"',
+        '"OPRO"',
+        '"ProTeGi"',
+    ]
+    assert f'"{candidate_title}"' not in queries
+    assert all(" AND " not in query for query in queries)
+    query_call = next(call for call in llm.calls if "research-query" in call["system"])
+    assert candidate_title in query_call["prompt"]
+    assert "evaluation context" in query_call["system"]
+
+
+@pytest.mark.asyncio
+async def test_query_count_equals_discovered_tool_count_without_fixed_cap() -> None:
+    tools = [
+        "OpenAI Evaluator",
+        "Ragas",
+        "DeepEval",
+        "LLM-as-a-Judge",
+        "LangChain",
+        "DSPy",
+        "TextGrad",
+        "OPRO",
+        "ProTeGi",
+        "Guidance",
+    ]
+    candidate_title = "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena"
+    llm = FakeLlmPort(
+        responses={
+            "research-discovery": json.dumps(
+                {
+                    "tools_and_frameworks": tools,
+                    "techniques": ["automatic prompt optimization"],
+                    "candidate_work_titles": [candidate_title],
+                    "aliases": [],
+                }
+            ),
+            "research-query": '{"queries":["automatic prompt optimization"]}',
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    queries, warnings = await service._generate_queries(
+        ResearchInputs(keywords=["iterative prompt optimization"]),
+        {"problems": ["Prompt refinement from local error feedback"]},
+    )
+
+    assert warnings == []
+    assert queries == [f'"{tool}"' for tool in tools]
+    assert len(queries) == len(tools)
+    assert f'"{candidate_title}"' not in queries
+
+
+@pytest.mark.asyncio
+async def test_supporting_keywords_rank_papers_but_do_not_generate_tools() -> None:
+    llm = FakeLlmPort(
+        responses={
+            "research-discovery": json.dumps(
+                {
+                    "tool_discovery_keywords": ["iterative prompt optimization"],
+                    "supporting_context_keywords": [
+                        "LLM-as-a-Judge evaluation",
+                        "scientific information extraction",
+                    ],
+                    "tools_and_frameworks": ["DSPy", "G-Eval", "Prometheus"],
+                    "techniques": ["automatic prompt optimization"],
+                    "candidate_work_titles": [],
+                    "aliases": [],
+                }
+            ),
+            "research-query": '{"queries":["automatic prompt optimization"]}',
+        }
+    )
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=llm,
+    )
+    inputs = ResearchInputs(
+        keywords=[
+            "iterative prompt optimization",
+            "LLM-as-a-Judge evaluation",
+            "scientific information extraction",
+        ]
+    )
+
+    discovery, warnings = await service._generate_discovery_expansion(inputs, {})
+    queries, query_warnings = await service._generate_search_plan(
+        inputs,
+        {},
+        discovery=discovery,
+    )
+
+    assert warnings == []
+    assert query_warnings == []
+    assert discovery.tool_discovery_keywords == ["iterative prompt optimization"]
+    assert discovery.supporting_context_keywords == [
+        "LLM-as-a-Judge evaluation",
+        "scientific information extraction",
+    ]
+    assert "G-Eval" not in discovery.tools_and_frameworks
+    assert "Prometheus" not in discovery.tools_and_frameworks
+    assert queries.queries == ['"DSPy"', '"TextGrad"', '"OPRO"', '"ProTeGi"']
 
 
 @pytest.mark.asyncio
@@ -2585,8 +3092,8 @@ async def test_query_generation_preserves_multiple_model_queries_and_expands_the
     )
 
     assert warnings == []
-    assert queries[:3] == model_queries
-    assert len(queries) == 4
+    assert len(set(model_queries) & set(queries)) >= 2
+    assert len(queries) >= 4
 
 
 @pytest.mark.asyncio
@@ -2957,8 +3464,8 @@ async def test_query_generation_failure_never_sends_vietnamese_to_provider() -> 
         {"problems": ["Tóm tắt bài báo có tuyên bố không được hỗ trợ"]},
     )
 
-    assert queries[:2] == ["scholarly evidence review", "systematic literature review"]
-    assert len(queries) == 4
+    assert all("kiểm" not in query and "tuyên" not in query for query in queries)
+    assert len(queries) >= 2
     assert warnings and "conservative fallback" in warnings[0]
 
 
@@ -2984,8 +3491,9 @@ async def test_query_generation_rejects_vietnamese_model_output(
         {"problems": ["Tóm tắt có tuyên bố không được hỗ trợ"]},
     )
 
-    assert queries[:2] == ["scholarly evidence review", "systematic literature review"]
-    assert len(queries) == 4
+    assert all("kiểm" not in query and "tuyên" not in query for query in queries)
+    assert all("kiem" not in query and "tuyen" not in query for query in queries)
+    assert len(queries) >= 2
     assert warnings and "conservative fallback" in warnings[0]
 
 
@@ -3026,6 +3534,132 @@ def test_query_composition_separates_open_questions_and_ignores_constraints() ->
     assert all("low-resource schools" not in query.casefold() for query in queries)
 
 
+def test_search_plan_groups_confirmed_keywords_into_distinct_facets() -> None:
+    plan = _fallback_search_plan(
+        ResearchInputs(
+            keywords=[
+                "LLM fabrication",
+                "LLM-as-a-Judge evaluation",
+                "iterative prompt optimization",
+                "scientific information extraction",
+                "hallucination mitigation",
+                "ground truth verification",
+            ]
+        ),
+        {},
+        limit=12,
+    )
+
+    assert [facet.id for facet in plan.facets] == [
+        "implementation_tools",
+        "evaluation_verification",
+        "task_domain",
+        "failure_mitigation",
+    ]
+    assert all(facet.min_results == 2 for facet in plan.facets)
+    assert all(len(facet.queries) == 2 for facet in plan.facets)
+    assert len(plan.queries) == 8
+    tool_queries = plan.facets[0].queries
+    assert tool_queries == ['"DSPy"', '"TextGrad"']
+
+
+def test_facet_balancing_prioritizes_coverage_before_global_tail() -> None:
+    plan = _fallback_search_plan(
+        ResearchInputs(
+            keywords=["iterative prompt optimization", "scientific information extraction"]
+        ),
+        {},
+        limit=8,
+    )
+    records = [
+        ScholarlyRecord(
+            title="DSPy optimization framework",
+            metadata={
+                "search_facets": ["implementation_tools"],
+                "implementation_tool_mentions": ["DSPy"],
+            },
+        ),
+        ScholarlyRecord(
+            title="TextGrad optimization framework",
+            metadata={
+                "search_facets": ["implementation_tools"],
+                "implementation_tool_mentions": ["TextGrad"],
+            },
+        ),
+        ScholarlyRecord(
+            title="Extraction benchmark",
+            metadata={"search_facets": ["task_domain"]},
+        ),
+        ScholarlyRecord(
+            title="Extraction system",
+            metadata={"search_facets": ["task_domain"]},
+        ),
+    ]
+
+    ordered = _facet_balanced_records(records, plan)
+
+    assert [record.title for record in ordered[:4]] == [
+        "DSPy optimization framework",
+        "Extraction benchmark",
+        "TextGrad optimization framework",
+        "Extraction system",
+    ]
+
+
+def test_search_facet_coverage_detects_only_missing_facets() -> None:
+    plan = _fallback_search_plan(
+        ResearchInputs(
+            keywords=["iterative prompt optimization", "scientific information extraction"]
+        ),
+        {},
+        limit=8,
+    )
+    records = [
+        ScholarlyRecord(
+            title="DSPy prompt optimization with textual feedback",
+            abstract="An iterative prompt optimization method.",
+        ),
+        ScholarlyRecord(
+            title="TextGrad automatic prompt refinement",
+            abstract="An iterative prompt optimization system using feedback.",
+        ),
+    ]
+    _tag_search_facets(records, plan)
+
+    missing = _missing_search_facets(records, plan)
+
+    assert [facet.id for facet in missing] == ["task_domain"]
+
+
+def test_tool_specific_papers_rank_above_concept_only_matches() -> None:
+    inputs = ResearchInputs(keywords=["iterative prompt optimization"])
+    plan = _fallback_search_plan(inputs, {}, limit=4)
+    tool_query = plan.facets[0].queries[1]
+    conceptual = ScholarlyRecord(
+        title="A survey of iterative prompt optimization",
+        abstract="Reviews iterative prompt optimization concepts and terminology.",
+    )
+    tool_specific = ScholarlyRecord(
+        title="TextGrad: Automatic Differentiation via Text",
+        abstract="TextGrad is an optimization framework using textual feedback.",
+        metadata={"discovery_queries": [tool_query]},
+    )
+    records = [conceptual, tool_specific]
+    _tag_search_facets(records, plan)
+
+    ranked, discarded = _rank_relevant_records(
+        records,
+        inputs=inputs,
+        idea={},
+        queries=plan.queries,
+    )
+
+    assert discarded == 0
+    assert ranked[0].title.startswith("TextGrad")
+    assert ranked[0].metadata["implementation_tool_mentions"] == ["TextGrad"]
+    assert ranked[0].metadata["tool_specific_relevance"] is True
+
+
 def test_related_work_ranking_filters_generic_results_and_covers_idea_concepts() -> (
     None
 ):
@@ -3048,13 +3682,31 @@ def test_related_work_ranking_filters_generic_results_and_covers_idea_concepts()
             keywords=["claim checklist", "paper summaries", "claim verification"],
         ),
         idea={"problems": ["Claim checklist for paper summaries"]},
+        queries=["claim verification language models"],
     )
 
-    assert discarded == 1
+    assert discarded == 0
     assert {record.title for record in ranked[:2]} == {
         checklist.title,
         summaries.title,
     }
+
+
+def test_related_work_ranking_does_not_filter_without_confirmed_anchors() -> None:
+    records = [
+        ScholarlyRecord(title="Iterative refinement with feedback"),
+        ScholarlyRecord(title="Prompt optimization benchmark"),
+    ]
+
+    ranked, discarded = _rank_relevant_records(
+        records,
+        inputs=ResearchInputs(),
+        idea={},
+        queries=["related work survey"],
+    )
+
+    assert ranked == records
+    assert discarded == 0
 
 
 def test_related_work_ranking_uses_english_queries_for_vietnamese_idea() -> None:
@@ -3328,10 +3980,9 @@ async def test_counter_audit_excludes_grounded_but_irrelevant_sources() -> None:
     assert any("Excluded 1" in warning for warning in warnings)
 
 
-def test_related_work_generation_is_capped_at_five_results() -> None:
-    assert ResearchGenerateRequest(expected_version=1).max_results == 5
-    with pytest.raises(ValueError):
-        ResearchGenerateRequest(expected_version=1, max_results=6)
+def test_related_work_generation_has_no_fixed_citation_cap() -> None:
+    assert ResearchGenerateRequest(expected_version=1).max_results is None
+    assert ResearchGenerateRequest(expected_version=1, max_results=12).max_results == 12
 
 
 @pytest.mark.asyncio

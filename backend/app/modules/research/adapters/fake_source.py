@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.modules.research.normalization import normalize_doi
 from app.modules.research.ports import (
+    DocumentText,
     ScholarlyRecord,
     SourcePreferences,
     VerificationResult,
@@ -57,6 +58,20 @@ DEFAULT_RECORDS = (
         },
     ),
 )
+
+
+class FakeDocumentTextSource:
+    """Keep fake-provider development and tests deterministic and offline."""
+
+    async def fetch_text(self, *, record: ScholarlyRecord) -> DocumentText | None:
+        if not record.abstract:
+            return None
+        return DocumentText(
+            text=record.abstract.strip(),
+            source_url=record.url,
+            source_kind="abstract",
+            original_content_type="text/plain",
+        )
 
 
 class FakeScholarlySourcePort:

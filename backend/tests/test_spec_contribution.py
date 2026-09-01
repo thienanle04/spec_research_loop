@@ -3,8 +3,10 @@
 import json
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 
+from app.modules.spec.service import SpecService
 from tests.test_loop_api import (
     _auth_client,
     _confirm,
@@ -158,7 +160,13 @@ async def test_generates_vietnamese_directions_for_a_vietnamese_gap(
 
     assert response.status_code == 200, response.text
     directions = response.json()["directions"]
-    assert directions[0]["title"] == "Tập trung vào phương pháp cốt lõi"
+    assert directions[0]["title"] == "Đối chiếu từng luận điểm với nguồn học thuật"
+    assert not any(item["title"].startswith("Tập trung vào") for item in directions)
+    for item in directions[:3]:
+        assert "Cơ chế:" in item["description"]
+        assert "Liên hệ Gap:" in item["description"]
+        assert "Điểm mới:" in item["description"]
+        assert "Kiểm chứng:" in item["description"]
     assert [item["title"] for item in directions[-2:]] == [
         "Kết hợp các hướng",
         "Khác",
@@ -170,6 +178,230 @@ async def test_generates_vietnamese_directions_for_a_vietnamese_gap(
         )
         for item in directions
     )
+
+
+class _ScriptedContributionLlm:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.calls = 0
+        self.prompts: list[str] = []
+        self.systems: list[str] = []
+
+    async def complete(self, **kwargs: object) -> str:
+        self.prompts.append(str(kwargs["prompt"]))
+        self.systems.append(str(kwargs["system"]))
+        response = self.responses[min(self.calls, len(self.responses) - 1)]
+        self.calls += 1
+        return response
+
+
+@pytest.mark.asyncio
+async def test_repairs_a_generic_direction_once() -> None:
+    valid = json.dumps(
+        {"directions": [
+            {
+                "title": "Bản đồ luận điểm–bằng chứng",
+                "mechanism": "Liên kết từng luận điểm với đoạn bằng chứng học thuật hỗ trợ hoặc phản bác.",
+                "gap_link": "Cơ chế xử lý trực tiếp việc Gap chưa kiểm chứng kết quả ở cấp từng luận điểm.",
+                "novelty": "Khác với danh sách nguồn tổng hợp, quan hệ hỗ trợ được biểu diễn cho từng luận điểm.",
+                "validation": "So sánh với danh sách nguồn, đo độ chính xác truy vết và bác bỏ nếu không tốt hơn.",
+            }
+        ]},
+        ensure_ascii=False,
+    )
+    llm = _ScriptedContributionLlm(
+        [
+            '[{"title":"Tập trung vào kiểm chứng","description":"Kiểm chứng tốt hơn."}]',
+            valid,
+        ]
+    )
+    service = SpecService(None, llm=llm)  # type: ignore[arg-type]
+
+    directions = await service._propose_directions(
+        {
+            "upstream": {
+                "gap": {
+                    "card_snapshot": [
+                        {
+                            "kind": "gap",
+                            "body": {
+                                "statement": "Các phương pháp chưa kiểm chứng từng luận điểm."
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+        "Vietnamese",
+    )
+
+    assert llm.calls == 2
+    assert directions[0].title == "Bản đồ luận điểm–bằng chứng"
+
+
+@pytest.mark.asyncio
+async def test_does_not_save_a_generic_fallback_after_repair_fails() -> None:
+    llm = _ScriptedContributionLlm(["not-json"])
+    service = SpecService(None, llm=llm)  # type: ignore[arg-type]
+
+    with pytest.raises(HTTPException) as caught:
+        await service._propose_directions(
+            {"upstream": {"gap": {"card_snapshot": []}}},
+            "English",
+        )
+
+    assert llm.calls == 2
+    assert caught.value.status_code == 502
+    assert "no generic fallback was saved" in caught.value.detail
+
+
+@pytest.mark.asyncio
+async def test_repairs_a_truncated_tail_before_falling_back_to_complete_items() -> None:
+    complete = {
+        "title": "Claim-level evidence routing",
+        "mechanism": "Route each unsupported claim to the scholarly passage needed to assess it.",
+        "gap_link": "This directly addresses the inability to verify results at individual claim level.",
+        "novelty": "Unlike aggregate checking, the method preserves each failed claim and its evidence link.",
+        "validation": "Compare with aggregate checking and reject if unsupported claims do not decrease.",
+    }
+    truncated = (
+        '{"directions":['
+        + json.dumps(complete)
+        + ',{"title":"Second direction","mechanism":"This response was cut'
+    )
+    repaired = json.dumps(
+        {
+            "directions": [
+                complete,
+                {
+                    "title": "Traceable evidence map",
+                    "mechanism": "Link each claim to its supporting or contradicting scholarly passage.",
+                    "gap_link": "This makes claim-level evidence observable instead of relying on aggregate checks.",
+                    "novelty": "Unlike an unlinked bibliography, it records support relationships for each claim.",
+                    "validation": "Compare trace accuracy with a source list and reject if auditors are not more accurate.",
+                },
+                {
+                    "title": "Unsupported-claim confirmation gate",
+                    "mechanism": "Block confirmation until material unsupported claims are resolved.",
+                    "gap_link": "This prevents unverified claims from entering the confirmed Research Spec.",
+                    "novelty": "Unlike passive warnings, evidence status becomes an editable confirmation condition.",
+                    "validation": "Compare with warnings alone and reject if residual unsupported claims do not decrease.",
+                },
+            ]
+        }
+    )
+    llm = _ScriptedContributionLlm([truncated, repaired])
+    service = SpecService(None, llm=llm)  # type: ignore[arg-type]
+
+    directions = await service._propose_directions(
+        {
+            "upstream": {
+                "gap": {
+                    "card_snapshot": [
+                        {
+                            "kind": "gap",
+                            "body": {
+                                "statement": "Existing methods do not verify individual claims."
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+        "English",
+    )
+
+    assert llm.calls == 2
+    assert len(directions) == 3
+    assert [item.title for item in directions] == [
+        "Claim-level evidence routing",
+        "Traceable evidence map",
+        "Unsupported-claim confirmation gate",
+    ]
+    assert "mechanism to one short, direct sentence" in llm.systems[0]
+
+
+@pytest.mark.asyncio
+async def test_compacts_related_work_before_direction_generation() -> None:
+    valid = json.dumps(
+        {
+            "directions": [
+                {
+                    "title": "Claim-level evidence routing",
+                    "mechanism": "Route each unsupported claim to the scholarly passage needed to assess it.",
+                    "gap_link": "This directly addresses the inability to verify results at individual claim level.",
+                    "novelty": "Unlike aggregate checking, the method preserves the failed claim and its evidence link.",
+                    "validation": "Compare with aggregate checking and reject the direction if unsupported claims do not decrease.",
+                }
+            ]
+        }
+    )
+    llm = _ScriptedContributionLlm([valid])
+    service = SpecService(None, llm=llm)  # type: ignore[arg-type]
+    oversized = "RAW_METADATA_SHOULD_NOT_REACH_MODEL " * 10_000
+    context = {
+        "upstream": {
+            "idea_decomposition": {
+                "card_snapshot": [
+                    {"kind": "problem", "body": {"text": "Unsupported claims"}},
+                    {
+                        "kind": "research_question",
+                        "body": {"text": "Can claim-level checks reduce unsupported claims?"},
+                    },
+                ]
+            },
+            "research_inputs": {
+                "narrative": {"keywords": ["claim evidence verification"]}
+            },
+            "related_work": {
+                "narrative": {"candidate_count": 20, "ranked_candidate_count": 6},
+                "projected": {
+                    "citations": [
+                        {
+                            "id": "citation-1",
+                            "citation_key": "smith-2025",
+                            "title": "Aggregate Claim Checking",
+                            "year": 2025,
+                            "abstract": oversized,
+                            "metadata": {"raw": oversized},
+                        }
+                    ],
+                    "related_work": [
+                        {
+                            "citation_id": "citation-1",
+                            "what_was_done": "Scores the result as a whole.",
+                            "limitation": "Does not localize unsupported claims.",
+                            "relevance": "Provides the closest aggregate baseline.",
+                            "supporting_passage": oversized,
+                            "evidence": {"raw": oversized},
+                        }
+                    ],
+                },
+            },
+            "gap": {
+                "card_snapshot": [
+                    {
+                        "kind": "gap",
+                        "body": {
+                            "statement": "Existing methods do not verify each claim against scholarly evidence."
+                        },
+                    }
+                ]
+            },
+        }
+    }
+
+    directions = await service._propose_directions(context, "English")
+
+    request = json.loads(llm.prompts[0])
+    serialized = json.dumps(request)
+    assert len(serialized) < 30_000
+    assert "RAW_METADATA_SHOULD_NOT_REACH_MODEL" not in serialized
+    assert "context_projection" not in request
+    assert request["contribution_brief"]["related_work"]["studies"][0][
+        "source"
+    ]["title"] == "Aggregate Claim Checking"
+    assert directions[0].title == "Claim-level evidence routing"
 
 
 @pytest.mark.asyncio

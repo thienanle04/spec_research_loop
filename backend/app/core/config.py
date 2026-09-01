@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     research_source_provider: str = "fake"
     research_provider_timeout_seconds: float = 15.0
     research_candidate_limit: int = 50
-    research_search_query_limit: int = 4
     research_counter_query_limit: int = 8
     research_graph_seed_count: int = 5
     research_rerank_enabled: bool = True
@@ -39,7 +38,7 @@ class Settings(BaseSettings):
     research_text_storage: str = "s3"
     research_text_timeout_seconds: float = 30.0
     research_text_max_bytes: int = 20_000_000
-    research_require_downloadable_full_text: bool = True
+    research_require_downloadable_full_text: bool = False
     research_llm_provider: str = "fake"
     research_llm_model: str = "Qwen3.6-27B"
     fit_webui_api_key: str | None = None
