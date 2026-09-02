@@ -197,3 +197,65 @@ def test_finish_recovers_raw_json_without_delimiter() -> None:
     prose, payload = splitter.finish(interpretation=True)
     assert prose == "Need the budget."
     assert payload["exhausted"] is True
+
+
+_VALID = (
+    '{"exhausted": false, "cards": [], "questions": ['
+    '{"text": "Training or inference?", "options": ["Training", "Inference"]}'
+    '], "frame": {"intent": "I", "problem": "P", "research_question": "RQ"}}'
+)
+
+
+def test_mid_prose_delimiter_does_not_split_trailer() -> None:
+    """Account text and preamble often mention ---json---; only an own-line marker is the trailer."""
+    splitter = TrailerSplitter()
+    visible = splitter.feed(
+        "Grilling hay gặp lỗi với ---json--- trong ý tưởng.\n"
+        "---json---\n"
+        f"{_VALID}"
+    )
+    assert visible == "Grilling hay gặp lỗi với ---json--- trong ý tưởng.\n"
+    prose, payload = splitter.finish(interpretation=True)
+    assert prose == "Grilling hay gặp lỗi với ---json--- trong ý tưởng."
+    assert payload["questions"][0]["text"] == "Training or inference?"
+
+
+def test_incomplete_delimiter_line_then_json() -> None:
+    splitter = TrailerSplitter()
+    visible = ""
+    for chunk in ("Need the budget.\n", "---json\n", _VALID):
+        visible += splitter.feed(chunk)
+    assert "---json" not in visible
+    prose, payload = splitter.finish(interpretation=True)
+    assert prose == "Need the budget."
+    assert payload["frame"]["problem"] == "P"
+
+
+def test_spaced_and_cased_delimiter_line() -> None:
+    splitter = TrailerSplitter()
+    splitter.feed(f"Need the budget.\n--- JSON ---\n{_VALID}")
+    prose, payload = splitter.finish(interpretation=True)
+    assert prose == "Need the budget."
+    assert payload["exhausted"] is False
+
+
+def test_later_delimiter_wins_when_early_object_is_invalid() -> None:
+    splitter = TrailerSplitter()
+    splitter.feed(
+        "Format reminder:\n"
+        "---json---\n"
+        '{"exhausted": "nope"}\n'
+        "Need the budget.\n"
+        "---json---\n"
+        f"{_VALID}"
+    )
+    prose, payload = splitter.finish(interpretation=True)
+    assert prose.endswith("Need the budget.")
+    assert payload["questions"][0]["text"] == "Training or inference?"
+
+
+def test_parse_prefers_last_trailer_object() -> None:
+    raw = '{"exhausted": "nope"}\n' + _VALID
+    payload = parse_trailer_payload(raw, interpretation=True)
+    assert payload["questions"][0]["text"] == "Training or inference?"
+    assert payload["frame"]["problem"] == "P"

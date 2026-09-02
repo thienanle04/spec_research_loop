@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.modules.loop.catalog import CardKind
 from app.modules.loop.interpretation_turns import TurnListError, parse_frame, parse_questions
 
 DELIMITER = "---json---"
+# Own-line marker only. Mid-prose "---json---" is Account/model text, not the trailer.
+_DELIMITER_LINE = re.compile(
+    r"^[ \t]*---[ \t]*json(?:[ \t]*---)?[ \t]*(?:\r?\n|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DELIMITER_PREFIX_CHARS = re.compile(r"^[ \t\-jsoneJSON]*$")
 
 _ALLOWED_KINDS = {
     CardKind.PROBLEM,
@@ -19,14 +26,19 @@ _ALLOWED_KINDS = {
 _SINGULAR = {CardKind.PROBLEM, CardKind.RESEARCH_QUESTION}
 
 
+def _could_become_delimiter_line(line: str) -> bool:
+    if not line or not _DELIMITER_PREFIX_CHARS.fullmatch(line):
+        return False
+    compact = re.sub(r"\s+", "", line).casefold()
+    return "---json---".startswith(compact) or compact == "---json"
+
+
 def _safe_emit_end(buf: str) -> int:
-    max_hold = len(DELIMITER) - 1
-    hold = 0
-    for size in range(min(max_hold, len(buf)), 0, -1):
-        if DELIMITER.startswith(buf[-size:]):
-            hold = size
-            break
-    return len(buf) - hold
+    last_nl = buf.rfind("\n")
+    line = buf[last_nl + 1 :]
+    if _could_become_delimiter_line(line):
+        return last_nl + 1
+    return len(buf)
 
 
 class TrailerParseError(Exception):
@@ -38,15 +50,13 @@ class TrailerSplitter:
         self._buf = ""
         self._emitted = 0
         self._found = False
-        self._json_parts: list[str] = []
 
     def feed(self, chunk: str) -> str:
-        if self._found:
-            self._json_parts.append(chunk)
-            return ""
         self._buf += chunk
-        idx = self._buf.find(DELIMITER)
-        if idx == -1:
+        if self._found:
+            return ""
+        match = _DELIMITER_LINE.search(self._buf)
+        if match is None:
             safe_end = _safe_emit_end(self._buf)
             if safe_end > self._emitted:
                 out = self._buf[self._emitted : safe_end]
@@ -54,30 +64,38 @@ class TrailerSplitter:
                 return out
             return ""
         self._found = True
-        prose_out = self._buf[self._emitted : idx]
-        self._json_parts.append(self._buf[idx + len(DELIMITER) :])
+        prose_out = self._buf[self._emitted : match.start()]
+        self._emitted = match.start()
         return prose_out
 
     def finish(self, *, interpretation: bool = False) -> tuple[str, dict[str, Any]]:
-        if self._found:
-            idx = self._buf.find(DELIMITER)
-            prose = self._buf[:idx].rstrip()
-            raw = "".join(self._json_parts).strip()
-            return prose, parse_trailer_payload(raw, interpretation=interpretation)
+        return _split_completion(self._buf, interpretation=interpretation)
+
+
+def _split_completion(buf: str, *, interpretation: bool) -> tuple[str, dict[str, Any]]:
+    last_error: TrailerParseError | None = None
+    for match in reversed(list(_DELIMITER_LINE.finditer(buf))):
+        prose = buf[: match.start()].rstrip()
+        raw = buf[match.end() :]
         try:
-            parsed = parse_trailer_payload(self._buf, interpretation=interpretation)
+            return prose, parse_trailer_payload(raw, interpretation=interpretation)
         except TrailerParseError as exc:
-            if "{" not in self._buf:
-                raise TrailerParseError("missing json trailer") from exc
-            raise
-        return _prose_before_object(self._buf), parsed
+            last_error = exc
+    try:
+        parsed = parse_trailer_payload(buf, interpretation=interpretation)
+    except TrailerParseError as exc:
+        if "{" not in buf:
+            raise TrailerParseError("missing json trailer") from (last_error or exc)
+        raise
+    return _prose_before_object(buf), parsed
 
 
 def _prose_before_object(buf: str) -> str:
     start = buf.find("{")
     if start < 0:
         return buf.rstrip()
-    prefix = buf[:start].rstrip()
+    prefix = buf[:start]
+    prefix = _DELIMITER_LINE.sub("", prefix).rstrip()
     lowered = prefix.lower()
     for marker in ("```json", "```"):
         if lowered.endswith(marker):
@@ -263,13 +281,33 @@ def _salvage_object(snippet: str) -> dict[str, Any] | None:
     }
 
 
-def _load_json_object(raw: str, *, interpretation: bool = False) -> dict[str, Any]:
-    text = _unwrap_fences(raw).replace("\u201c", '"').replace("\u201d", '"')
-    start = text.find("{")
-    if start < 0:
-        raise TrailerParseError("invalid json trailer")
-    snippet = text[start:]
+def _looks_like_trailer(payload: dict[str, Any]) -> bool:
+    return any(key in payload for key in ("exhausted", "questions", "cards", "frame"))
+
+
+def _brace_starts(text: str) -> list[int]:
+    starts: list[int] = []
+    in_string = False
+    escape = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            starts.append(index)
+    return starts
+
+
+def _decode_trailer_dict(snippet: str) -> tuple[dict[str, Any] | None, json.JSONDecodeError | None]:
     decoder = json.JSONDecoder()
+    last_error: json.JSONDecodeError | None = None
     candidates = [
         snippet,
         _fix_questions_wrapper(snippet),
@@ -278,30 +316,55 @@ def _load_json_object(raw: str, *, interpretation: bool = False) -> dict[str, An
         _strip_trailing_commas(_escape_interior_quotes(snippet)),
         _fix_questions_wrapper(_escape_interior_quotes(snippet)),
     ]
-    last_error: json.JSONDecodeError | None = None
     for candidate in candidates:
         try:
-            payload, consumed = decoder.raw_decode(candidate)
+            payload, _consumed = decoder.raw_decode(candidate)
         except json.JSONDecodeError as exc:
             last_error = exc
             continue
-        if not isinstance(payload, dict):
-            raise TrailerParseError("trailer must be a JSON object")
-        rest = candidate[consumed:].lstrip()
-        if interpretation and rest.startswith((",", "{")):
+        if isinstance(payload, dict) and _looks_like_trailer(payload):
+            return payload, last_error
+    return None, last_error
+
+
+def _iter_trailer_dicts(raw: str, *, interpretation: bool) -> list[dict[str, Any]]:
+    text = _unwrap_fences(raw).replace("\u201c", '"').replace("\u201d", '"')
+    found: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    last_error: json.JSONDecodeError | None = None
+    for start in reversed(_brace_starts(text)):
+        payload, decode_error = _decode_trailer_dict(text[start:])
+        if decode_error is not None:
+            last_error = decode_error
+        if payload is None:
             continue
-        return payload
+        marker = id(payload)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        found.append(payload)
     if interpretation:
-        salvaged = _salvage_object(snippet)
+        salvaged = _salvage_object(text[text.find("{") :]) if "{" in text else None
         if salvaged is not None and (salvaged["questions"] or salvaged["exhausted"]):
-            return salvaged
-    detail = last_error.msg if last_error is not None else "invalid json trailer"
-    raise TrailerParseError(f"invalid json trailer: {detail}")
+            found.append(salvaged)
+    if not found and last_error is not None:
+        raise TrailerParseError(f"invalid json trailer: {last_error.msg}")
+    if not found:
+        raise TrailerParseError("invalid json trailer")
+    return found
 
 
 def parse_trailer_payload(raw: str, *, interpretation: bool = False) -> dict[str, Any]:
-    payload = _load_json_object(raw, interpretation=interpretation)
+    last_error: TrailerParseError | None = None
+    for payload in _iter_trailer_dicts(raw, interpretation=interpretation):
+        try:
+            return _validated_payload(payload, interpretation=interpretation)
+        except TrailerParseError as exc:
+            last_error = exc
+    raise last_error or TrailerParseError("invalid json trailer")
 
+
+def _validated_payload(payload: dict[str, Any], *, interpretation: bool) -> dict[str, Any]:
     exhausted = payload.get("exhausted", False)
     if not isinstance(exhausted, bool):
         raise TrailerParseError("exhausted must be a boolean")

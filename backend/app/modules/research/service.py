@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -475,10 +475,36 @@ class ResearchService:
                         citation_count += 1
                     yield event
             else:
-                narrative, warnings = await self._generate_gaps(
-                    run.context,
-                    session_id=run.session_id,
-                )
+                progress_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+                async def report_gap_progress(message: str, pct: int) -> None:
+                    await progress_queue.put(
+                        self._event(
+                            ProgressEvent(
+                                node=run.node,
+                                message=message,
+                                pct=pct,
+                            )
+                        )
+                    )
+
+                async def produce_gap() -> tuple[dict[str, Any], list[str]]:
+                    try:
+                        return await self._generate_gaps(
+                            run.context,
+                            session_id=run.session_id,
+                            on_progress=report_gap_progress,
+                        )
+                    finally:
+                        await progress_queue.put(None)
+
+                gap_task = asyncio.create_task(produce_gap())
+                while True:
+                    item = await progress_queue.get()
+                    if item is None:
+                        break
+                    yield item
+                narrative, warnings = await gap_task
                 for warning in warnings:
                     yield self._warning(run.node, "llm_fallback", warning)
                 await self._set_narrative(run.session_id, run.node.value, narrative)
@@ -1718,7 +1744,12 @@ class ResearchService:
         context: dict[str, Any],
         *,
         session_id: UUID | None = None,
+        on_progress: Callable[[str, int], Awaitable[None]] | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
+        async def progress(message: str, pct: int) -> None:
+            if on_progress is not None:
+                await on_progress(message, pct)
+
         upstream = _dict_payload(context.get("upstream"))
         related_node = _dict_payload(upstream.get(WorkflowNode.RELATED_WORK.value))
         related = _dict_payload(related_node.get("projected"))
@@ -1761,6 +1792,10 @@ class ResearchService:
             valid_keys,
         )
         warnings.extend(claim_preparation_warnings)
+        await progress(
+            "Checking whether Related Work limitations are source-supported",
+            8,
+        )
         source_claims, claim_support_warnings = (
             await self._validate_gap_claim_support(
                 idea=idea,
@@ -1796,6 +1831,7 @@ class ResearchService:
         gap_claims = source_claims
         provisional_statement = _fallback_gap_statement(eligible_findings)
         if valid_keys and source_claims:
+            await progress("Analyzing the source-grounded Gap Candidate", 22)
             try:
                 analysis_raw = await self._llm.complete(
                     system=(
@@ -1875,6 +1911,7 @@ class ResearchService:
         )
         related_queries = _string_list(related_narrative.get("search_queries"))
         if gap_claims and valid_keys:
+            await progress("Searching for counter-evidence", 38)
             counter_search = await self._search_counter_evidence(
                 idea=idea,
                 inputs=inputs,
@@ -1885,6 +1922,7 @@ class ResearchService:
                 preferences=source_preferences,
             )
             warnings.extend(counter_search.warnings)
+            await progress("Reading and assessing counter-evidence sources", 58)
             (
                 selected_counter_records,
                 counter_materials,
@@ -1934,6 +1972,7 @@ class ResearchService:
             CounterEvidenceOutcome.NO_DIRECT_COUNTER_EVIDENCE,
             CounterEvidenceOutcome.GAP_NARROWED,
         }:
+            await progress("Writing the Gap Candidate", 88)
             try:
                 synthesis_raw = await self._llm.complete(
                     system=(
@@ -2259,27 +2298,29 @@ class ResearchService:
             item.claim_id: item for item in confirmation_candidates
         }
 
+        confirmation_instruction = (
+            _idea_language_instruction(idea)
+            + "research-gap-claim-support-confirmation: adversarially verify "
+            "each proposed atomic Gap claim against only its supplied "
+            "Related Work passage. Return only JSON with assessments containing "
+            "exactly one object per required claim_id with claim_id, support_status, "
+            "atomicity_status, evidence_span, and unsupported_fragments. support_status "
+            "must be supported, unsupported, or uncertain. atomicity_status must be "
+            "atomic, compound, or uncertain. evidence_span must be a verbatim "
+            "span from the supplied passage that entails the complete claim; an "
+            "empty or merely topically related span is insufficient. List every "
+            "claim fragment not entailed by the passage in unsupported_fragments. "
+            "Mark compound when the statement joins independently testable "
+            "limitations. Mark unsupported when any asserted mechanism, modality, "
+            "scope, comparison, or application is absent from the passage. Never "
+            "infer that a method lacks a feature merely because the supplied "
+            "passage does not mention it. Cross-language paraphrases may be "
+            "supported, but the evidence_span must remain verbatim source text."
+        )
+
         async def confirm_one(claim: _GapClaim) -> object:
             return await self._llm.complete(
-                system=(
-                    _idea_language_instruction(idea)
-                    + "research-gap-claim-support-confirmation: adversarially verify "
-                    "exactly one proposed atomic Gap claim against only its supplied "
-                    "Related Work passage. Return only JSON with assessments containing "
-                    "one object with claim_id, support_status, atomicity_status, "
-                    "evidence_span, and unsupported_fragments. support_status must be "
-                    "supported, unsupported, or uncertain. atomicity_status must be "
-                    "atomic, compound, or uncertain. evidence_span must be a verbatim "
-                    "span from the supplied passage that entails the complete claim; an "
-                    "empty or merely topically related span is insufficient. List every "
-                    "claim fragment not entailed by the passage in unsupported_fragments. "
-                    "Mark compound when the statement joins independently testable "
-                    "limitations. Mark unsupported when any asserted mechanism, modality, "
-                    "scope, comparison, or application is absent from the passage. Never "
-                    "infer that a method lacks a feature merely because the supplied "
-                    "passage does not mention it. Cross-language paraphrases may be "
-                    "supported, but the evidence_span must remain verbatim source text."
-                ),
+                system=confirmation_instruction,
                 prompt=json.dumps(
                     {
                         "required_claim_ids": [claim.claim_id],
@@ -2290,29 +2331,60 @@ class ResearchService:
                 ),
             )
 
-        confirmation_responses = await asyncio.gather(
-            *(confirm_one(item) for item in confirmation_candidates),
-            return_exceptions=True,
-        )
         confirmations: dict[str, _GapClaimSupportItem] = {}
         confirmation_failures: list[str] = []
-        for claim, response in zip(
-            confirmation_candidates,
-            confirmation_responses,
-            strict=True,
-        ):
+        remaining_confirmation = list(confirmation_candidates)
+        if remaining_confirmation:
+            required_confirmation_ids = [
+                item.claim_id for item in remaining_confirmation
+            ]
             try:
-                if isinstance(response, BaseException):
-                    raise response
-                confirmed = _validated_gap_claim_support_response(
-                    str(response),
-                    [claim.claim_id],
+                bulk_raw = await self._llm.complete(
+                    system=confirmation_instruction,
+                    prompt=json.dumps(
+                        {
+                            "required_claim_ids": required_confirmation_ids,
+                            "claim_candidates": [
+                                item.model_dump(mode="json")
+                                for item in remaining_confirmation
+                            ],
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    ),
                 )
-                confirmations[claim.claim_id] = confirmed.assessments[0]
-            except Exception as exc:  # noqa: BLE001 - fail closed per claim
-                confirmation_failures.append(
-                    f"{claim.claim_id}: {_structured_failure_detail(exc)}"
+                bulk_confirmed = _validated_gap_claim_support_response(
+                    str(bulk_raw),
+                    required_confirmation_ids,
                 )
+                for item in bulk_confirmed.assessments:
+                    confirmations[item.claim_id] = item
+                remaining_confirmation = []
+            except Exception:  # noqa: BLE001 - per-claim recovery follows
+                pass
+
+        if remaining_confirmation:
+            confirmation_responses = await asyncio.gather(
+                *(confirm_one(item) for item in remaining_confirmation),
+                return_exceptions=True,
+            )
+            for claim, response in zip(
+                remaining_confirmation,
+                confirmation_responses,
+                strict=True,
+            ):
+                try:
+                    if isinstance(response, BaseException):
+                        raise response
+                    confirmed = _validated_gap_claim_support_response(
+                        str(response),
+                        [claim.claim_id],
+                    )
+                    confirmations[claim.claim_id] = confirmed.assessments[0]
+                except Exception as exc:  # noqa: BLE001 - fail closed per claim
+                    confirmation_failures.append(
+                        f"{claim.claim_id}: {_structured_failure_detail(exc)}"
+                    )
 
         statuses: dict[str, CounterEvidenceSupport] = {}
         for claim in claim_candidates:
