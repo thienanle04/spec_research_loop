@@ -73,7 +73,7 @@ class _CapturingStructuredLlm:
 
 
 async def _stub_ready(service: SpecService, monkeypatch: pytest.MonkeyPatch) -> None:
-    session = SimpleNamespace(working_draft_node="claims")
+    session = SimpleNamespace(working_draft_node="claims", working_draft_narrative={})
 
     async def ready(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return session

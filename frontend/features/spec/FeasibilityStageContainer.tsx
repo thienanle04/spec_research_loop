@@ -107,7 +107,11 @@ export function FeasibilityStageContainer({
   const expRev = expHead?.stage_revision_id ? (session as any).stage_revisions?.find((r: any) => r.id === expHead.stage_revision_id) : null;
   const committedNarrative = expRev?.narrative as any;
 
-  const experimentPlan = (narrative?.plan || committedNarrative?.plan) as ExperimentPlan | undefined;
+  const workingPlan = narrative?.plan as ExperimentPlan | undefined;
+  const committedPlan = committedNarrative?.plan as ExperimentPlan | undefined;
+  const experimentPlan = (
+    workingPlan?.experiments?.length ? workingPlan : committedPlan
+  ) as ExperimentPlan | undefined;
   const feasibilityReport = narrative?.feasibility_report as FeasibilityReport | undefined;
 
   const running = checkFeasibility.isPending || saving;
@@ -145,11 +149,18 @@ export function FeasibilityStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not check feasibility");
+      const report = response.data.report;
+      if (!report) {
+        throw new Error("Could not check feasibility");
+      }
       updateSession((current) =>
         withGeneratedSincePrepare({
           ...current,
           version: response.data.version,
-          working_draft_narrative: { ...current.working_draft_narrative as object, feasibility_report: response.data.report },
+          working_draft_narrative: {
+            ...current.working_draft_narrative as object,
+            feasibility_report: report,
+          },
         }),
       );
     } catch (caught) {

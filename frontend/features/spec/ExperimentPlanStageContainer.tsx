@@ -99,7 +99,10 @@ export function ExperimentPlanStageContainer({
   const expRev = expHead?.stage_revision_id ? (session as any).stage_revisions?.find((r: any) => r.id === expHead.stage_revision_id) : null;
   const committedNarrative = expRev?.narrative as any;
 
-  const experimentPlan = (narrative?.plan || committedNarrative?.plan) as ExperimentPlan | undefined;
+  const workingPlan = narrative?.plan as ExperimentPlan | undefined;
+  const experimentPlan = (
+    workingPlan?.experiments?.length ? workingPlan : committedNarrative?.plan
+  ) as ExperimentPlan | undefined;
 
   const running = generateExperiment.isPending || saving;
 
@@ -136,11 +139,15 @@ export function ExperimentPlanStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not generate experiment plan");
+      const plan = response.data.plan;
+      if (!plan?.experiments?.length) {
+        throw new Error("Could not generate experiment plan");
+      }
       updateSession((current) =>
         withGeneratedSincePrepare({
           ...current,
           version: response.data.version,
-          working_draft_narrative: { ...current.working_draft_narrative as object, plan: response.data.plan },
+          working_draft_narrative: { ...current.working_draft_narrative as object, plan },
         }),
       );
     } catch (caught) {

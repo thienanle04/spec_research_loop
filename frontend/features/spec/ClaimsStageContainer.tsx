@@ -132,11 +132,15 @@ export function ClaimsStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not generate claims");
+      const cards = response.data.cards;
+      if (!Array.isArray(cards) || cards.length === 0) {
+        throw new Error("Could not generate claims");
+      }
       updateSession((current) =>
         withGeneratedSincePrepare({
           ...current,
           version: response.data.version,
-          working_draft_narrative: { ...current.working_draft_narrative as object, cards: response.data.cards, saved: false },
+          working_draft_narrative: { ...current.working_draft_narrative as object, cards, saved: false },
         }),
       );
     } catch (caught) {

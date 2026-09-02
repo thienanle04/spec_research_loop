@@ -101,6 +101,18 @@ class FakeSpecLlmPort:
     ) -> T:
         del system, prompt, model
         payloads: dict[str, object] = {
+            "GeneratedClaims": {
+                "cards": [
+                    {
+                        "id": "claim-1",
+                        "claim": "Claim-level verification reduces unsupported claims.",
+                        "baseline": "Aggregate-score feedback",
+                        "metric": "Unsupported claim rate",
+                        "evidence": "Evaluation on held-out scholarly sources",
+                        "rejection_condition": "No statistically significant reduction",
+                    }
+                ],
+            },
             "GenerateClaimsResponse": {
                 "version": 1,
                 "cards": [
