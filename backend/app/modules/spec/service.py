@@ -245,6 +245,28 @@ def _compact_gap(upstream: dict[str, Any]) -> dict[str, Any]:
 
 
 def _contribution_brief(context: dict[str, Any]) -> dict[str, Any]:
+    if "upstream" not in context:
+        cards = [
+            item
+            for item in _list_value(context.get("cards"))
+            if isinstance(item, dict)
+        ]
+        idea_kinds = {"problem", "research_question", "constraint", "open_question"}
+        return {
+            "idea": {
+                "cards": [item for item in cards if item.get("kind") in idea_kinds]
+            },
+            "research_inputs": {},
+            "related_work": {
+                "studies": _list_value(context.get("related_work")),
+                "coverage": {},
+            },
+            "confirmed_gap": {
+                "statement": _compact_text(context.get("gap_statement"), limit=3_000),
+                "cards": [item for item in cards if item.get("kind") == "gap"],
+            },
+            "working_draft": _dict_value(context.get("working_draft")),
+        }
     upstream = _dict_value(context.get("upstream"))
     research_inputs = _dict_value(
         _dict_value(upstream.get(WorkflowNode.RESEARCH_INPUTS.value)).get("narrative")
@@ -744,6 +766,8 @@ class SpecService:
             except Exception as error:  # noqa: BLE001 - retry provider/contract failures once
                 last_error = error
 
+        if isinstance(last_error, (LlmCompleteError, LlmProviderError)):
+            _raise_llm_operational(last_error)
         logger.warning(
             "Contribution direction generation failed after repair attempt",
             exc_info=(type(last_error), last_error, last_error.__traceback__)

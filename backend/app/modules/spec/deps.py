@@ -120,19 +120,19 @@ class FakeSpecLlmPort:
                     "experiments": [
                         {
                             "claim": "Claim-level verification reduces unsupported claims.",
-                            "action": "Compare claim-level feedback against aggregate scores.",
-                            "objective": "Measure unsupported-claim rate on held-out sources.",
-                            "significance": "Shows whether localized feedback improves reliability.",
+                            "action": "Compare claim-level and aggregate verification on held-out sources.",
+                            "objective": "Measure the unsupported claim rate for both methods.",
+                            "significance": "Tests whether localized verification improves evidence support.",
                         }
                     ]
                 },
             },
             "FeasibilityReport": {
                 "is_feasible": True,
-                "conclusion": "The plan is feasible on a single GPU workstation.",
-                "required_resources": ["24 GB VRAM", "8 hours compute"],
-                "potential_bottlenecks": ["Full-text download rate limits"],
-                "mitigation_strategies": ["Start with a smaller held-out evaluation set"],
+                "conclusion": "The evaluation can start with a bounded held-out set.",
+                "required_resources": ["Held-out scholarly sources"],
+                "potential_bottlenecks": ["Evidence annotation time"],
+                "mitigation_strategies": ["Start with a smaller evaluation set"],
             },
         }
         return TypeAdapter(schema).validate_python(payloads.get(schema.__name__, {}))
