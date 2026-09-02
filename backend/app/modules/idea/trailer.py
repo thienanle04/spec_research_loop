@@ -59,12 +59,31 @@ class TrailerSplitter:
         return prose_out
 
     def finish(self, *, interpretation: bool = False) -> tuple[str, dict[str, Any]]:
-        if not self._found:
-            raise TrailerParseError("missing json trailer")
-        idx = self._buf.find(DELIMITER)
-        prose = self._buf[:idx].rstrip()
-        raw = "".join(self._json_parts).strip()
-        return prose, parse_trailer_payload(raw, interpretation=interpretation)
+        if self._found:
+            idx = self._buf.find(DELIMITER)
+            prose = self._buf[:idx].rstrip()
+            raw = "".join(self._json_parts).strip()
+            return prose, parse_trailer_payload(raw, interpretation=interpretation)
+        try:
+            parsed = parse_trailer_payload(self._buf, interpretation=interpretation)
+        except TrailerParseError as exc:
+            if "{" not in self._buf:
+                raise TrailerParseError("missing json trailer") from exc
+            raise
+        return _prose_before_object(self._buf), parsed
+
+
+def _prose_before_object(buf: str) -> str:
+    start = buf.find("{")
+    if start < 0:
+        return buf.rstrip()
+    prefix = buf[:start].rstrip()
+    lowered = prefix.lower()
+    for marker in ("```json", "```"):
+        if lowered.endswith(marker):
+            prefix = prefix[: -len(marker)].rstrip()
+            break
+    return prefix
 
 
 def _unwrap_fences(text: str) -> str:
