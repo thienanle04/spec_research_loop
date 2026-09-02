@@ -11,30 +11,13 @@ from typing import Any
 from fpdf import FPDF
 from markdown_it import MarkdownIt
 
-PAPER_SECTION_IDS: tuple[str, ...] = (
-    "problem_statement",
-    "research_question",
-    "related_work",
-    "research_gap",
-    "contribution",
-    "claims",
-    "evidence",
-    "experiment_plan",
-    "constraints",
-    "required_resources",
-    "potential_bottlenecks",
-    "mitigation_strategies",
-    "open_issues",
-)
-
 PAPER_SECTIONS: tuple[tuple[str, str], ...] = (
     ("problem_statement", "Problem Statement"),
     ("research_question", "Research Question"),
     ("related_work", "Related Work"),
     ("research_gap", "Research Gap"),
     ("contribution", "Proposed Approach & Contribution"),
-    ("claims", "Claims"),
-    ("evidence", "Evidence"),
+    ("claims", "Claims and Evidence"),
     ("experiment_plan", "Experiment Plan"),
     ("constraints", "Constraints"),
     ("required_resources", "Required Resources"),
@@ -42,6 +25,7 @@ PAPER_SECTIONS: tuple[tuple[str, str], ...] = (
     ("mitigation_strategies", "Mitigation Strategies"),
     ("open_issues", "Open Issues"),
 )
+PAPER_SECTION_IDS: tuple[str, ...] = tuple(section_id for section_id, _ in PAPER_SECTIONS)
 
 VALIDITY_BANNER = "This file is not the Valid Spec Version. Readiness did not pass."
 
@@ -82,8 +66,7 @@ def project_paper_sections(spec_document: dict[str, Any] | None) -> list[dict[st
         "related_work": _related_work_body(nodes),
         "research_gap": _card_texts(cards, "gap"),
         "contribution": _card_texts(cards, "contribution"),
-        "claims": _card_texts(cards, "claim"),
-        "evidence": _card_texts(cards, "evidence"),
+        "claims": _claims_and_evidence_body(cards),
         "experiment_plan": _experiment_plan_body(nodes),
         "constraints": _card_texts(cards, "constraint"),
         "required_resources": _feasibility_list(nodes, "required_resources"),
@@ -114,7 +97,7 @@ def assemble_markdown_from_sections(
     }
     for index, (section_id, title) in enumerate(PAPER_SECTIONS, start=1):
         lines.append(f"## {index}. {title}")
-        body = str(_dict(by_id.get(section_id)).get("body") or "")
+        body = _paper_section_body(by_id, section_id)
         if body:
             lines.append(body)
         lines.append("")
@@ -289,6 +272,102 @@ def _card_texts(cards: list[dict[str, Any]], kind: str) -> str:
     return "\n\n".join(_card_text_list(cards, kind))
 
 
+def _paper_section_body(by_id: dict[str, Any], section_id: str) -> str:
+    body = str(_dict(by_id.get(section_id)).get("body") or "").strip()
+    if section_id != "claims":
+        return body
+    extra = str(_dict(by_id.get("evidence")).get("body") or "").strip()
+    return "\n\n".join(part for part in (body, extra) if part)
+
+
+def _metadata(item: dict[str, Any]) -> dict[str, Any]:
+    return _dict(_dict(item.get("body")).get("metadata"))
+
+
+def _meta_text(meta: dict[str, Any], key: str) -> str:
+    value = meta.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _labeled_field(label: str, value: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    return f"**{label}:**\n{text}"
+
+
+def _h3_block(title: str, fields: list[str]) -> str:
+    parts: list[str] = []
+    heading = title.strip()
+    if heading:
+        parts.append(f"### {heading}")
+    parts.extend(field for field in fields if field)
+    return "\n\n".join(parts)
+
+
+def _claim_title(item: dict[str, Any]) -> str:
+    titled = _meta_text(_metadata(item), "claim")
+    return titled or _card_text(item)
+
+
+def _claim_pair_id(item: dict[str, Any]) -> str:
+    raw = _metadata(item).get("id")
+    if raw is None:
+        return ""
+    return str(raw).strip()
+
+
+def _evidence_source_id(item: dict[str, Any]) -> str:
+    raw = _metadata(item).get("source_claim_id")
+    if raw is None:
+        return ""
+    return str(raw).strip()
+
+
+def _claims_and_evidence_body(cards: list[dict[str, Any]]) -> str:
+    claims = [item for item in cards if item.get("kind") == "claim"]
+    evidences = [item for item in cards if item.get("kind") == "evidence"]
+    used: set[int] = set()
+    blocks: list[str] = []
+    for claim in claims:
+        pair_id = _claim_pair_id(claim)
+        matched: list[str] = []
+        if pair_id:
+            for index, evidence in enumerate(evidences):
+                if index in used:
+                    continue
+                if _evidence_source_id(evidence) != pair_id:
+                    continue
+                text = _card_text(evidence)
+                if text:
+                    matched.append(text)
+                used.add(index)
+        meta = _metadata(claim)
+        block = _h3_block(
+            _claim_title(claim),
+            [
+                _labeled_field("Baseline", _meta_text(meta, "baseline")),
+                _labeled_field("Metric", _meta_text(meta, "metric")),
+                _labeled_field("Expected Evidence", "\n\n".join(matched)),
+                _labeled_field(
+                    "Rejection Condition",
+                    _meta_text(meta, "rejection_condition"),
+                ),
+            ],
+        )
+        if block:
+            blocks.append(block)
+    unpaired = [
+        _card_text(evidence)
+        for index, evidence in enumerate(evidences)
+        if index not in used
+    ]
+    unpaired = [text for text in unpaired if text]
+    if unpaired:
+        blocks.append("### Unpaired evidence\n\n" + "\n\n".join(unpaired))
+    return "\n\n".join(blocks)
+
+
 def _related_work_body(nodes: dict[str, Any]) -> str:
     block = _dict(nodes.get("related_work"))
     projection = _dict(block.get("projection"))
@@ -325,13 +404,17 @@ def _experiment_plan_body(nodes: dict[str, Any]) -> str:
     for item in experiments:
         if not isinstance(item, dict):
             continue
-        lines = [
-            str(item[key]).strip()
-            for key in ("claim", "action", "objective", "significance")
-            if isinstance(item.get(key), str) and str(item[key]).strip()
-        ]
-        if lines:
-            blocks.append("\n".join(lines))
+
+        block = _h3_block(
+            _meta_text(item, "claim"),
+            [
+                _labeled_field("Action", _meta_text(item, "action")),
+                _labeled_field("Objective", _meta_text(item, "objective")),
+                _labeled_field("Significance", _meta_text(item, "significance")),
+            ],
+        )
+        if block:
+            blocks.append(block)
     return "\n\n".join(blocks)
 
 
