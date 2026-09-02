@@ -276,8 +276,8 @@ async def test_export_scratch_projection_maps_spec_version_sources(
     body = _markdown(confirmed)
     assert GAP_TEXT in body
     assert CONTRIBUTION_TEXT in body
-    assert f"### {CLAIM_TEXT}" in body
-    assert "### Unpaired evidence" in body
+    assert f"### **{CLAIM_TEXT}**" in body
+    assert "### **Unpaired evidence**" in body
     assert EVIDENCE_TEXT in body
     assert "**Action:**" in body
     assert EXPERIMENT_ACTION in body

@@ -300,7 +300,7 @@ def _h3_block(title: str, fields: list[str]) -> str:
     parts: list[str] = []
     heading = title.strip()
     if heading:
-        parts.append(f"### {heading}")
+        parts.append(f"### **{heading}**")
     parts.extend(field for field in fields if field)
     return "\n\n".join(parts)
 
@@ -364,8 +364,8 @@ def _claims_and_evidence_body(cards: list[dict[str, Any]]) -> str:
     ]
     unpaired = [text for text in unpaired if text]
     if unpaired:
-        blocks.append("### Unpaired evidence\n\n" + "\n\n".join(unpaired))
-    return "\n\n".join(blocks)
+        blocks.append("### **Unpaired evidence**\n\n" + "\n\n".join(unpaired))
+    return "\n\n---\n\n".join(blocks)
 
 
 def _related_work_body(nodes: dict[str, Any]) -> str:
@@ -415,7 +415,7 @@ def _experiment_plan_body(nodes: dict[str, Any]) -> str:
         )
         if block:
             blocks.append(block)
-    return "\n\n".join(blocks)
+    return "\n\n---\n\n".join(blocks)
 
 
 def _feasibility_list(nodes: dict[str, Any], field: str) -> str:

@@ -90,14 +90,15 @@ def test_projection_pairs_claim_and_evidence_and_labels_experiment() -> None:
         "## 7. Experiment Plan", 1
     )[0]
     experiment = body.split("## 7. Experiment Plan", 1)[1].split("## 8.", 1)[0]
-    assert "### Tiling cuts DRAM traffic" in claims
+    assert "### **Tiling cuts DRAM traffic**" in claims
     assert "**Baseline:**\nUntiled kernel" in claims
     assert "**Metric:**\nDRAM bytes" in claims
     assert "**Expected Evidence:**\nHeld-out traces" in claims
     assert "**Rejection Condition:**\nNo 20% cut" in claims
     assert "do not use this copy" not in claims
     assert "ignored blob" not in claims
-    assert "### Unpaired evidence" in claims
+    assert "\n\n---\n\n" in claims
+    assert "### **Unpaired evidence**" in claims
     assert "Orphan measurement" in claims
     assert "**Action:**\nRun tiled vs untiled kernels" in experiment
     assert "**Objective:**\nMeasure DRAM traffic" in experiment
@@ -127,9 +128,9 @@ def test_projection_unpaired_claim_uses_statement_without_parsing_blob() -> None
         readiness_blocked=False,
     )
     claims = document["markdown"].split("## 6. Claims and Evidence", 1)[1]
-    assert "### A statement-only claim" in claims
+    assert "### **A statement-only claim**" in claims
     assert "**Baseline:**" not in claims
-    assert "### Unpaired evidence" in claims
+    assert "### **Unpaired evidence**" in claims
     assert "Loose evidence" in claims
 
 

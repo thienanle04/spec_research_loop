@@ -178,6 +178,14 @@ export function ExportScratchMarkdownEditor({
           <ReactMarkdown
             remarkPlugins={[remarkGfm, remarkMath]}
             rehypePlugins={[rehypeKatex]}
+            components={{
+              h3: ({ children }) => (
+                <h3 className="mt-8 font-serif text-base font-semibold text-navy first:mt-0">
+                  {children}
+                </h3>
+              ),
+              hr: () => <hr className="my-6 border-border" />,
+            }}
           >
             {value}
           </ReactMarkdown>

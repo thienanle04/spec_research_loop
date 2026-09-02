@@ -21,4 +21,19 @@ describe("ExportScratchMarkdownEditor", () => {
     await user.click(screen.getByRole("tab", { name: "Preview" }));
     expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true");
   });
+
+  it("renders claim headings distinctly from labeled body fields", () => {
+    render(
+      <ExportScratchMarkdownEditor
+        value={"### **Main claim**\n\n**Baseline:**\nuntiled\n\n---\n\n### **Second claim**"}
+        onChange={vi.fn()}
+      />,
+    );
+    const preview = screen.getByRole("region", { name: "Export Scratch preview" });
+    const headings = preview.querySelectorAll("h3");
+    expect(headings).toHaveLength(2);
+    expect(headings[0]).toHaveTextContent("Main claim");
+    expect(headings[0]?.className).toMatch(/font-semibold/);
+    expect(preview.querySelector("hr")).not.toBeNull();
+  });
 });
