@@ -29,7 +29,7 @@ export const LOOP_STAGE_CATALOG = [
     id: LoopStage.claims_evidence,
     name: "Claims/evidence",
     description: "State claims and the evidence that would support them.",
-    nodes: [WorkflowNode.claims, WorkflowNode.evidence],
+    nodes: [WorkflowNode.claims],
   },
   {
     id: LoopStage.experiment_planning,
@@ -136,7 +136,7 @@ export const WORKFLOW_NODE_LABELS: Record<WorkflowNode, string> = {
   [WorkflowNode.related_work]: "Related work",
   [WorkflowNode.gap]: "Gap",
   [WorkflowNode.contribution]: "Contribution direction",
-  [WorkflowNode.claims]: "Claims",
+  [WorkflowNode.claims]: "Claims/Evidence",
   [WorkflowNode.evidence]: "Evidence",
   [WorkflowNode.experiment_plan]: "Experiment plan",
   [WorkflowNode.feasibility]: "Feasibility",

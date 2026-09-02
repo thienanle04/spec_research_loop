@@ -129,8 +129,7 @@ describe("ClaimsStageContainer", () => {
         <ClaimsStageContainer sessionId={session.id} session={session} />
       </QueryClientProvider>,
     );
-    expect(screen.getByText("Claims")).toBeInTheDocument();
-    expect(screen.queryByText("Claims & Evidence")).not.toBeInTheDocument();
+    expect(screen.getByText("Claims/Evidence")).toBeInTheDocument();
   });
 
   beforeEach(() => {

@@ -35,7 +35,6 @@ import {
 } from "@/features/research";
 import { isJudgeNode, JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
 import { ClaimsStageContainer } from "@/features/spec/ClaimsStageContainer";
-import { EvidenceStageContainer } from "@/features/spec/EvidenceStageContainer";
 import { ExperimentPlanStageContainer } from "@/features/spec/ExperimentPlanStageContainer";
 import { FeasibilityStageContainer } from "@/features/spec/FeasibilityStageContainer";
 
@@ -415,8 +414,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     viewingWorkingDraft && workingDraftNode === WorkflowNode.contribution;
   const editingClaimsDraft =
     viewingWorkingDraft && workingDraftNode === WorkflowNode.claims;
-  const editingEvidenceDraft =
-    viewingWorkingDraft && workingDraftNode === WorkflowNode.evidence;
   const editingExperimentPlanDraft =
     viewingWorkingDraft && workingDraftNode === WorkflowNode.experiment_plan;
   const editingFeasibilityDraft =
@@ -426,7 +423,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     editingResearchDraft ||
     editingContributionDraft ||
     editingClaimsDraft ||
-    editingEvidenceDraft ||
     editingExperimentPlanDraft ||
     editingFeasibilityDraft ||
     editingJudgementDraft;
@@ -792,13 +788,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 sessionId={sessionId}
                 session={session}
                 generateRequestId={stagedGenerateRequestId}
-                onRunningChange={setResearchRunning}
-                onConfirmabilityChange={setResearchConfirmable}
-              />
-            ) : editingEvidenceDraft ? (
-              <EvidenceStageContainer
-                sessionId={sessionId}
-                session={session}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
