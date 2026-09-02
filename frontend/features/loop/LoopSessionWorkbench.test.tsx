@@ -30,6 +30,7 @@ const queueFlush = vi.fn(async () => undefined);
 const queueEnqueue = vi.fn(async (mutation: () => Promise<unknown>) => mutation());
 const saveStatus = { current: "idle" as SaveStatus };
 let search = new URLSearchParams();
+let pickNextSession: LoopSessionResponse | null = null;
 
 vi.mock("@/lib/api/sse", () => ({
   readSseStream: vi.fn(async (_path: string, onEvent: (data: unknown) => void) => {
@@ -86,11 +87,13 @@ vi.mock("@/features/judgement", () => ({
     generateRequestId = 0,
     onRunningChange,
     onConfirmabilityChange,
+    onPicked,
   }: {
     sessionId: string;
     generateRequestId?: number;
     onRunningChange?: (running: boolean) => void;
     onConfirmabilityChange?: (confirmable: boolean) => void;
+    onPicked?: (next: LoopSessionResponse) => void;
   }) => {
     const seenGenerateRequestIdRef = React.useRef(generateRequestId);
     React.useEffect(() => {
@@ -103,7 +106,19 @@ vi.mock("@/features/judgement", () => ({
       if (generateRequestId < 1 || generateRequestId <= previous) return;
       researchGenerateFromRequestId(generateRequestId);
     }, [generateRequestId]);
-    return <p>Gap Judge Issues for {sessionId}</p>;
+    return (
+      <>
+        <p>Gap Judge Issues for {sessionId}</p>
+        <button
+          type="button"
+          onClick={() => {
+            if (pickNextSession) onPicked?.(pickNextSession);
+          }}
+        >
+          Pick Handling Option
+        </button>
+      </>
+    );
   },
   JudgeRunRevisionView: () => <p>Frozen Gap Judge Issues</p>,
   ReadinessStageView: ({ session }: { session: LoopSessionResponse }) => (
@@ -308,6 +323,7 @@ describe("LoopSessionWorkbench", () => {
     queueEnqueue.mockImplementation(async (mutation: () => Promise<unknown>) => mutation());
     saveStatus.current = "idle";
     search = new URLSearchParams();
+    pickNextSession = null;
     vi.mocked(readSseStream).mockClear();
     vi.mocked(readSseStream).mockImplementation(async (_path, onEvent) => {
       onEvent({ type: "done", version: 5 });
@@ -648,6 +664,62 @@ describe("LoopSessionWorkbench", () => {
       data: { node: WorkflowNode.aggregator, expected_version: 40 },
     });
     expect(replace).toHaveBeenCalledWith(path(LoopStage.readiness), { scroll: false });
+  });
+
+  it("does not auto-prepare Independent judges after Handling Option PICK", async () => {
+    const upstreamCurrent = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+      [WorkflowNode.claims]: NodeHeadStatus.current,
+      [WorkflowNode.evidence]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_plan]: NodeHeadStatus.current,
+      [WorkflowNode.feasibility]: NodeHeadStatus.current,
+      [WorkflowNode.gap_judge]: NodeHeadStatus.current,
+      [WorkflowNode.contribution_judge]: NodeHeadStatus.current,
+      [WorkflowNode.evidence_judge]: NodeHeadStatus.current,
+      [WorkflowNode.experiment_judge]: NodeHeadStatus.current,
+      [WorkflowNode.conference_judge]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(`stage=${LoopStage.independent_judges}`);
+    const aggregating = session({
+      version: 40,
+      working_draft_node: WorkflowNode.aggregator,
+      node_heads: heads({
+        ...upstreamCurrent,
+        [WorkflowNode.aggregator]: NodeHeadStatus.empty,
+      }),
+    });
+    pickNextSession = session({
+      version: 41,
+      working_draft_node: WorkflowNode.claims,
+      working_draft_narrative: { suggested_patch: "Cite a passage that entails the claim." },
+      node_heads: aggregating.node_heads,
+    });
+    getHook.mockReturnValue({
+      data: { status: 200, data: aggregating },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const prepareMutate = vi.fn();
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null, isPending: false });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.getByText("Gap Judge Issues for session-1")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Pick Handling Option" }));
+
+    expect(replace).toHaveBeenCalledWith(path(LoopStage.claims_evidence, WorkflowNode.claims), {
+      scroll: false,
+    });
+    await waitFor(() => {
+      expect(prepareMutate).not.toHaveBeenCalled();
+    });
+    expect(screen.queryByText("Gap Judge Issues for session-1")).not.toBeInTheDocument();
+    expect(screen.getByText("Claims/Evidence editor for session-1")).toBeInTheDocument();
   });
 
   it("does not offer Generate on the Independent judges Stale dialog", async () => {
