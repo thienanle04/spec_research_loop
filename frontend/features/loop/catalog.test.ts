@@ -15,6 +15,7 @@ import {
   resolveSelectedStage,
   sessionHref,
   stageForWorkflowNode,
+  isExportScratchEditorOpen,
   upstreamOfStage,
   workingDraftStop,
 } from "./catalog";
@@ -83,6 +84,12 @@ describe("Loop Stage catalog", () => {
     );
   });
 
+  it("treats Export Scratch editor query as Readiness, not a Loop Stage", () => {
+    const params = new URLSearchParams("export_scratch=1&spec_version=spec-1");
+    expect(isExportScratchEditorOpen(LoopStage.readiness, params)).toBe(true);
+    expect(isExportScratchEditorOpen(LoopStage.spec_draft, params)).toBe(false);
+  });
+
   it("resolves viewed Workflow Node from the query and falls back inside the Loop Stage", () => {
     expect(resolveSelectedNode(LoopStage.grilling, null, WorkflowNode.idea_decomposition)).toBe(
       WorkflowNode.idea_decomposition,
@@ -134,6 +141,15 @@ describe("Loop Stage catalog", () => {
     );
     expect(sessionHref("session-1", { stage: LoopStage.readiness })).toBe(
       `/sessions/session-1?stage=${LoopStage.readiness}`,
+    );
+    expect(
+      sessionHref("session-1", {
+        stage: LoopStage.readiness,
+        exportScratch: true,
+        specVersionId: "spec-1",
+      }),
+    ).toBe(
+      `/sessions/session-1?stage=${LoopStage.readiness}&export_scratch=1&spec_version=spec-1`,
     );
   });
 

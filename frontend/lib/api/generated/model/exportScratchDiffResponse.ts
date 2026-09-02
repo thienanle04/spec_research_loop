@@ -4,10 +4,10 @@
  * SpecResearch Loop
  * OpenAPI spec version: 0.1.0
  */
-import type { ExportScratchDiffSection } from './exportScratchDiffSection';
 
 export interface ExportScratchDiffResponse {
   spec_version_id: string;
   against: string;
-  sections: ExportScratchDiffSection[];
+  before: string;
+  after: string;
 }

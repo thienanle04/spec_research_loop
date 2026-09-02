@@ -890,6 +890,15 @@ describe("LoopSessionWorkbench", () => {
     expect(screen.getByRole("button", { name: "Back" }).querySelector("svg")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next" }).querySelector("svg")).toBeInTheDocument();
     readiness.unmount();
+
+    search = new URLSearchParams(
+      `stage=${LoopStage.readiness}&export_scratch=1&spec_version=spec-1`,
+    );
+    const editor = render(<LoopSessionWorkbench sessionId="session-1" />);
+    expect(screen.queryByRole("navigation", { name: "Loop Stages" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Stage path" })).not.toBeInTheDocument();
+    expect(screen.getByRole("banner", { name: "Loop Session" })).toBeInTheDocument();
+    editor.unmount();
   });
 
   it("selecting a current sibling tab browses without patching Working Draft", async () => {

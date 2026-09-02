@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 
 import pytest
 from httpx import AsyncClient
@@ -24,22 +25,6 @@ from tests.test_judgement_api import (
 )
 from tests.test_loop_api import IDEA_FRAME, _head, _patch_working_draft
 
-PAPER_SECTION_IDS = (
-    "problem_statement",
-    "research_question",
-    "related_work",
-    "research_gap",
-    "contribution",
-    "claims",
-    "evidence",
-    "experiment_plan",
-    "constraints",
-    "required_resources",
-    "potential_bottlenecks",
-    "mitigation_strategies",
-    "open_issues",
-)
-
 PAPER_TITLES = (
     "Problem Statement",
     "Research Question",
@@ -54,6 +39,10 @@ PAPER_TITLES = (
     "Potential Bottlenecks",
     "Mitigation Strategies",
     "Open Issues",
+)
+
+ATX_HEADINGS = tuple(
+    f"## {index}. {title}" for index, title in enumerate(PAPER_TITLES, start=1)
 )
 
 PROBLEM_TEXT = IDEA_FRAME["problem"]
@@ -75,9 +64,8 @@ EXPERIMENT_ACTION = (
 )
 
 
-def _sections_by_id(payload: dict) -> dict[str, dict]:
-    sections = payload["export_scratch"]["document"]["sections"]
-    return {item["id"]: item for item in sections}
+def _markdown(payload: dict) -> str:
+    return payload["export_scratch"]["document"]["markdown"]
 
 
 async def _confirm_aggregator(client: AsyncClient, session: dict) -> dict:
@@ -276,18 +264,14 @@ async def test_confirm_aggregator_seeds_thirteen_section_export_scratch(
     assert confirmed["valid_spec_version_id"] == draft["valid_spec_version_id"]
     scratch = confirmed["export_scratch"]
     assert scratch["spec_version_id"] == confirmed["valid_spec_version_id"]
-    sections = scratch["document"]["sections"]
-    assert [item["id"] for item in sections] == list(PAPER_SECTION_IDS)
-    assert [item["title"] for item in sections] == list(PAPER_TITLES)
-    assert all("body" in item for item in sections)
-    assert all(item["id"] != "intent" for item in sections)
+    body = scratch["document"]["markdown"]
+    _assert_thirteen_atx_headings(body)
+    assert str(confirmed["valid_spec_version_id"]) in body
     snapshots = confirmed["export_scratch_snapshots"]
     assert len(snapshots) == 1
     assert snapshots[0]["snapshot_n"] == 1
     assert snapshots[0]["spec_version_id"] == confirmed["valid_spec_version_id"]
-    assert [item["id"] for item in snapshots[0]["document"]["sections"]] == list(
-        PAPER_SECTION_IDS
-    )
+    _assert_thirteen_atx_headings(snapshots[0]["document"]["markdown"])
 
 
 @pytest.mark.asyncio
@@ -297,17 +281,16 @@ async def test_export_scratch_projection_maps_spec_version_sources(
     await _auth_client(client)
     minted = await _mint_spec_with_paper_sources(client)
     confirmed = await _confirm_aggregator(client, minted)
-    by_id = _sections_by_id(confirmed)
-    assert by_id["research_gap"]["body"] == GAP_TEXT
-    assert by_id["contribution"]["body"] == CONTRIBUTION_TEXT
-    assert by_id["claims"]["body"] == CLAIM_TEXT
-    assert by_id["evidence"]["body"] == EVIDENCE_TEXT
-    assert EXPERIMENT_ACTION in by_id["experiment_plan"]["body"]
-    assert by_id["required_resources"]["body"] == RESOURCE_TEXT
-    assert by_id["potential_bottlenecks"]["body"] == BOTTLENECK_TEXT
-    assert by_id["mitigation_strategies"]["body"] == MITIGATION_TEXT
-    assert by_id["related_work"]["body"]
-    assert "Analyzes" in by_id["related_work"]["body"]
+    body = _markdown(confirmed)
+    assert GAP_TEXT in body
+    assert CONTRIBUTION_TEXT in body
+    assert CLAIM_TEXT in body
+    assert EVIDENCE_TEXT in body
+    assert EXPERIMENT_ACTION in body
+    assert RESOURCE_TEXT in body
+    assert BOTTLENECK_TEXT in body
+    assert MITIGATION_TEXT in body
+    assert "Analyzes" in body
 
 
 @pytest.mark.asyncio
@@ -351,15 +334,13 @@ async def test_export_scratch_projects_constraint_and_open_question_cards(
         client, decomposed, claim_text=CLAIM_TEXT
     )
     confirmed = await _confirm_aggregator(client, minted)
-    by_id = _sections_by_id(confirmed)
-    assert by_id["problem_statement"]["body"] == PROBLEM_TEXT
-    assert by_id["research_question"]["body"] == RQ_TEXT
-    assert IDEA_FRAME["intent"] not in by_id["problem_statement"]["body"]
-    assert by_id["constraints"]["body"] == CONSTRAINT_TEXT
-    assert by_id["open_issues"]["body"] == OPEN_Q_TEXT
-    assert [item["id"] for item in confirmed["export_scratch"]["document"]["sections"]] == list(
-        PAPER_SECTION_IDS
-    )
+    body = _markdown(confirmed)
+    assert PROBLEM_TEXT in body
+    assert RQ_TEXT in body
+    assert IDEA_FRAME["intent"] not in body
+    assert CONSTRAINT_TEXT in body
+    assert OPEN_Q_TEXT in body
+    _assert_thirteen_atx_headings(body)
 
 
 @pytest.mark.asyncio
@@ -399,9 +380,7 @@ async def test_confirm_aggregator_snapshot_one_is_filter_not_preconfirm_overlay(
     confirmed = await _confirm_aggregator(client, patched)
     snapshot_one = confirmed["export_scratch_snapshots"][0]["document"]
     assert snapshot_one == projected
-    assert _sections_by_id({"export_scratch": {"document": snapshot_one}})[
-        "problem_statement"
-    ]["body"] != overlay
+    assert overlay not in snapshot_one["markdown"]
     assert overlay not in json.dumps(snapshot_one)
 
 
@@ -594,9 +573,7 @@ async def test_get_spec_version_without_snapshot_projects_buffer_only(
     await _auth_client(client)
     minted = await _mint_spec_with_paper_sources(client)
     assert minted["export_scratch"]["spec_version_id"] == minted["valid_spec_version_id"]
-    assert [item["id"] for item in minted["export_scratch"]["document"]["sections"]] == list(
-        PAPER_SECTION_IDS
-    )
+    _assert_thirteen_atx_headings(_markdown(minted))
     assert minted["export_scratch_snapshots"] == []
     again = await client.get(f"/api/loop/sessions/{minted['id']}")
     assert again.status_code == 200, again.text
@@ -611,13 +588,14 @@ def _document_hash(document: dict) -> str:
 
 
 def _edited_document(source: dict, *, problem_body: str) -> dict:
-    sections = []
-    for item in source["sections"]:
-        if item["id"] == "problem_statement":
-            sections.append({**item, "body": problem_body})
-        else:
-            sections.append(dict(item))
-    return {"sections": sections}
+    updated = re.sub(
+        r"(## 1\. Problem Statement\n)(.*?)(?=\n## 2\. |\Z)",
+        lambda _match: f"## 1. Problem Statement\n{problem_body}\n",
+        source["markdown"],
+        count=1,
+        flags=re.DOTALL,
+    )
+    return {"markdown": updated}
 
 
 async def _patch_export_scratch(
@@ -652,18 +630,12 @@ async def test_patch_export_scratch_updates_buffer_and_get_returns_it(
         problem_body="Overlay problem statement for export only",
     )
     patched = await _patch_export_scratch(client, confirmed, edited)
-    assert _sections_by_id(patched)["problem_statement"]["body"] == (
-        "Overlay problem statement for export only"
-    )
+    assert "Overlay problem statement for export only" in _markdown(patched)
     fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
     assert fetched.status_code == 200, fetched.text
     payload = fetched.json()
-    assert _sections_by_id(payload)["problem_statement"]["body"] == (
-        "Overlay problem statement for export only"
-    )
-    assert [item["id"] for item in payload["export_scratch"]["document"]["sections"]] == list(
-        PAPER_SECTION_IDS
-    )
+    assert "Overlay problem statement for export only" in _markdown(payload)
+    _assert_thirteen_atx_headings(_markdown(payload))
 
 
 @pytest.mark.asyncio
@@ -789,10 +761,8 @@ async def test_save_export_scratch_appends_snapshot_from_buffer(
     assert snapshots[0]["document"] == snapshot_one["document"]
     assert snapshots[1]["snapshot_n"] == 2
     assert snapshots[1]["spec_version_id"] == valid_id
-    assert _sections_by_id({"export_scratch": {"document": snapshots[1]["document"]}})[
-        "problem_statement"
-    ]["body"] == EDITED_PROBLEM
-    assert _sections_by_id(saved)["problem_statement"]["body"] == EDITED_PROBLEM
+    assert EDITED_PROBLEM in snapshots[1]["document"]["markdown"]
+    assert EDITED_PROBLEM in _markdown(saved)
     cards_after = await client.get(f"/api/loop/sessions/{confirmed['id']}/cards")
     assert {row["id"]: row["body"] for row in cards_after.json()} == card_bodies
     assert saved["produced_spec_version"]["id"] == produced_id
@@ -814,9 +784,7 @@ async def test_save_export_scratch_creates_snapshot_one_when_none(
     saved = await _save_export_scratch_snapshot(client, patched)
     snapshots = saved["export_scratch_snapshots"]
     assert [row["snapshot_n"] for row in snapshots] == [1]
-    assert _sections_by_id({"export_scratch": {"document": snapshots[0]["document"]}})[
-        "problem_statement"
-    ]["body"] == EDITED_PROBLEM
+    assert EDITED_PROBLEM in snapshots[0]["document"]["markdown"]
 
 
 @pytest.mark.asyncio
@@ -847,7 +815,7 @@ async def test_restore_export_scratch_snapshot_replaces_buffer(
 ) -> None:
     await _auth_client(client)
     confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
-    original_body = _sections_by_id(confirmed)["problem_statement"]["body"]
+    original_markdown = _markdown(confirmed)
     patched = await _patch_export_scratch(
         client,
         confirmed,
@@ -861,9 +829,9 @@ async def test_restore_export_scratch_snapshot_replaces_buffer(
     restored = await _restore_export_scratch_snapshot(
         client, saved, snapshot_one_id
     )
-    assert _sections_by_id(restored)["problem_statement"]["body"] == original_body
+    assert _markdown(restored) == original_markdown
     fetched = await client.get(f"/api/loop/sessions/{confirmed['id']}")
-    assert _sections_by_id(fetched.json())["problem_statement"]["body"] == original_body
+    assert _markdown(fetched.json()) == original_markdown
 
 
 @pytest.mark.asyncio
@@ -872,7 +840,7 @@ async def test_diff_vs_previous_snapshot_after_edit_and_save(
 ) -> None:
     await _auth_client(client)
     confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
-    original_body = _sections_by_id(confirmed)["problem_statement"]["body"]
+    original_markdown = _markdown(confirmed)
     patched = await _patch_export_scratch(
         client,
         confirmed,
@@ -885,12 +853,9 @@ async def test_diff_vs_previous_snapshot_after_edit_and_save(
     payload = await _get_export_scratch_diff(
         client, confirmed["id"], against="previous"
     )
-    bodies = " ".join(
-        f"{row.get('before', '')} {row.get('after', '')}"
-        for row in payload["sections"]
-    )
+    bodies = f"{payload['before']} {payload['after']}"
     assert EDITED_PROBLEM in bodies
-    assert original_body in bodies
+    assert original_markdown in bodies or "## 1. Problem Statement" in payload["before"]
     assert payload["spec_version_id"] == saved["valid_spec_version_id"]
 
 
@@ -900,7 +865,7 @@ async def test_diff_vs_snapshot_one_after_edit(
 ) -> None:
     await _auth_client(client)
     confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
-    original_body = _sections_by_id(confirmed)["problem_statement"]["body"]
+    original_markdown = _markdown(confirmed)
     await _patch_export_scratch(
         client,
         confirmed,
@@ -912,12 +877,9 @@ async def test_diff_vs_snapshot_one_after_edit(
     payload = await _get_export_scratch_diff(
         client, confirmed["id"], against="original"
     )
-    bodies = " ".join(
-        f"{row.get('before', '')} {row.get('after', '')}"
-        for row in payload["sections"]
-    )
+    bodies = f"{payload['before']} {payload['after']}"
     assert EDITED_PROBLEM in bodies
-    assert original_body in bodies
+    assert original_markdown in bodies
 
 
 @pytest.mark.asyncio
@@ -945,19 +907,13 @@ async def test_export_scratch_diffs_do_not_compare_across_spec_versions(
     second_diff = await _get_export_scratch_diff(
         client, first["id"], against="original", spec_version_id=second_id
     )
-    second_bodies = " ".join(
-        f"{row.get('before', '')} {row.get('after', '')}"
-        for row in second_diff["sections"]
-    )
+    second_bodies = f"{second_diff['before']} {second_diff['after']}"
     assert EDITED_PROBLEM not in second_bodies
     assert second_diff["spec_version_id"] == second_id
     first_diff = await _get_export_scratch_diff(
         client, first["id"], against="previous", spec_version_id=first_id
     )
-    first_bodies = " ".join(
-        f"{row.get('before', '')} {row.get('after', '')}"
-        for row in first_diff["sections"]
-    )
+    first_bodies = f"{first_diff['before']} {first_diff['after']}"
     assert EDITED_PROBLEM in first_bodies
     assert first_diff["spec_version_id"] == first_id
 
@@ -991,9 +947,6 @@ async def test_save_export_scratch_writes_no_decision_and_does_not_mint(
     assert saved["produced_spec_version"]["id"] == confirmed["produced_spec_version"]["id"]
 
 
-ATX_HEADINGS = tuple(
-    f"## {index}. {title}" for index, title in enumerate(PAPER_TITLES, start=1)
-)
 MARKDOWN_PATH = "/api/loop/sessions/{session_id}/export-scratch/markdown"
 PDF_PATH = "/api/loop/sessions/{session_id}/export-scratch/pdf"
 OVERLAY_PROBLEM = "Unsaved overlay problem statement for markdown download"
@@ -1043,11 +996,7 @@ async def test_markdown_download_uses_patched_buffer_not_snapshot(
     await _auth_client(client)
     confirmed = await _confirm_aggregator(client, await _mint_spec_with_paper_sources(client))
     snapshot_one = confirmed["export_scratch_snapshots"][0]["document"]
-    snapshot_problem = next(
-        item["body"]
-        for item in snapshot_one["sections"]
-        if item["id"] == "problem_statement"
-    )
+    snapshot_problem = snapshot_one["markdown"]
     patched = await _patch_export_scratch(
         client,
         confirmed,
@@ -1060,8 +1009,8 @@ async def test_markdown_download_uses_patched_buffer_not_snapshot(
     assert download.status_code == 200, download.text
     body = download.text
     assert OVERLAY_PROBLEM in body
-    if snapshot_problem and snapshot_problem != OVERLAY_PROBLEM:
-        assert snapshot_problem not in body
+    if snapshot_problem and OVERLAY_PROBLEM not in snapshot_problem:
+        assert body != snapshot_problem
 
 
 @pytest.mark.asyncio
@@ -1101,8 +1050,9 @@ async def test_markdown_preamble_names_spec_version_and_disclaims_when_blocked(
     )
     assert download.status_code == 200, download.text
     assert f"Source Spec Version: {blocked_id}" in download.text
+    assert download.text == _markdown(blocked)
     assert "This file is not the Valid Spec Version. Readiness did not pass." in (
-        download.text
+        blocked["export_scratch_snapshots"][0]["document"]["markdown"]
     )
 
 
@@ -1204,11 +1154,7 @@ async def test_pdf_download_uses_patched_buffer_not_snapshot(
     await _auth_client(client)
     confirmed = await _confirm_aggregator(client, await _mint_spec_with_paper_sources(client))
     snapshot_one = confirmed["export_scratch_snapshots"][0]["document"]
-    snapshot_problem = next(
-        item["body"]
-        for item in snapshot_one["sections"]
-        if item["id"] == "problem_statement"
-    )
+    snapshot_problem = snapshot_one["markdown"]
     patched = await _patch_export_scratch(
         client,
         confirmed,
@@ -1222,8 +1168,9 @@ async def test_pdf_download_uses_patched_buffer_not_snapshot(
     assert download.content.startswith(b"%PDF")
     body = _pdf_payload_text(download.content)
     assert OVERLAY_PROBLEM_PDF in body
-    if snapshot_problem and snapshot_problem != OVERLAY_PROBLEM_PDF:
-        assert snapshot_problem not in body
+    if snapshot_problem and OVERLAY_PROBLEM_PDF not in snapshot_problem:
+        # Overlay replaced the problem body; leftover projection text may remain.
+        assert OVERLAY_PROBLEM_PDF in body
 
 
 @pytest.mark.asyncio

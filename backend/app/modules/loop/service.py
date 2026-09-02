@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -32,12 +32,12 @@ from app.modules.loop.catalog import (
 )
 from app.modules.loop.deps import get_stage_ports
 from app.modules.loop.export_scratch import (
-    PAPER_SECTION_IDS,
     clarification_review_from_spec,
     copy_paper_document,
-    paper_section_diff,
-    project_paper_document,
-    render_export_scratch_markdown,
+    document_markdown,
+    markdown_document_diff,
+    normalize_export_scratch_document,
+    project_export_scratch_document,
     render_export_scratch_pdf,
 )
 from app.modules.loop.interpretation_turns import (
@@ -75,6 +75,8 @@ from app.modules.loop.schemas import (
     StageRevisionResponse,
 )
 from app.ports.stage import StagePort
+
+_TExportDoc = TypeVar("_TExportDoc", ExportScratch, ExportScratchSnapshot)
 
 
 def _freeze_hash(
@@ -221,13 +223,11 @@ class LoopService:
         document: dict[str, Any],
         spec_version_id: UUID | None,
     ) -> LoopSessionResponse:
-        sections = document.get("sections")
-        if not isinstance(sections, list) or [
-            item.get("id") for item in sections if isinstance(item, dict)
-        ] != list(PAPER_SECTION_IDS):
+        markdown = document.get("markdown")
+        if not isinstance(markdown, str):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Export Scratch document must include the thirteen paper sections",
+                detail="Export Scratch document must include markdown",
             )
         session = await self._load_session(session_id, account_id)
         target_spec_id = spec_version_id or session.valid_spec_version_id
@@ -250,16 +250,7 @@ class LoopService:
             account_id=account_id,
             expected_version=expected_version,
         )
-        scratch.document = {
-            "sections": [
-                {
-                    "id": item["id"],
-                    "title": item["title"],
-                    "body": item["body"],
-                }
-                for item in sections
-            ]
-        }
+        scratch.document = {"markdown": markdown}
         await self._db.commit()
         return await self.get_session(
             session_id=session_id,
@@ -296,6 +287,19 @@ class LoopService:
         ]
         rows.sort(key=lambda row: row.snapshot_n)
         return rows
+
+    async def _persist_normalized_document(
+        self, row: _TExportDoc
+    ) -> _TExportDoc:
+        normalized = normalize_export_scratch_document(
+            row.document, spec_version_id=row.spec_version_id
+        )
+        if row.document == normalized:
+            return row
+        row.document = normalized
+        await self._db.commit()
+        await self._db.refresh(row)
+        return row
 
     async def save_export_scratch_snapshot(
         self,
@@ -411,15 +415,18 @@ class LoopService:
                     baseline_doc = snapshots[-2].document
                 else:
                     baseline_doc = latest.document
-        sections = (
-            paper_section_diff(scratch.document, baseline_doc)
+        before, after = (
+            markdown_document_diff(
+                scratch.document, baseline_doc, spec_version_id=spec.id
+            )
             if baseline_doc is not None
-            else []
+            else ("", "")
         )
         return ExportScratchDiffResponse(
             spec_version_id=spec.id,
             against=against,
-            sections=sections,
+            before=before,
+            after=after,
         )
 
     async def patch_working_draft(
@@ -1340,7 +1347,9 @@ class LoopService:
             spec = await self._db.get(SpecVersion, spec_id)
         if spec is None:
             return
-        scratch = await self._ensure_export_scratch_buffer(session, spec=spec)
+        scratch = await self._ensure_export_scratch_buffer(
+            session, spec=spec, readiness=await self._readiness(session)
+        )
         if scratch is None:
             return
         existing_snapshot = next(
@@ -1353,12 +1362,20 @@ class LoopService:
         )
         if existing_snapshot is not None:
             return
+        readiness = await self._readiness(session)
         snapshot = ExportScratchSnapshot(
             session_id=session.id,
             export_scratch_id=scratch.id,
             spec_version_id=spec_id,
             snapshot_n=1,
-            document=copy_paper_document(project_paper_document(dict(spec.document))),
+            document=copy_paper_document(
+                project_export_scratch_document(
+                    dict(spec.document),
+                    spec_version_id=spec.id,
+                    spec_version_is_valid=spec.id == session.valid_spec_version_id,
+                    readiness_blocked=readiness.state == "blocked",
+                )
+            ),
         )
         session.export_scratch_snapshots.append(snapshot)
         self._db.add(snapshot)
@@ -1392,8 +1409,9 @@ class LoopService:
         revisions = {rev.id: rev for rev in session.stage_revisions}
         target_spec = await self._resolve_viewed_spec(session, spec_version_id)
         target_spec_id = target_spec.id if target_spec is not None else None
+        readiness = await self._readiness(session)
         scratch = await self._ensure_export_scratch_buffer(
-            session, spec=target_spec
+            session, spec=target_spec, readiness=readiness
         )
         snapshots = [
             row
@@ -1402,6 +1420,8 @@ class LoopService:
         ]
         snapshots.sort(key=lambda row: row.snapshot_n)
         listed = sorted(session.spec_versions, key=lambda item: item.created_at)
+        for row in snapshots:
+            await self._persist_normalized_document(row)
         return LoopSessionResponse(
             id=session.id,
             title=session.title,
@@ -1440,7 +1460,7 @@ class LoopService:
             )
             if target_spec is not None
             else None,
-            readiness=await self._readiness(session),
+            readiness=readiness,
             export_scratch=ExportScratchResponse.model_validate(scratch)
             if scratch
             else None,
@@ -1483,9 +1503,12 @@ class LoopService:
         session: LoopSession,
         *,
         spec: SpecVersion | None,
+        readiness: ReadinessSummary | None = None,
     ) -> ExportScratch | None:
         if spec is None:
             return None
+        if readiness is None:
+            readiness = await self._readiness(session)
         existing = next(
             (
                 row
@@ -1495,8 +1518,13 @@ class LoopService:
             None,
         )
         if existing is not None:
-            return existing
-        paper = project_paper_document(dict(spec.document))
+            return await self._persist_normalized_document(existing)
+        paper = project_export_scratch_document(
+            dict(spec.document),
+            spec_version_id=spec.id,
+            spec_version_is_valid=spec.id == session.valid_spec_version_id,
+            readiness_blocked=readiness.state == "blocked",
+        )
         scratch = ExportScratch(
             session_id=session.id,
             spec_version_id=spec.id,
@@ -1506,6 +1534,7 @@ class LoopService:
         self._db.add(scratch)
         await self._db.flush()
         await self._db.commit()
+        await self._db.refresh(scratch)
         return scratch
 
     async def _assemble_spec(
@@ -1618,11 +1647,8 @@ class LoopService:
                 detail="Export Scratch not found",
             )
         target_spec_id = spec.id
-        markdown = render_export_scratch_markdown(
-            spec_version_id=target_spec_id,
-            document=scratch.document,
-            spec_version_is_valid=target_spec_id == session.valid_spec_version_id,
-            readiness_blocked=readiness.state == "blocked",
+        markdown = document_markdown(
+            scratch.document, spec_version_id=target_spec_id
         )
         if readiness.state == "blocked":
             self._db.add(

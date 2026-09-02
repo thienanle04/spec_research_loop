@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from fpdf import FPDF
+from markdown_it import MarkdownIt
 
 PAPER_SECTION_IDS: tuple[str, ...] = (
     "problem_statement",
@@ -40,6 +43,12 @@ PAPER_SECTIONS: tuple[tuple[str, str], ...] = (
     ("open_issues", "Open Issues"),
 )
 
+VALIDITY_BANNER = "This file is not the Valid Spec Version. Readiness did not pass."
+
+_FENCE_OR_INLINE_CODE = re.compile(r"```[\s\S]*?```|`[^`]*`")
+_BLOCK_MATH = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+_INLINE_MATH = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", re.DOTALL)
+
 
 def clarification_review_from_spec(spec_document: dict[str, Any] | None) -> dict[str, Any]:
     nodes = _dict(spec_document).get("nodes")
@@ -63,7 +72,7 @@ def clarification_review_from_spec(spec_document: dict[str, Any] | None) -> dict
     }
 
 
-def project_paper_document(spec_document: dict[str, Any] | None) -> dict[str, Any]:
+def project_paper_sections(spec_document: dict[str, Any] | None) -> list[dict[str, str]]:
     nodes = _dict(spec_document).get("nodes")
     nodes = nodes if isinstance(nodes, dict) else {}
     cards = _all_cards(nodes)
@@ -82,30 +91,25 @@ def project_paper_document(spec_document: dict[str, Any] | None) -> dict[str, An
         "mitigation_strategies": _feasibility_list(nodes, "mitigation_strategies"),
         "open_issues": _card_texts(cards, "open_question"),
     }
-    return {
-        "sections": [
-            {"id": section_id, "title": title, "body": bodies[section_id]}
-            for section_id, title in PAPER_SECTIONS
-        ]
-    }
+    return [
+        {"id": section_id, "title": title, "body": bodies[section_id]}
+        for section_id, title in PAPER_SECTIONS
+    ]
 
 
-def render_export_scratch_markdown(
+def assemble_markdown_from_sections(
     *,
     spec_version_id: Any,
-    document: dict[str, Any] | None,
-    spec_version_is_valid: bool,
-    readiness_blocked: bool,
+    sections: list[dict[str, Any]],
+    include_validity_banner: bool,
 ) -> str:
     lines = [f"Source Spec Version: {spec_version_id}"]
-    if not spec_version_is_valid or readiness_blocked:
-        lines.append(
-            "This file is not the Valid Spec Version. Readiness did not pass."
-        )
+    if include_validity_banner:
+        lines.append(VALIDITY_BANNER)
     lines.append("")
     by_id = {
         item["id"]: item
-        for item in _list(_dict(document).get("sections"))
+        for item in sections
         if isinstance(item, dict) and "id" in item
     }
     for index, (section_id, title) in enumerate(PAPER_SECTIONS, start=1):
@@ -117,57 +121,126 @@ def render_export_scratch_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def project_export_scratch_document(
+    spec_document: dict[str, Any] | None,
+    *,
+    spec_version_id: Any,
+    spec_version_is_valid: bool,
+    readiness_blocked: bool,
+) -> dict[str, str]:
+    return {
+        "markdown": assemble_markdown_from_sections(
+            spec_version_id=spec_version_id,
+            sections=project_paper_sections(spec_document),
+            include_validity_banner=(not spec_version_is_valid) or readiness_blocked,
+        )
+    }
+
+
+def migrate_sections_document(
+    document: dict[str, Any] | None,
+    *,
+    spec_version_id: Any,
+) -> dict[str, str]:
+    """Legacy `{ sections }` → markdown. Never stamp a live Readiness banner."""
+    return {
+        "markdown": assemble_markdown_from_sections(
+            spec_version_id=spec_version_id,
+            sections=_list(_dict(document).get("sections")),
+            include_validity_banner=False,
+        )
+    }
+
+
+def normalize_export_scratch_document(
+    document: dict[str, Any] | None,
+    *,
+    spec_version_id: Any,
+) -> dict[str, str]:
+    payload = _dict(document)
+    markdown = payload.get("markdown")
+    if isinstance(markdown, str):
+        return {"markdown": markdown}
+    if "sections" in payload:
+        return migrate_sections_document(payload, spec_version_id=spec_version_id)
+    return {"markdown": ""}
+
+
+def document_markdown(
+    document: dict[str, Any] | None,
+    *,
+    spec_version_id: Any,
+) -> str:
+    return normalize_export_scratch_document(
+        document, spec_version_id=spec_version_id
+    )["markdown"]
+
+
+def markdown_document_diff(
+    current: dict[str, Any] | None,
+    baseline: dict[str, Any] | None,
+    *,
+    spec_version_id: Any,
+) -> tuple[str, str]:
+    before = document_markdown(baseline, spec_version_id=spec_version_id)
+    after = document_markdown(current, spec_version_id=spec_version_id)
+    if before == after:
+        return "", ""
+    return before, after
+
+
 _DEJAVU_SANS = Path(__file__).resolve().parent / "fonts" / "DejaVuSans.ttf"
+_MD = MarkdownIt("commonmark").enable("table").enable("strikethrough")
+
+
+def _hold_code(markdown: str) -> tuple[str, list[str]]:
+    slots: list[str] = []
+
+    def _keep(match: re.Match[str]) -> str:
+        slots.append(match.group(0))
+        return f"\x00CODE{len(slots) - 1}\x00"
+
+    return _FENCE_OR_INLINE_CODE.sub(_keep, markdown), slots
+
+
+def _restore_code(markdown: str, slots: list[str]) -> str:
+    restored = markdown
+    for index, snippet in enumerate(slots):
+        restored = restored.replace(f"\x00CODE{index}\x00", snippet)
+    return restored
+
+
+def _math_html(tex: str, *, display: bool) -> str:
+    inner = html.escape(tex.strip())
+    if display:
+        return f'<p class="math-display"><em>{inner}</em></p>'
+    return f"<em class=\"math-inline\">{inner}</em>"
+
+
+def markdown_to_html(markdown: str) -> str:
+    held, slots = _hold_code(markdown)
+    held = _BLOCK_MATH.sub(lambda match: _math_html(match.group(1), display=True), held)
+    held = _INLINE_MATH.sub(lambda match: _math_html(match.group(1), display=False), held)
+    held = _restore_code(held, slots)
+    return _MD.render(held)
 
 
 def render_export_scratch_pdf(markdown: str) -> bytes:
+    body = markdown_to_html(markdown or "")
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     pdf.add_font("DejaVu", fname=str(_DEJAVU_SANS))
+    pdf.add_font("DejaVu", style="B", fname=str(_DEJAVU_SANS))
+    pdf.add_font("DejaVu", style="I", fname=str(_DEJAVU_SANS))
     pdf.set_font("DejaVu", size=11)
-    usable = pdf.epw
-    for line in markdown.splitlines() or [""]:
-        if not line:
-            pdf.ln(5)
-            continue
-        pdf.multi_cell(usable, 5, line)
+    pdf.write_html(body or "<p></p>", font_family="DejaVu")
     return bytes(pdf.output())
 
 
 def copy_paper_document(document: dict[str, Any] | None) -> dict[str, Any]:
-    return json.loads(json.dumps(document or {"sections": []}))
-
-
-def paper_section_diff(
-    current: dict[str, Any] | None,
-    baseline: dict[str, Any] | None,
-) -> list[dict[str, str]]:
-    titles = {section_id: title for section_id, title in PAPER_SECTIONS}
-    current_by_id = {
-        item["id"]: item
-        for item in _list(_dict(current).get("sections"))
-        if isinstance(item, dict) and "id" in item
-    }
-    baseline_by_id = {
-        item["id"]: item
-        for item in _list(_dict(baseline).get("sections"))
-        if isinstance(item, dict) and "id" in item
-    }
-    changed: list[dict[str, str]] = []
-    for section_id, title in PAPER_SECTIONS:
-        before = str(_dict(baseline_by_id.get(section_id)).get("body") or "")
-        after = str(_dict(current_by_id.get(section_id)).get("body") or "")
-        if before != after:
-            changed.append(
-                {
-                    "id": section_id,
-                    "title": titles[section_id],
-                    "before": before,
-                    "after": after,
-                }
-            )
-    return changed
+    payload = document if isinstance(document, dict) else {"markdown": ""}
+    return json.loads(json.dumps(payload))
 
 
 def _dict(value: Any) -> dict[str, Any]:

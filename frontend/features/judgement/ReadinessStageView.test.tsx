@@ -6,7 +6,48 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import { WorkflowNode, type LoopSessionResponse } from "@/lib/api/generated/model";
 
-import { ReadinessStageView } from "./ReadinessStageView";
+import { EXPORT_SCRATCH_AUTOSAVE_MS, ReadinessStageView } from "./ReadinessStageView";
+
+const navTest = vi.hoisted(() => {
+  const React = require("react") as typeof import("react");
+  const NavContext = React.createContext<{
+    search: URLSearchParams;
+    replace: (href: string) => void;
+  } | null>(null);
+
+  function MemoryNav({ children }: { children: React.ReactNode }) {
+    const [search, setSearch] = React.useState(() => new URLSearchParams());
+    const replace = React.useCallback((href: string) => {
+      const next = new URLSearchParams(String(href).split("?")[1] ?? "");
+      navTest.search = next;
+      setSearch(next);
+    }, []);
+    return React.createElement(NavContext.Provider, { value: { search, replace } }, children);
+  }
+
+  function useTestRouter() {
+    const nav = React.useContext(NavContext);
+    if (!nav) {
+      throw new Error("MemoryNav required");
+    }
+    return { replace: nav.replace, push: () => undefined };
+  }
+
+  function useTestSearchParams() {
+    const nav = React.useContext(NavContext);
+    if (!nav) {
+      throw new Error("MemoryNav required");
+    }
+    return nav.search;
+  }
+
+  return {
+    search: new URLSearchParams() as URLSearchParams,
+    MemoryNav,
+    useTestRouter,
+    useTestSearchParams,
+  };
+});
 
 const mocks = vi.hoisted(() => ({
   customFetch: vi.fn(),
@@ -16,11 +57,41 @@ vi.mock("@/lib/api/mutator", () => ({
   customFetch: (...args: unknown[]) => mocks.customFetch(...args),
 }));
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => navTest.useTestRouter(),
+  useSearchParams: () => navTest.useTestSearchParams(),
+}));
+
+vi.mock("./ExportScratchMarkdownEditor", () => ({
+  ExportScratchMarkdownEditor: ({
+    value,
+    onChange,
+  }: {
+    value: string;
+    onChange: (next: string) => void;
+  }) => (
+    <div>
+      <textarea
+        aria-label="Export Scratch markdown"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <div role="region" aria-label="Export Scratch preview">
+        {value}
+      </div>
+    </div>
+  ),
+}));
+
 function renderView(ui: ReactElement) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>
+      <navTest.MemoryNav>{ui}</navTest.MemoryNav>
+    </QueryClientProvider>,
+  );
 }
 
 function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionResponse {
@@ -43,21 +114,7 @@ function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionRespo
       id: "scratch-1",
       spec_version_id: "spec-1",
       document: {
-        sections: [
-          { id: "problem_statement", title: "Problem Statement", body: "" },
-          { id: "research_question", title: "Research Question", body: "" },
-          { id: "related_work", title: "Related Work", body: "" },
-          { id: "research_gap", title: "Research Gap", body: "" },
-          { id: "contribution", title: "Proposed Approach & Contribution", body: "" },
-          { id: "claims", title: "Claims", body: "" },
-          { id: "evidence", title: "Evidence", body: "" },
-          { id: "experiment_plan", title: "Experiment Plan", body: "" },
-          { id: "constraints", title: "Constraints", body: "" },
-          { id: "required_resources", title: "Required Resources", body: "" },
-          { id: "potential_bottlenecks", title: "Potential Bottlenecks", body: "" },
-          { id: "mitigation_strategies", title: "Mitigation Strategies", body: "" },
-          { id: "open_issues", title: "Open Issues", body: "" },
-        ],
+        markdown: "## 1. Problem Statement\n\n",
       },
       created_at: "2026-08-30T00:00:00Z",
       updated_at: "2026-08-30T00:00:00Z",
@@ -68,21 +125,7 @@ function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionRespo
         spec_version_id: "spec-1",
         snapshot_n: 1,
         document: {
-          sections: [
-            { id: "problem_statement", title: "Problem Statement", body: "Original projection" },
-            { id: "research_question", title: "Research Question", body: "" },
-            { id: "related_work", title: "Related Work", body: "" },
-            { id: "research_gap", title: "Research Gap", body: "" },
-            { id: "contribution", title: "Proposed Approach & Contribution", body: "" },
-            { id: "claims", title: "Claims", body: "" },
-            { id: "evidence", title: "Evidence", body: "" },
-            { id: "experiment_plan", title: "Experiment Plan", body: "" },
-            { id: "constraints", title: "Constraints", body: "" },
-            { id: "required_resources", title: "Required Resources", body: "" },
-            { id: "potential_bottlenecks", title: "Potential Bottlenecks", body: "" },
-            { id: "mitigation_strategies", title: "Mitigation Strategies", body: "" },
-            { id: "open_issues", title: "Open Issues", body: "" },
-          ],
+          markdown: "Original projection\n",
         },
         created_at: "2026-08-30T00:00:00Z",
       },
@@ -108,6 +151,7 @@ function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionRespo
 describe("ReadinessStageView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    navTest.search = new URLSearchParams();
     mocks.customFetch.mockImplementation(async (url: string) => {
       if (
         typeof url === "string" &&
@@ -324,31 +368,47 @@ describe("ReadinessStageView", () => {
     expect(screen.getByText("Blocked")).toBeInTheDocument();
   });
 
-  it("renders a table of contents of the thirteen Export Scratch titles", () => {
+  it("hides the Export Scratch editor until Edit Export Scratch", async () => {
+    const user = userEvent.setup();
     renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
-    const toc = screen.getByRole("navigation", { name: "Export Scratch" });
-    const titles = [
-      "Problem Statement",
-      "Research Question",
-      "Related Work",
-      "Research Gap",
-      "Proposed Approach & Contribution",
-      "Claims",
-      "Evidence",
-      "Experiment Plan",
-      "Constraints",
-      "Required Resources",
-      "Potential Bottlenecks",
-      "Mitigation Strategies",
-      "Open Issues",
-    ];
-    const items = toc.querySelectorAll("li");
-    expect([...items].map((item) => item.textContent)).toEqual(titles);
+    expect(screen.getByRole("button", { name: "Edit Export Scratch" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Export Scratch markdown" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Export Scratch preview" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Export Scratch overlay" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save Export Scratch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save Snapshot" })).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Export Scratch Snapshots" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Confirm export" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    expect(screen.getByRole("textbox", { name: "Export Scratch markdown" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Export Scratch preview" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Export Scratch editor" }).querySelector(".flex-1"),
+    ).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save Snapshot" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit Export Scratch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save Export Scratch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Spec Version" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Export Scratch Snapshots" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Export Scratch markdown" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "Export Scratch overlay" }),
+    ).toHaveTextContent(/Export Scratch, not the Research Spec/);
   });
 
-  it("shows a persistent Export Scratch banner and saves overlay edits", async () => {
+  it("closes the editor on Done without patching an unchanged Export Scratch", async () => {
+    const user = userEvent.setup();
+    renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(mocks.customFetch).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox", { name: "Export Scratch markdown" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Export Scratch" })).toBeInTheDocument();
+  });
+
+  it("patches a dirty Export Scratch on Done then closes the editor", async () => {
     const user = userEvent.setup();
     const draft = session("ready");
     mocks.customFetch.mockResolvedValue({
@@ -359,30 +419,81 @@ describe("ReadinessStageView", () => {
         export_scratch: {
           ...draft.export_scratch,
           document: {
-            sections: draft.export_scratch!.document.sections.map((section) =>
-              section.id === "problem_statement"
-                ? { ...section, body: "Edited overlay body" }
-                : section,
-            ),
+            markdown: "Edited overlay body",
           },
         },
       },
     });
     renderView(<ReadinessStageView session={draft} sessionId="session-1" />);
-    expect(
-      screen.getByRole("status", { name: "Export Scratch overlay" }),
-    ).toHaveTextContent(/Export Scratch, not the Research Spec/);
-    expect(screen.getByText(/reopen a Workflow Node/)).toBeInTheDocument();
-    const problem = screen.getByRole("textbox", { name: "Problem Statement" });
-    await user.clear(problem);
-    await user.type(problem, "Edited overlay body");
-    await user.click(screen.getByRole("button", { name: "Save Export Scratch" }));
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    const source = screen.getByRole("textbox", { name: "Export Scratch markdown" });
+    await user.clear(source);
+    await user.type(source, "Edited overlay body");
+    await user.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => {
       expect(mocks.customFetch).toHaveBeenCalledWith(
         "/api/loop/sessions/session-1/export-scratch",
         expect.objectContaining({ method: "PATCH" }),
       );
     });
+    expect(screen.queryByRole("textbox", { name: "Export Scratch markdown" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Export Scratch" })).toBeInTheDocument();
+  });
+
+  it("keeps the editor open when Done patch fails", async () => {
+    const user = userEvent.setup();
+    mocks.customFetch.mockResolvedValue({
+      status: 409,
+      data: { detail: "Loop Session was changed by another request" },
+    });
+    renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    const source = screen.getByRole("textbox", { name: "Export Scratch markdown" });
+    await user.clear(source);
+    await user.type(source, "Edited overlay body");
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("Export Scratch overlay was not saved");
+    });
+    expect(screen.getByRole("textbox", { name: "Export Scratch markdown" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+  });
+
+  it("shows the Export Scratch banner only while editing and saves overlay edits", async () => {
+    const user = userEvent.setup();
+    const draft = session("ready");
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        ...draft,
+        version: 5,
+        export_scratch: {
+          ...draft.export_scratch,
+          document: {
+            markdown: "Edited overlay body",
+          },
+        },
+      },
+    });
+    renderView(<ReadinessStageView session={draft} sessionId="session-1" />);
+    expect(screen.queryByRole("status", { name: "Export Scratch overlay" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    expect(
+      screen.getByRole("status", { name: "Export Scratch overlay" }),
+    ).toHaveTextContent(/Export Scratch, not the Research Spec/);
+    expect(screen.queryByRole("button", { name: "Save Export Scratch" })).not.toBeInTheDocument();
+    const source = screen.getByRole("textbox", { name: "Export Scratch markdown" });
+    await user.clear(source);
+    await user.type(source, "Edited overlay body");
+    await waitFor(
+      () => {
+        expect(mocks.customFetch).toHaveBeenCalledWith(
+          "/api/loop/sessions/session-1/export-scratch",
+          expect.objectContaining({ method: "PATCH" }),
+        );
+      },
+      { timeout: EXPORT_SCRATCH_AUTOSAVE_MS + 1500 },
+    );
     const body = JSON.parse(
       (mocks.customFetch.mock.calls.find(
         (call) =>
@@ -390,10 +501,11 @@ describe("ReadinessStageView", () => {
       )?.[1] as { body: string }).body,
     );
     expect(body.expected_version).toBe(4);
-    expect(body.document.sections[0].body).toBe("Edited overlay body");
-    expect(screen.getByRole("textbox", { name: "Problem Statement" })).toHaveValue(
+    expect(body.document.markdown).toBe("Edited overlay body");
+    expect(screen.getByRole("textbox", { name: "Export Scratch markdown" })).toHaveValue(
       "Edited overlay body",
     );
+    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
   });
 
@@ -410,11 +522,7 @@ describe("ReadinessStageView", () => {
         ...draft.export_scratch!,
         spec_version_id: "spec-0",
         document: {
-          sections: draft.export_scratch!.document.sections.map((section) =>
-            section.id === "research_gap"
-              ? { ...section, body: "Older gap body" }
-              : section,
-          ),
+          markdown: "Older gap body",
         },
       },
       clarification_review: {
@@ -448,16 +556,26 @@ describe("ReadinessStageView", () => {
     expect(
       screen.getByRole("status", { name: "Spec Version not Valid" }),
     ).toHaveTextContent(/not Valid/);
-    expect(screen.getByRole("textbox", { name: "Research Gap" })).toHaveValue("Older gap body");
+    expect(
+      mocks.customFetch.mock.calls.some(
+        (call) => call[0] === "/api/loop/sessions/session-1/export-scratch",
+      ),
+    ).toBe(false);
+    expect(screen.queryByRole("textbox", { name: "Export Scratch markdown" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    expect(screen.getByRole("textbox", { name: "Export Scratch markdown" })).toHaveValue(
+      "Older gap body",
+    );
   });
 
   it("shows derived Clarification Review for the selected Spec Version", () => {
     renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
     const panel = screen.getByRole("region", { name: "Clarification Review" });
     expect(panel).toHaveTextContent("GPU kernel latency");
-    expect(panel).toHaveTextContent("The literature has not measured tiling DRAM traffic.");
-    expect(panel).toHaveTextContent("A tiling schedule that cuts DRAM traffic");
-    expect(panel).toHaveTextContent("Tiling cuts DRAM traffic by at least 20%");
+    expect(panel).toHaveTextContent("This Spec Version in brief");
+    expect(panel).toHaveTextContent(
+      "The literature has not measured tiling DRAM traffic. A tiling schedule that cuts DRAM traffic. Tiling cuts DRAM traffic by at least 20%.",
+    );
     expect(screen.queryByRole("combobox", { name: "Claims" })).not.toBeInTheDocument();
   });
 
@@ -470,11 +588,7 @@ describe("ReadinessStageView", () => {
       export_scratch: {
         ...draft.export_scratch!,
         document: {
-          sections: draft.export_scratch!.document.sections.map((section) =>
-            section.id === "problem_statement"
-              ? { ...section, body: "Original projection" }
-              : section,
-          ),
+          markdown: "Original projection",
         },
       },
     };
@@ -489,7 +603,8 @@ describe("ReadinessStageView", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
-    expect(screen.getByRole("textbox", { name: "Problem Statement" })).toHaveValue(
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    expect(screen.getByRole("textbox", { name: "Export Scratch markdown" })).toHaveValue(
       "Original projection",
     );
   });
@@ -504,14 +619,8 @@ describe("ReadinessStageView", () => {
           data: {
             spec_version_id: "spec-1",
             against: "previous",
-            sections: [
-              {
-                id: "problem_statement",
-                title: "Problem Statement",
-                before: "Original projection",
-                after: "Snapshot-saved problem statement rewrite",
-              },
-            ],
+            before: "Original projection",
+            after: "Snapshot-saved problem statement rewrite",
           },
         };
       }
@@ -521,14 +630,8 @@ describe("ReadinessStageView", () => {
           data: {
             spec_version_id: "spec-1",
             against: "original",
-            sections: [
-              {
-                id: "problem_statement",
-                title: "Problem Statement",
-                before: "Original projection",
-                after: "Snapshot-saved problem statement rewrite",
-              },
-            ],
+            before: "Original projection",
+            after: "Snapshot-saved problem statement rewrite",
           },
         };
       }
@@ -558,6 +661,7 @@ describe("ReadinessStageView", () => {
       return { status: 200, data: draft };
     });
     renderView(<ReadinessStageView session={draft} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
     await user.click(screen.getByRole("button", { name: "Save Snapshot" }));
     await waitFor(() => {
       expect(mocks.customFetch).toHaveBeenCalledWith(
@@ -565,6 +669,11 @@ describe("ReadinessStageView", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
+    expect(screen.queryByRole("list", { name: "Export Scratch Snapshots" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: "Diff versus previous Snapshot" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.getByRole("list", { name: "Export Scratch Snapshots" })).toHaveTextContent(
       "Snapshot 2",
     );
@@ -576,5 +685,140 @@ describe("ReadinessStageView", () => {
         screen.getByRole("region", { name: "Diff versus Snapshot 1" }),
       ).toHaveTextContent("Snapshot-saved problem statement rewrite");
     });
+    expect(
+      mocks.customFetch.mock.calls.some(
+        (call) => call[0] === "/api/loop/sessions/session-1/export-scratch",
+      ),
+    ).toBe(false);
+    expect(screen.getByRole("button", { name: "Edit Export Scratch" })).toBeInTheDocument();
+  });
+
+  it("patches a dirty Export Scratch before saving a Snapshot", async () => {
+    const user = userEvent.setup();
+    const draft = session("ready");
+    mocks.customFetch.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (typeof url === "string" && url.endsWith("/export-scratch") && init?.method === "PATCH") {
+        return {
+          status: 200,
+          data: {
+            ...draft,
+            version: 5,
+            export_scratch: {
+              ...draft.export_scratch!,
+              document: { markdown: "Edited overlay body" },
+            },
+          },
+        };
+      }
+      if (
+        typeof url === "string" &&
+        url.endsWith("/export-scratch/snapshots") &&
+        init?.method === "POST"
+      ) {
+        return {
+          status: 200,
+          data: {
+            ...draft,
+            version: 6,
+            export_scratch: {
+              ...draft.export_scratch!,
+              document: { markdown: "Edited overlay body" },
+            },
+            export_scratch_snapshots: [
+              ...(draft.export_scratch_snapshots ?? []),
+              {
+                id: "snap-2",
+                spec_version_id: "spec-1",
+                snapshot_n: 2,
+                document: { markdown: "Edited overlay body" },
+                created_at: "2026-08-30T01:00:00Z",
+              },
+            ],
+          },
+        };
+      }
+      return { status: 200, data: draft };
+    });
+    renderView(<ReadinessStageView session={draft} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    const source = screen.getByRole("textbox", { name: "Export Scratch markdown" });
+    await user.clear(source);
+    await user.type(source, "Edited overlay body");
+    await user.click(screen.getByRole("button", { name: "Save Snapshot" }));
+    await waitFor(() => {
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch/snapshots",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    const patchIndex = mocks.customFetch.mock.calls.findIndex(
+      (call) => call[0] === "/api/loop/sessions/session-1/export-scratch",
+    );
+    const snapshotIndex = mocks.customFetch.mock.calls.findIndex(
+      (call) => call[0] === "/api/loop/sessions/session-1/export-scratch/snapshots",
+    );
+    expect(snapshotIndex).toBeGreaterThan(patchIndex);
+    const snapshotBody = JSON.parse(
+      (mocks.customFetch.mock.calls[snapshotIndex]?.[1] as { body: string }).body,
+    );
+    expect(snapshotBody.expected_version).toBe(5);
+    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+  });
+
+  it("keeps the Spec Version picker off the Export Scratch editor", async () => {
+    const user = userEvent.setup();
+    const draft = session("ready");
+    renderView(
+      <ReadinessStageView
+        session={{
+          ...draft,
+          spec_versions: [
+            { id: "spec-0", created_at: "2026-08-29T00:00:00Z", valid: false },
+            { id: "spec-1", created_at: "2026-08-30T00:00:00Z", valid: true },
+          ],
+        }}
+        sessionId="session-1"
+      />,
+    );
+    expect(screen.getByRole("combobox", { name: "Spec Version" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    expect(screen.queryByRole("combobox", { name: "Spec Version" })).not.toBeInTheDocument();
+    expect(navTest.search.get("export_scratch")).toBe("1");
+    expect(navTest.search.get("spec_version")).toBe("spec-1");
+  });
+
+  it("stops autosave after a version conflict", async () => {
+    const user = userEvent.setup();
+    mocks.customFetch.mockResolvedValue({
+      status: 409,
+      data: { detail: "Loop Session was changed by another request" },
+    });
+    renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Edit Export Scratch" }));
+    const source = screen.getByRole("textbox", { name: "Export Scratch markdown" });
+    await user.clear(source);
+    await user.type(source, "First conflict body");
+    await waitFor(
+      () => {
+        expect(screen.getByRole("alert")).toHaveTextContent("Export Scratch overlay was not saved");
+        expect(screen.getByRole("status", { name: "Export Scratch autosave" })).toHaveTextContent(
+          "Error",
+        );
+      },
+      { timeout: EXPORT_SCRATCH_AUTOSAVE_MS + 1500 },
+    );
+    const patchesAfterConflict = mocks.customFetch.mock.calls.filter(
+      (call) => call[0] === "/api/loop/sessions/session-1/export-scratch",
+    ).length;
+    await user.type(source, " more");
+    await new Promise((resolve) => setTimeout(resolve, EXPORT_SCRATCH_AUTOSAVE_MS + 400));
+    const patchesAfterMoreTyping = mocks.customFetch.mock.calls.filter(
+      (call) => call[0] === "/api/loop/sessions/session-1/export-scratch",
+    ).length;
+    expect(patchesAfterMoreTyping).toBe(patchesAfterConflict);
   });
 });

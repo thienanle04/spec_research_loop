@@ -151,14 +151,8 @@ class StageRevisionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ExportScratchSection(BaseModel):
-    id: str
-    title: str
-    body: str
-
-
 class ExportScratchDocument(BaseModel):
-    sections: list[ExportScratchSection]
+    markdown: str
 
 
 class ExportScratchResponse(BaseModel):
@@ -186,17 +180,11 @@ class RestoreExportScratchSnapshotRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
-class ExportScratchDiffSection(BaseModel):
-    id: str
-    title: str
-    before: str
-    after: str
-
-
 class ExportScratchDiffResponse(BaseModel):
     spec_version_id: UUID
     against: str
-    sections: list[ExportScratchDiffSection]
+    before: str
+    after: str
 
 
 class ExportScratchSnapshotResponse(BaseModel):

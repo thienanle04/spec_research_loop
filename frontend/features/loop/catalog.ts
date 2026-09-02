@@ -227,6 +227,8 @@ export function isWorkflowNode(value: string | null): value is WorkflowNode {
 export type NavStop = {
   stage: LoopStage;
   node?: WorkflowNode;
+  exportScratch?: boolean;
+  specVersionId?: string;
 };
 
 export function navStops(): NavStop[] {
@@ -243,7 +245,20 @@ export function sessionHref(sessionId: string, stop: NavStop): string {
   if (stop.node) {
     params.set("node", stop.node);
   }
+  if (stop.exportScratch && stop.stage === LoopStage.readiness) {
+    params.set("export_scratch", "1");
+    if (stop.specVersionId) {
+      params.set("spec_version", stop.specVersionId);
+    }
+  }
   return `/sessions/${sessionId}?${params.toString()}`;
+}
+
+export function isExportScratchEditorOpen(
+  stage: LoopStage | null,
+  searchParams: { get: (name: string) => string | null },
+): boolean {
+  return stage === LoopStage.readiness && searchParams.get("export_scratch") === "1";
 }
 
 export function railStop(stage: LoopStage): NavStop {
