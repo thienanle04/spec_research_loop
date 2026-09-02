@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from fpdf import FPDF
+from fpdf.enums import XPos, YPos
+
 PAPER_SECTION_IDS: tuple[str, ...] = (
     "problem_statement",
     "research_question",
@@ -112,6 +115,30 @@ def render_export_scratch_markdown(
             lines.append(body)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_export_scratch_pdf(markdown: str) -> bytes:
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+    usable = pdf.epw
+    zero_w = pdf.get_string_width("0") or 1.0
+    chars_per_line = max(int(usable / zero_w), 1)
+    for line in markdown.splitlines() or [""]:
+        safe = line.encode("latin-1", "replace").decode("latin-1")
+        if not safe:
+            pdf.ln(5)
+            continue
+        for start in range(0, len(safe), chars_per_line):
+            pdf.cell(
+                usable,
+                5,
+                safe[start : start + chars_per_line],
+                new_x=XPos.LMARGIN,
+                new_y=YPos.NEXT,
+            )
+    return bytes(pdf.output())
 
 
 def copy_paper_document(document: dict[str, Any] | None) -> dict[str, Any]:

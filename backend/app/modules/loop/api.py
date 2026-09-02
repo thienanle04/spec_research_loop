@@ -363,6 +363,32 @@ async def download_export_scratch_markdown(
 
 
 @router.post(
+    "/sessions/{session_id}/export-scratch/pdf",
+    summary="Download Export Scratch PDF",
+    responses={409: {"model": OperationalError}},
+)
+async def download_export_scratch_pdf(
+    session_id: UUID,
+    account: Annotated[Account, Depends(get_current_account)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    body: Annotated[SpecArtifactExportRequest | None, Body()] = None,
+    spec_version_id: Annotated[UUID | None, Query()] = None,
+) -> Response:
+    ack = False if body is None else body.critical_export_ack
+    filename, pdf_bytes = await _service(db).download_export_scratch_pdf(
+        session_id=session_id,
+        account_id=account.id,
+        critical_export_ack=ack,
+        spec_version_id=spec_version_id,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post(
     "/sessions/{session_id}/spec-artifact",
     response_model=SpecArtifactResponse,
     responses={409: {"model": OperationalError}},

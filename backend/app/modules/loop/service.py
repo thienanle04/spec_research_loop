@@ -38,6 +38,7 @@ from app.modules.loop.export_scratch import (
     paper_section_diff,
     project_paper_document,
     render_export_scratch_markdown,
+    render_export_scratch_pdf,
 )
 from app.modules.loop.interpretation_turns import (
     apply_account_reply_patch,
@@ -1552,6 +1553,41 @@ class LoopService:
         critical_export_ack: bool = False,
         spec_version_id: UUID | None = None,
     ) -> tuple[str, str]:
+        filename, markdown = await self._download_export_scratch(
+            session_id=session_id,
+            account_id=account_id,
+            critical_export_ack=critical_export_ack,
+            spec_version_id=spec_version_id,
+            download_format="markdown",
+        )
+        return filename, markdown
+
+    async def download_export_scratch_pdf(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        critical_export_ack: bool = False,
+        spec_version_id: UUID | None = None,
+    ) -> tuple[str, bytes]:
+        filename, markdown = await self._download_export_scratch(
+            session_id=session_id,
+            account_id=account_id,
+            critical_export_ack=critical_export_ack,
+            spec_version_id=spec_version_id,
+            download_format="pdf",
+        )
+        return filename, render_export_scratch_pdf(markdown)
+
+    async def _download_export_scratch(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        critical_export_ack: bool,
+        spec_version_id: UUID | None,
+        download_format: str,
+    ) -> tuple[str, str]:
         session = await self._load_session(session_id, account_id)
         readiness = await self._readiness(session)
         if readiness.state == "not_evaluated":
@@ -1585,13 +1621,14 @@ class LoopService:
                     stage_revision_id=None,
                     detail={
                         "target": "export_scratch",
-                        "format": "markdown",
+                        "format": download_format,
                         "spec_version_id": str(target_spec_id),
                     },
                 )
             )
             await self._db.commit()
-        filename = f"export-scratch-{target_spec_id}.md"
+        suffix = "pdf" if download_format == "pdf" else "md"
+        filename = f"export-scratch-{target_spec_id}.{suffix}"
         return filename, markdown
 
     async def export_spec_artifact(

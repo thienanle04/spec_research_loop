@@ -20,6 +20,7 @@ dependencies = [
   "pypdf>=5.0.0",
   "langchain-core>=0.3.0",
   "langchain-openai>=0.3.0",
+  "fpdf2>=2.8.8",
 ]
 
 [build-system]

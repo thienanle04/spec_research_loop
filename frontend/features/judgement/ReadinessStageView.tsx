@@ -43,8 +43,9 @@ export function ReadinessStageView({
   const notice = readiness?.notice ?? "This is not conference acceptance.";
   const scores = (readiness?.scores ?? null) as ConferenceScores | null;
   const [exportError, setExportError] = useState<string | null>(null);
-  const [exportOk, setExportOk] = useState(false);
+  const [exportOk, setExportOk] = useState<"markdown" | "pdf" | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingDownload, setPendingDownload] = useState<"markdown" | "pdf">("markdown");
   const [sections, setSections] = useState<ExportScratchSection[]>(
     session.export_scratch?.document.sections ?? [],
   );
@@ -66,28 +67,34 @@ export function ReadinessStageView({
     setSelectedSpecId(session.valid_spec_version_id ?? session.spec_versions?.[0]?.id ?? "");
   }, [session]);
 
-  async function exportScratchMarkdown(ack: boolean) {
+  async function exportScratch(format: "markdown" | "pdf", ack: boolean) {
     setExportError(null);
-    setExportOk(false);
+    setExportOk(null);
     try {
       const specVersionId =
         selectedSpecId || session.export_scratch?.spec_version_id || "";
       const query = specVersionId ? `?spec_version_id=${specVersionId}` : "";
       const response = await customFetch<{
         status: number;
-        data: string;
+        data: string | ArrayBuffer;
         headers: Headers;
       }>(
-        `/api/loop/sessions/${sessionId}/export-scratch/markdown${query}`,
+        `/api/loop/sessions/${sessionId}/export-scratch/${format}${query}`,
         ack
           ? { method: "POST", body: JSON.stringify({ critical_export_ack: true }) }
           : { method: "POST" },
       );
-      const markdown = typeof response.data === "string" ? response.data : "";
       const disposition = response.headers?.get?.("content-disposition") ?? "";
       const matched = /filename="([^"]+)"/.exec(disposition);
-      const filename = matched?.[1] ?? `export-scratch-${specVersionId || "download"}.md`;
-      const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+      const fallbackName = `export-scratch-${specVersionId || "download"}.${format === "pdf" ? "pdf" : "md"}`;
+      const filename = matched?.[1] ?? fallbackName;
+      const blob =
+        format === "pdf"
+          ? new Blob([response.data as BlobPart], { type: "application/pdf" })
+          : new Blob(
+              [typeof response.data === "string" ? response.data : ""],
+              { type: "text/markdown;charset=utf-8" },
+            );
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -95,20 +102,21 @@ export function ReadinessStageView({
       link.click();
       URL.revokeObjectURL(url);
       setConfirmOpen(false);
-      setExportOk(true);
+      setExportOk(format);
     } catch (error) {
       setExportError(getApiErrorMessage(error));
     }
   }
 
-  function onExportClick() {
+  function onExportClick(format: "markdown" | "pdf") {
     setExportError(null);
-    setExportOk(false);
+    setExportOk(null);
     if (state === "blocked") {
+      setPendingDownload(format);
       setConfirmOpen(true);
       return;
     }
-    void exportScratchMarkdown(false);
+    void exportScratch(format, false);
   }
 
   async function loadScratchDiffs(specVersionId: string | undefined) {
@@ -389,9 +397,19 @@ export function ReadinessStageView({
             </>
           ) : null}
           {state === "ready" || state === "blocked" ? (
-            <Button type="button" className="justify-self-start" onClick={onExportClick}>
-              Export Spec
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" className="justify-self-start" onClick={() => onExportClick("markdown")}>
+                Export Spec
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="justify-self-start"
+                onClick={() => onExportClick("pdf")}
+              >
+                Download PDF
+              </Button>
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">
               Readiness is derived from the current Aggregator Report.
@@ -399,13 +417,18 @@ export function ReadinessStageView({
           )}
           {state === "blocked" ? (
             <p className="text-sm text-muted-foreground">
-              CRITICAL Judge Issues fail Readiness. Export Scratch markdown download requires a
-              Critical Export Confirmation.
+              CRITICAL Judge Issues fail Readiness. Export Scratch markdown and PDF download
+              require a Critical Export Confirmation.
             </p>
           ) : null}
-          {exportOk ? (
+          {exportOk === "markdown" ? (
             <p role="status" aria-label="Export Spec" className="text-sm text-muted-foreground">
               Export Scratch markdown downloaded.
+            </p>
+          ) : null}
+          {exportOk === "pdf" ? (
+            <p role="status" aria-label="Download PDF" className="text-sm text-muted-foreground">
+              Export Scratch PDF downloaded.
             </p>
           ) : null}
           {exportError ? (
@@ -428,10 +451,10 @@ export function ReadinessStageView({
             </h2>
             <p className="mt-2 text-sm text-muted-foreground">
               Readiness stays blocked. This records a Critical Export Confirmation and downloads
-              the current Export Scratch as markdown.
+              the current Export Scratch as {pendingDownload === "pdf" ? "PDF" : "markdown"}.
             </p>
             <div className="mt-4 grid gap-2">
-              <Button type="button" onClick={() => void exportScratchMarkdown(true)}>
+              <Button type="button" onClick={() => void exportScratch(pendingDownload, true)}>
                 Confirm export
               </Button>
               <Button type="button" variant="ghost" onClick={() => setConfirmOpen(false)}>

@@ -185,6 +185,82 @@ describe("ReadinessStageView", () => {
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
   });
 
+  it("downloads Export Scratch PDF from a distinct control when Readiness is ready", async () => {
+    const user = userEvent.setup();
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+      headers: {
+        get: (name: string) =>
+          name === "content-disposition"
+            ? 'attachment; filename="export-scratch-spec-1.pdf"'
+            : name === "content-type"
+              ? "application/pdf"
+              : null,
+      },
+    });
+    renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
+    expect(screen.getByRole("button", { name: "Export Spec" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download PDF" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Download PDF" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch/pdf?spec_version_id=spec-1",
+        {
+          method: "POST",
+        },
+      );
+    });
+    expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("markdown"))).toBe(
+      false,
+    );
+    expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("spec-artifact"))).toBe(
+      false,
+    );
+    expect(screen.getByRole("status", { name: "Download PDF" })).toHaveTextContent(
+      "Export Scratch PDF downloaded.",
+    );
+  });
+
+  it("asks for Critical Export Confirmation on each blocked PDF download", async () => {
+    const user = userEvent.setup();
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
+      headers: {
+        get: (name: string) =>
+          name === "content-disposition"
+            ? 'attachment; filename="export-scratch-spec-1.pdf"'
+            : name === "content-type"
+              ? "application/pdf"
+              : null,
+      },
+    });
+    renderView(<ReadinessStageView session={session("blocked")} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Download PDF" }));
+    expect(mocks.customFetch).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Critical Export Confirmation" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm export" }));
+    await waitFor(() => {
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch/pdf?spec_version_id=spec-1",
+        {
+          method: "POST",
+          body: JSON.stringify({ critical_export_ack: true }),
+        },
+      );
+    });
+    expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("markdown"))).toBe(
+      false,
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Download PDF" })).toHaveTextContent(
+      "Export Scratch PDF downloaded.",
+    );
+    expect(screen.getByText("Blocked")).toBeInTheDocument();
+  });
+
   it("renders a table of contents of the thirteen Export Scratch titles", () => {
     renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
     const toc = screen.getByRole("navigation", { name: "Export Scratch" });

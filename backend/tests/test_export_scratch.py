@@ -972,7 +972,17 @@ ATX_HEADINGS = tuple(
     f"## {index}. {title}" for index, title in enumerate(PAPER_TITLES, start=1)
 )
 MARKDOWN_PATH = "/api/loop/sessions/{session_id}/export-scratch/markdown"
+PDF_PATH = "/api/loop/sessions/{session_id}/export-scratch/pdf"
 OVERLAY_PROBLEM = "Unsaved overlay problem statement for markdown download"
+OVERLAY_PROBLEM_PDF = "Unsaved overlay problem statement for pdf download"
+
+
+def _pdf_payload_text(payload: bytes) -> str:
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(payload)).pages)
 
 
 def _assert_thirteen_atx_headings(body: str) -> None:
@@ -1143,4 +1153,100 @@ async def test_spec_artifact_export_stays_unedited_valid_json_after_scratch_patc
     assert artifact.json()["spec_version_id"] == valid_id
     assert artifact.json()["document"] == valid_document
     assert OVERLAY_PROBLEM not in json.dumps(artifact.json()["document"])
+
+
+@pytest.mark.asyncio
+async def test_ready_pdf_download_is_pdf_and_writes_no_decision(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    assert confirmed["readiness"]["state"] == "ready"
+    spec_id = confirmed["valid_spec_version_id"]
+    before = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    download = await client.post(PDF_PATH.format(session_id=confirmed["id"]))
+    assert download.status_code == 200, download.text
+    assert "application/pdf" in download.headers["content-type"]
+    assert spec_id in download.headers.get("content-disposition", "")
+    assert download.content.startswith(b"%PDF")
+    after = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    assert after.json() == before.json()
+    assert all(row["kind"] != "export_ack" for row in after.json())
+
+
+@pytest.mark.asyncio
+async def test_pdf_download_uses_patched_buffer_not_snapshot(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _mint_spec_with_paper_sources(client))
+    snapshot_one = confirmed["export_scratch_snapshots"][0]["document"]
+    snapshot_problem = next(
+        item["body"]
+        for item in snapshot_one["sections"]
+        if item["id"] == "problem_statement"
+    )
+    patched = await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=OVERLAY_PROBLEM_PDF,
+        ),
+    )
+    download = await client.post(PDF_PATH.format(session_id=patched["id"]))
+    assert download.status_code == 200, download.text
+    assert download.content.startswith(b"%PDF")
+    body = _pdf_payload_text(download.content)
+    assert OVERLAY_PROBLEM_PDF in body
+    if snapshot_problem and snapshot_problem != OVERLAY_PROBLEM_PDF:
+        assert snapshot_problem not in body
+
+
+@pytest.mark.asyncio
+async def test_blocked_pdf_download_requires_ack_and_records_export_ack(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    evidence = await _prepare_evidence_judge(
+        client, claim_statement=UNSUPPORTED_CLAIM
+    )
+    await _generate_evidence_judge(client, evidence["id"], evidence["version"])
+    session = await _session(client, evidence["id"])
+    session = await _prepare(
+        client, evidence["id"], "independent_judges", session["version"]
+    )
+    blocked_draft = await _advance_to_aggregator(client, session)
+    _bind_aggregator_llm({"options": []})
+    generated = await _generate_aggregator(
+        client, blocked_draft["id"], blocked_draft["version"]
+    )
+    blocked = await _confirm(
+        client, blocked_draft["id"], "aggregator", generated[-1]["version"]
+    )
+    assert blocked["readiness"]["state"] == "blocked"
+    denied = await client.post(PDF_PATH.format(session_id=blocked["id"]))
+    assert denied.status_code == 409
+    assert denied.json()["code"] == "critical_export_confirmation_required"
+
+    before = await client.get(f"/api/loop/sessions/{blocked['id']}/decisions")
+    allowed = await client.post(
+        PDF_PATH.format(session_id=blocked["id"]),
+        json={"critical_export_ack": True},
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.content.startswith(b"%PDF")
+    after = await client.get(f"/api/loop/sessions/{blocked['id']}/decisions")
+    acks = [row for row in after.json() if row["kind"] == "export_ack"]
+    assert len(acks) == 1
+    assert acks[0]["detail"] == {
+        "target": "export_scratch",
+        "format": "pdf",
+        "spec_version_id": blocked["valid_spec_version_id"],
+    }
+    assert len(after.json()) == len(before.json()) + 1
+
+    again = await client.post(PDF_PATH.format(session_id=blocked["id"]))
+    assert again.status_code == 409
+    assert again.json()["code"] == "critical_export_confirmation_required"
 
