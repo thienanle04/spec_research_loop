@@ -219,3 +219,15 @@ def first_needs_work(
         if status_by_node[node] in (NodeHeadStatus.EMPTY, NodeHeadStatus.STALE):
             return node
     return None
+
+
+def prepare_landing(
+    stage: LoopStage,
+    status_by_node: dict[WorkflowNode, NodeHeadStatus],
+) -> WorkflowNode | None:
+    needs_work = first_needs_work(stage, status_by_node)
+    if needs_work is None:
+        return None
+    if stage is LoopStage.INDEPENDENT_JUDGES:
+        return WorkflowNode.AGGREGATOR
+    return needs_work

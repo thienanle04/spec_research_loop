@@ -148,6 +148,20 @@ export const WORKFLOW_NODE_LABELS: Record<WorkflowNode, string> = {
   [WorkflowNode.aggregator]: "Aggregator",
 };
 
+export function isIndependentJudgeNode(node: WorkflowNode): boolean {
+  return (
+    stageForWorkflowNode(node) === LoopStage.independent_judges &&
+    node !== WorkflowNode.aggregator
+  );
+}
+
+export function stagePathNodes(stage: LoopStage): readonly WorkflowNode[] {
+  if (stage === LoopStage.independent_judges) {
+    return [];
+  }
+  return catalogStage(stage).nodes;
+}
+
 export function catalogStage(id: LoopStage) {
   const stage = LOOP_STAGE_CATALOG.find((entry) => entry.id === id);
   if (!stage) {
@@ -216,11 +230,12 @@ export type NavStop = {
 };
 
 export function navStops(): NavStop[] {
-  return LOOP_STAGE_CATALOG.flatMap((stage) =>
-    stage.nodes.length === 0
-      ? [{ stage: stage.id }]
-      : [...stage.nodes].map((node) => ({ stage: stage.id, node })),
-  );
+  return LOOP_STAGE_CATALOG.flatMap((stage) => {
+    if (stage.id === LoopStage.independent_judges || stage.nodes.length === 0) {
+      return [{ stage: stage.id }];
+    }
+    return [...stage.nodes].map((node) => ({ stage: stage.id, node }));
+  });
 }
 
 export function sessionHref(sessionId: string, stop: NavStop): string {
@@ -232,6 +247,9 @@ export function sessionHref(sessionId: string, stop: NavStop): string {
 }
 
 export function railStop(stage: LoopStage): NavStop {
+  if (stage === LoopStage.independent_judges) {
+    return { stage };
+  }
   const nodes = catalogStage(stage).nodes as readonly WorkflowNode[];
   return nodes[0] ? { stage, node: nodes[0] } : { stage };
 }
@@ -242,6 +260,12 @@ export function resolveSelectedNode(
   workingDraftNode: WorkflowNode,
 ): WorkflowNode | undefined {
   const nodes = catalogStage(stage).nodes as readonly WorkflowNode[];
+  if (stage === LoopStage.independent_judges) {
+    if (nodes.includes(workingDraftNode)) {
+      return workingDraftNode;
+    }
+    return WorkflowNode.aggregator;
+  }
   if (nodes.length === 0) {
     return undefined;
   }
@@ -266,7 +290,11 @@ export function adjacentStop(current: NavStop, delta: -1 | 1): NavStop | null {
 }
 
 export function workingDraftStop(node: WorkflowNode): NavStop {
-  return { stage: stageForWorkflowNode(node), node };
+  const stage = stageForWorkflowNode(node);
+  if (stage === LoopStage.independent_judges) {
+    return { stage };
+  }
+  return { stage, node };
 }
 
 export function ancestors(node: WorkflowNode): Set<WorkflowNode> {

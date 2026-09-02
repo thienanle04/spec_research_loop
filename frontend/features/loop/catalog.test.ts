@@ -7,6 +7,7 @@ import {
   adjacentStop,
   ancestors,
   descendants,
+  isIndependentJudgeNode,
   navStops,
   ownedCardKinds,
   railStop,
@@ -59,6 +60,13 @@ describe("Loop Stage catalog", () => {
     expect(stageForWorkflowNode(WorkflowNode.aggregator)).toBe(LoopStage.independent_judges);
   });
 
+  it("treats the five Judges as Independent judges Node Heads, not Aggregator", () => {
+    expect(isIndependentJudgeNode(WorkflowNode.gap_judge)).toBe(true);
+    expect(isIndependentJudgeNode(WorkflowNode.conference_judge)).toBe(true);
+    expect(isIndependentJudgeNode(WorkflowNode.aggregator)).toBe(false);
+    expect(isIndependentJudgeNode(WorkflowNode.feasibility)).toBe(false);
+  });
+
   it("falls back to the Working Draft Loop Stage when the query is absent or invalid", () => {
     expect(resolveSelectedStage(null, WorkflowNode.idea_decomposition)).toBe(LoopStage.grilling);
     expect(resolveSelectedStage("not-a-stage", WorkflowNode.contribution)).toBe(
@@ -89,6 +97,13 @@ describe("Loop Stage catalog", () => {
       WorkflowNode.research_inputs,
     );
     expect(resolveSelectedNode(LoopStage.spec_draft, WorkflowNode.gap, WorkflowNode.feasibility)).toBeUndefined();
+    expect(
+      resolveSelectedNode(
+        LoopStage.independent_judges,
+        WorkflowNode.gap_judge,
+        WorkflowNode.aggregator,
+      ),
+    ).toBe(WorkflowNode.aggregator);
   });
 
   it("walks Back and Next across Workflow Nodes and nodeless Loop Stages", () => {
@@ -101,7 +116,6 @@ describe("Loop Stage catalog", () => {
     });
     expect(adjacentStop({ stage: LoopStage.spec_draft }, 1)).toEqual({
       stage: LoopStage.independent_judges,
-      node: WorkflowNode.gap_judge,
     });
     expect(adjacentStop({ stage: LoopStage.readiness }, 1)).toBeNull();
   });
@@ -112,6 +126,9 @@ describe("Loop Stage catalog", () => {
       node: WorkflowNode.research_inputs,
     });
     expect(railStop(LoopStage.spec_draft)).toEqual({ stage: LoopStage.spec_draft });
+    expect(railStop(LoopStage.independent_judges)).toEqual({
+      stage: LoopStage.independent_judges,
+    });
     expect(sessionHref("session-1", workingDraftStop(WorkflowNode.claims))).toBe(
       `/sessions/session-1?stage=${LoopStage.claims_evidence}&node=${WorkflowNode.claims}`,
     );

@@ -11,7 +11,11 @@ from app.modules.research.adapters import (
     FakeLlmPort,
     FakeScholarlySourcePort,
 )
-from app.modules.research.adapters.document_text import _html_text, _normalize_text
+from app.modules.research.adapters.document_text import (
+    _candidate_urls,
+    _html_text,
+    _normalize_text,
+)
 from app.modules.research.models import Citation
 from app.modules.research.ports import DocumentText, ScholarlyRecord
 from app.modules.research.service import (
@@ -53,6 +57,43 @@ def test_html_extraction_prefers_article_content_and_drops_page_chrome() -> None
     assert "Journal index" not in text
     assert "[Section] Abstract" in text
     assert "This study evaluates reverse-logistics" in text
+
+
+def test_document_candidates_include_trusted_repository_full_text() -> None:
+    record = ScholarlyRecord(
+        title="Tool paper",
+        metadata={
+            "externalIds": {"ArXiv": "2406.07496", "PubMedCentral": "PMC123"},
+            "best_oa_location": {
+                "landing_page_url": "https://arxiv.org/abs/2406.07496"
+            },
+        },
+    )
+
+    urls = _candidate_urls(record)
+
+    assert "https://arxiv.org/pdf/2406.07496" in urls
+    assert "https://pmc.ncbi.nlm.nih.gov/articles/PMC123/" in urls
+    assert urls.count("https://arxiv.org/pdf/2406.07496") == 1
+
+
+def test_document_candidates_include_metadata_landing_and_doi_pages() -> None:
+    record = ScholarlyRecord(
+        title="Metadata-backed paper",
+        doi="https://doi.org/10.1000/example",
+        url="https://www.semanticscholar.org/paper/example",
+        metadata={
+            "primary_location": {
+                "landing_page_url": "https://publisher.example/article/123"
+            }
+        },
+    )
+
+    urls = _candidate_urls(record)
+
+    assert "https://publisher.example/article/123" in urls
+    assert "https://www.semanticscholar.org/paper/example" in urls
+    assert "https://doi.org/10.1000/example" in urls
 
 
 def test_deduplicate_merges_provider_provenance_and_best_text() -> None:
@@ -124,6 +165,62 @@ async def test_composite_search_keeps_partial_provider_results() -> None:
     records = await source.search(query="prompt optimization", limit=5)
 
     assert len(records) == 2
+
+
+@pytest.mark.asyncio
+async def test_composite_batch_resolution_uses_the_provider_that_knows_each_id() -> None:
+    first = FakeScholarlySourcePort(
+        [ScholarlyRecord(title="First", provider_source_id="S1")]
+    )
+    second = FakeScholarlySourcePort(
+        [ScholarlyRecord(title="Second", provider_source_id="S2")]
+    )
+    source = CompositeScholarlySource([first, second])
+
+    records = await source.get_sources(identifiers=["S1", "S2"])
+
+    assert [record.title if record else None for record in records] == [
+        "First",
+        "Second",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_composite_batch_resolution_merges_full_text_from_another_provider() -> None:
+    first = FakeScholarlySourcePort(
+        [
+            ScholarlyRecord(
+                title="DSPy paper",
+                provider="semantic_scholar",
+                provider_source_id="shared-id",
+                metadata={"provider_ids": {"semantic_scholar": "shared-id"}},
+            )
+        ]
+    )
+    second = FakeScholarlySourcePort(
+        [
+            ScholarlyRecord(
+                title="DSPy paper",
+                provider="openalex",
+                provider_source_id="shared-id",
+                url="https://example.org/dspy.pdf",
+                metadata={
+                    "full_text_url": "https://example.org/dspy.pdf",
+                    "provider_ids": {"openalex": "shared-id"},
+                },
+            )
+        ]
+    )
+    source = CompositeScholarlySource([first, second])
+
+    records = await source.get_sources(identifiers=["shared-id"])
+
+    assert records[0] is not None
+    assert records[0].metadata["full_text_url"] == "https://example.org/dspy.pdf"
+    assert records[0].metadata["provider_ids"] == {
+        "semantic_scholar": "shared-id",
+        "openalex": "shared-id",
+    }
 
 
 @pytest.mark.asyncio

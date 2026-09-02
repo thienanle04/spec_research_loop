@@ -158,7 +158,7 @@ export function needsStaleReaccept(head: NodeHeadResponse | undefined | null): b
   );
 }
 
-/** Mirror server mark after a successful node generate so Confirm/dimming update without refetch. */
+/** Mirror server mark after a successful node generate so Confirm/banner update without refetch. */
 export function withGeneratedSincePrepare(
   session: LoopSessionResponse,
   node: WorkflowNode = session.working_draft_node,
@@ -172,37 +172,24 @@ export function withGeneratedSincePrepare(
 }
 
 /**
- * Dim Stale revision/draft while the invalidation banner is showing and
- * Stale re-accept is still needed (ADR 0036). Dismiss hides the banner and undims.
+ * Independent judges is a dashboard, not an Aggregator node tab. Judge Confirm
+ * marks Aggregator Stale until Confirm Aggregator; that must not open the
+ * “Aggregator is Stale / Generate again” banner (ADR 0040). Node line only while
+ * Stale re-accept is still needed (ADR 0036); generate hides it even when browsing
+ * the Stale Stage Revision.
  */
-export function shouldDimStaleContent(
-  head: NodeHeadResponse | undefined | null,
-  invalidationBannerVisible: boolean,
-): boolean {
-  return needsStaleReaccept(head) && invalidationBannerVisible;
-}
-
-/** Banner dismiss subject: one Workflow Node or Spec Draft (ADR 0036). */
-export type InvalidationBannerSubject = WorkflowNode | "spec_draft";
-
-export function invalidationWaveKey(
-  session: Pick<
-    LoopSessionResponse,
-    "node_heads" | "produced_spec_version" | "valid_spec_version_id"
-  >,
-): string {
-  const staleNodes = session.node_heads
-    .filter((head) => head.status === NodeHeadStatus.stale)
-    .map((head) => head.node)
-    .sort()
-    .join(",");
-  const specStale =
-    session.produced_spec_version != null &&
-    session.valid_spec_version_id !== session.produced_spec_version.id;
-  if (!staleNodes && !specStale) {
-    return "";
+export function invalidationBannerNodeSubject(args: {
+  selectedStage: LoopStage;
+  selectedNode: WorkflowNode | undefined;
+  viewedHead: NodeHeadResponse | undefined | null;
+}): WorkflowNode | null {
+  if (args.selectedStage === LoopStage.independent_judges) {
+    return null;
   }
-  return `${staleNodes}|spec:${specStale ? "1" : "0"}`;
+  if (args.selectedNode == null || !needsStaleReaccept(args.viewedHead)) {
+    return null;
+  }
+  return args.selectedNode;
 }
 
 /** Whether Spec Draft's invalidation line belongs in the current-view banner. */
@@ -220,14 +207,6 @@ export function specInvalidationInView(args: {
     args.selectedStage === LoopStage.spec_draft ||
     args.selectedNode == null
   );
-}
-
-export function isInvalidationSubjectDismissed(
-  subject: InvalidationBannerSubject,
-  waveKey: string,
-  dismissedBySubject: Readonly<Record<string, string>>,
-): boolean {
-  return waveKey !== "" && dismissedBySubject[subject] === waveKey;
 }
 
 function fieldText(value: unknown): string {

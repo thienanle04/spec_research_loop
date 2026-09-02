@@ -16,8 +16,12 @@ from app.modules.research.adapters.fake_source import (
     FakeScholarlySourcePort,
 )
 from app.modules.research.models import Citation, RelatedWorkFinding
-from app.modules.research.ports import DocumentText, ScholarlyRecord
-from app.modules.research.schemas import ResearchGenerateRequest, ResearchNode
+from app.modules.research.ports import DocumentText, ScholarlyRecord, VerificationResult
+from app.modules.research.schemas import (
+    ResearchGenerateRequest,
+    ResearchNode,
+    VerificationStatus,
+)
 from app.modules.research.service import ResearchService
 from tests.test_loop_api import (
     _auth_client,
@@ -49,6 +53,51 @@ class _SelectiveDocumentSource:
             source_kind="full_text_pdf",
             original_content_type="application/pdf",
         )
+
+
+class _MetadataAwareDocumentSource:
+    def __init__(self) -> None:
+        self.seen_full_text_urls: list[str | None] = []
+
+    async def fetch_text(self, *, record: ScholarlyRecord) -> DocumentText | None:
+        full_text_url = record.metadata.get("full_text_url")
+        self.seen_full_text_urls.append(
+            str(full_text_url) if full_text_url else None
+        )
+        if not full_text_url:
+            return None
+        return DocumentText(
+            text=(record.abstract or record.title) * 8,
+            source_url=str(full_text_url),
+            source_kind="full_text_pdf",
+            original_content_type="application/pdf",
+        )
+
+
+class _FullTextEnrichingVerifier:
+    @staticmethod
+    def _result(record: ScholarlyRecord) -> VerificationResult:
+        resolved = ScholarlyRecord(
+            title=record.title,
+            abstract=record.abstract,
+            provider="openalex",
+            provider_source_id=record.provider_source_id,
+            metadata={"full_text_url": "https://example.org/resolved-paper.pdf"},
+        )
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            record=resolved,
+        )
+
+    async def verify(self, *, citation: ScholarlyRecord) -> VerificationResult:
+        return self._result(citation)
+
+    async def verify_many(
+        self,
+        *,
+        citations: list[ScholarlyRecord],
+    ) -> list[VerificationResult]:
+        return [self._result(citation) for citation in citations]
 
 
 @pytest.mark.asyncio
@@ -101,22 +150,31 @@ async def test_related_work_stream_persists_citations_and_findings(
         "type": "done",
         "node": "related_work",
         "version": draft["version"] + 1,
-        "citation_count": 2,
+        "citation_count": 1,
     }
-    assert [event["type"] for event in events].count("citation_upsert") == 2
+    assert [event["type"] for event in events].count("citation_upsert") == 1
     assert any(event["type"] == "draft_patch" for event in events)
 
     listed = await client.get(f"/api/research/sessions/{session_id}/citations")
-    assert len(listed.json()) == 2
+    assert len(listed.json()) == 1
     assert all(item["text_object_key"] for item in listed.json())
     assert all(item["text_checksum"] for item in listed.json())
     assert all(item["text_source_kind"] == "abstract" for item in listed.json())
     listed_findings = await client.get(f"/api/research/sessions/{session_id}/findings")
     assert listed_findings.status_code == 200
-    assert len(listed_findings.json()) == 2
+    assert len(listed_findings.json()) == 1
     assert all(item["citation_id"] for item in listed_findings.json())
     assert all(item["supporting_passage"] for item in listed_findings.json())
     assert all(item["source_object_key"] for item in listed_findings.json())
+    abstract_warnings = [
+        event
+        for event in events
+        if event["type"] == "warning"
+        and event.get("code") == "abstract_only_findings"
+    ]
+    assert abstract_warnings == []
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    assert patch["narrative"]["abstract_only_finding_count"] == 0
 
     old_ids = {item["id"] for item in listed.json()}
     old_finding_ids = {item["id"] for item in listed_findings.json()}
@@ -270,15 +328,150 @@ async def test_related_work_skips_inaccessible_source_and_backfills(
     patch = next(event for event in events if event["type"] == "draft_patch")
     assert patch["narrative"]["citation_count"] == 2
     assert patch["narrative"]["skipped_inaccessible_count"] == 1
+    skip_warning = next(
+        event
+        for event in events
+        if event["type"] == "warning" and event.get("code") == "full_text_unavailable"
+    )
+    assert "Skipped 1 scholarly candidate" in skip_warning["message"]
+    assert "strict full-text mode" in skip_warning["message"]
     assert patch["narrative"]["selection_rule"].startswith(
-        "quality_diversity_portfolio_"
+        "one_best_citation_per_discovered_tool_"
     )
     assert events[-1]["citation_count"] == 2
 
 
 @pytest.mark.asyncio
-async def test_gap_stream_uses_confirmed_citation_support(client: AsyncClient) -> None:
+async def test_related_work_resolves_full_text_metadata_before_download(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     await _auth_client(client)
+    account = (await client.get("/api/identity/me")).json()
+    draft = await _prepare_related_work(client)
+    document_source = _MetadataAwareDocumentSource()
+    record = ScholarlyRecord(
+        title="Claim verification prompt optimization method",
+        abstract="Evaluates claim verification and iterative prompt optimization.",
+        provider="semantic_scholar",
+        provider_source_id="resolved-before-download",
+    )
+    monkeypatch.setenv("RESEARCH_REQUIRE_DOWNLOADABLE_FULL_TEXT", "true")
+    get_settings.cache_clear()
+    try:
+        async with get_session_factory()() as db:
+            service = ResearchService(
+                db,
+                source=FakeScholarlySourcePort([record]),
+                verifier=_FullTextEnrichingVerifier(),
+                llm=FakeLlmPort(),
+                document_text_source=document_source,
+                object_storage=MemoryObjectStorage(),
+            )
+            run = await service.begin_generation(
+                session_id=UUID(draft["id"]),
+                account_id=UUID(account["id"]),
+                node=ResearchNode.RELATED_WORK,
+                body=ResearchGenerateRequest(
+                    expected_version=draft["version"],
+                    max_results=1,
+                ),
+            )
+            events = [event async for event in service.generate(run)]
+    finally:
+        get_settings.cache_clear()
+
+    assert document_source.seen_full_text_urls == [
+        "https://example.org/resolved-paper.pdf"
+    ]
+    citation = next(
+        event["citation"] for event in events if event["type"] == "citation_upsert"
+    )
+    assert citation["text_source_kind"] == "full_text_pdf"
+    assert events[-1]["citation_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_related_work_citation_count_follows_discovered_tool_count(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _auth_client(client)
+    account = (await client.get("/api/identity/me")).json()
+    draft = await _prepare_related_work(client)
+    records = [
+        ScholarlyRecord(
+            title=f"Claim verification prompt optimization method {index}",
+            abstract=(
+                "Evaluates claim verification and iterative prompt optimization "
+                f"with benchmark protocol {index}."
+            ),
+            provider="fixture",
+            provider_source_id=f"citation-{index}",
+        )
+        for index in range(8)
+    ]
+    monkeypatch.setenv("RESEARCH_REQUIRE_DOWNLOADABLE_FULL_TEXT", "true")
+    get_settings.cache_clear()
+    try:
+        async with get_session_factory()() as db:
+            service = ResearchService(
+                db,
+                source=FakeScholarlySourcePort(records),
+                verifier=FakeCitationVerifier(),
+                llm=FakeLlmPort(),
+                document_text_source=_SelectiveDocumentSource(),
+                object_storage=MemoryObjectStorage(),
+            )
+            run = await service.begin_generation(
+                session_id=UUID(draft["id"]),
+                account_id=UUID(account["id"]),
+                node=ResearchNode.RELATED_WORK,
+                body=ResearchGenerateRequest(expected_version=draft["version"]),
+            )
+            events = [event async for event in service.generate(run)]
+    finally:
+        get_settings.cache_clear()
+
+    citations = [
+        event["citation"] for event in events if event["type"] == "citation_upsert"
+    ]
+    assert len(citations) == 4
+    assert events[-1]["citation_count"] == 4
+    patch = next(event for event in events if event["type"] == "draft_patch")
+    assert patch["narrative"]["citation_count"] == 4
+    assert patch["narrative"]["citation_target"] == 4
+    assert len(patch["narrative"]["search_queries"]) == 4
+    assert len(patch["narrative"]["query_plan"]["facets"]) >= 2
+    assert patch["narrative"]["discovery_leads_status"] == (
+        "unverified_search_leads"
+    )
+    assert "DSPy" in patch["narrative"]["discovery_leads"][
+        "tools_and_frameworks"
+    ]
+    tool_coverage = patch["narrative"]["tool_coverage"]
+    assert [item["tool"] for item in tool_coverage] == [
+        "DSPy",
+        "TextGrad",
+        "OPRO",
+        "ProTeGi",
+    ]
+    assert all(item["status"] == "matched_citation" for item in tool_coverage)
+    progress_messages = [
+        event["message"] for event in events if event["type"] == "progress"
+    ]
+    assert any("Expanding confirmed keywords" in message for message in progress_messages)
+    assert any("named research leads" in message for message in progress_messages)
+
+
+@pytest.mark.asyncio
+async def test_gap_stream_strict_mode_does_not_promote_abstract_only_support(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _auth_client(client)
+    monkeypatch.setenv("RESEARCH_REQUIRE_DOWNLOADABLE_FULL_TEXT", "true")
+    get_settings.cache_clear()
     draft = await _prepare_related_work(client)
     session_id = draft["id"]
     related = await client.post(
@@ -308,20 +501,11 @@ async def test_gap_stream_uses_confirmed_citation_support(client: AsyncClient) -
     patch = next(event for event in events if event["type"] == "draft_patch")
     candidate = patch["narrative"]["candidate"]
     assert candidate["statement"]
-    assert candidate["supporting_citation_keys"]
-    assert candidate["status"] == "candidate"
-    assert (
-        candidate["search_audit"]["counter_evidence_outcome"]
-        == "no_direct_counter_evidence"
-    )
-    assert all(
-        result["relevance_status"] == "relevant"
-        for result in candidate["search_audit"]["counter_evidence_results"]
-    )
-    assert candidate["search_audit"]["complete"] is True
+    assert candidate["supporting_citation_keys"] == []
+    assert candidate["status"] == "insufficient_evidence"
     assert len(candidate["search_audit"]["related_work_queries"]) >= 4
-    assert len(candidate["search_audit"]["counter_evidence_queries"]) >= 3
-    assert candidate["evidence_check"]["ready"] is True
+    assert candidate["search_audit"]["counter_evidence_queries"] == []
+    assert candidate["evidence_check"]["ready"] is False
     assert "prior_work" not in candidate
     assert events[-1]["type"] == "done"
 

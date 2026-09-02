@@ -416,7 +416,9 @@ class GapCardBody(BaseModel):
 
 class ResearchGenerateRequest(BaseModel):
     expected_version: int = Field(ge=1)
-    max_results: int = Field(default=5, ge=1, le=5)
+    # Optional compatibility override for research ideas without named tools.
+    # Tool-oriented Related Work derives its Citation target from discovered tools.
+    max_results: int | None = Field(default=None, ge=1)
 
 
 class CitationSelectionUpdate(BaseModel):

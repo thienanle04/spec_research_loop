@@ -1,6 +1,7 @@
 """Spec application services."""
 
 import json
+import logging
 import re
 from typing import Any
 from uuid import UUID
@@ -19,10 +20,10 @@ from app.modules.spec.schemas import (
     ContributionDirection,
     ContributionDirectionKind,
     ContributionDirectionsResponse,
+    ExperimentPlan,
     FeasibilityReport,
     GenerateClaimsResponse,
     GenerateExperimentResponse,
-    ExperimentPlan,
 )
 from app.ports.llm import LlmCompleteError, LlmPort, LlmProviderError
 
@@ -51,8 +52,24 @@ def _raise_llm_operational(exc: Exception) -> None:
 
 
 class _GeneratedDirection(BaseModel):
-    title: str = Field(min_length=1)
-    description: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=160)
+    mechanism: str = Field(min_length=12, max_length=200)
+    gap_link: str = Field(min_length=12, max_length=320)
+    novelty: str = Field(min_length=12, max_length=320)
+    validation: str = Field(min_length=12, max_length=320)
+
+
+logger = logging.getLogger(__name__)
+
+_GENERIC_DIRECTION_PREFIXES = (
+    "focus on",
+    "place the contribution",
+    "tập trung vào",
+    "đặt đóng góp",
+)
+
+_CONTRIBUTION_RELATED_WORK_LIMIT = 8
+_CONTRIBUTION_TEXT_LIMIT = 1_200
 
 
 _VIETNAMESE_CHARACTERS = frozenset(
@@ -84,12 +101,289 @@ def _confirmed_gap_statement(view: dict[str, Any]) -> str:
     return ""
 
 
+def _dict_value(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list_value(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _compact_text(value: Any, *, limit: int = _CONTRIBUTION_TEXT_LIMIT) -> str:
+    if not isinstance(value, str):
+        return ""
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
+def _compact_idea(upstream: dict[str, Any]) -> dict[str, Any]:
+    interpretation = _dict_value(upstream.get(WorkflowNode.IDEA_INTERPRETATION.value))
+    decomposition = _dict_value(upstream.get(WorkflowNode.IDEA_DECOMPOSITION.value))
+    frame = _dict_value(_dict_value(interpretation.get("narrative")).get("frame"))
+    idea = {
+        key: _compact_text(frame.get(key))
+        for key in ("intent", "problem", "research_question")
+        if _compact_text(frame.get(key))
+    }
+    cards: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for node in (interpretation, decomposition):
+        for item in _list_value(node.get("card_snapshot")):
+            item = _dict_value(item)
+            kind = str(item.get("kind") or "")
+            if kind not in {
+                "problem",
+                "research_question",
+                "constraint",
+                "open_question",
+            }:
+                continue
+            body = _dict_value(item.get("body"))
+            text = _compact_text(
+                body.get("text")
+                or body.get("statement")
+                or body.get(kind)
+            )
+            identity = (kind, text)
+            if text and identity not in seen:
+                cards.append({"kind": kind, "text": text})
+                seen.add(identity)
+    if cards:
+        idea["cards"] = cards
+    return idea
+
+
+def _compact_related_work(upstream: dict[str, Any]) -> dict[str, Any]:
+    node = _dict_value(upstream.get(WorkflowNode.RELATED_WORK.value))
+    projected = _dict_value(node.get("projected"))
+    citations_by_id: dict[str, dict[str, Any]] = {}
+    for raw in _list_value(projected.get("citations")):
+        citation = _dict_value(raw)
+        identifier = str(citation.get("id") or "")
+        if not identifier:
+            continue
+        citations_by_id[identifier] = {
+            "citation_key": _compact_text(citation.get("citation_key"), limit=200),
+            "title": _compact_text(citation.get("title"), limit=500),
+            "year": citation.get("year"),
+            "venue": _compact_text(citation.get("venue"), limit=300),
+            "verification_status": citation.get("verification_status"),
+        }
+
+    studies: list[dict[str, Any]] = []
+    for raw in _list_value(projected.get("related_work"))[
+        :_CONTRIBUTION_RELATED_WORK_LIMIT
+    ]:
+        finding = _dict_value(raw)
+        citation_id = str(finding.get("citation_id") or "")
+        source = citations_by_id.get(citation_id, {})
+        study = {
+            "source": source,
+            "what_was_done": _compact_text(finding.get("what_was_done")),
+            "method_or_feedback": _compact_text(finding.get("method_or_feedback")),
+            "limitation": _compact_text(finding.get("limitation")),
+            "relevance": _compact_text(finding.get("relevance")),
+            "grounding_status": finding.get("grounding_status"),
+            "confidence": finding.get("confidence"),
+        }
+        studies.append(
+            {
+                key: value
+                for key, value in study.items()
+                if value not in ("", None, {})
+            }
+        )
+
+    if not studies:
+        for _identifier, source in list(citations_by_id.items())[
+            :_CONTRIBUTION_RELATED_WORK_LIMIT
+        ]:
+            studies.append({"source": source})
+
+    narrative = _dict_value(node.get("narrative"))
+    coverage = {
+        key: narrative.get(key)
+        for key in (
+            "candidate_count",
+            "ranked_candidate_count",
+            "selected_count",
+            "skipped_inaccessible_count",
+        )
+        if narrative.get(key) is not None
+    }
+    return {"studies": studies, "coverage": coverage}
+
+
+def _compact_gap(upstream: dict[str, Any]) -> dict[str, Any]:
+    node = _dict_value(upstream.get(WorkflowNode.GAP.value))
+    body: dict[str, Any] = {}
+    for raw in _list_value(node.get("card_snapshot")):
+        item = _dict_value(raw)
+        if item.get("kind") == "gap":
+            body = _dict_value(item.get("body"))
+            break
+    audit = _dict_value(body.get("search_audit"))
+    evidence = _dict_value(body.get("evidence_check"))
+    return {
+        "statement": _compact_text(
+            body.get("statement") or body.get("text"), limit=3_000
+        ),
+        "supporting_citation_keys": _list_value(body.get("supporting_citation_keys"))[:20],
+        "status": body.get("status"),
+        "counter_evidence_outcome": audit.get("counter_evidence_outcome"),
+        "counter_evidence_assessment": _compact_text(
+            audit.get("counter_evidence_assessment")
+        ),
+        "evidence_ready": evidence.get("ready"),
+        "evidence_messages": [
+            _compact_text(item, limit=500)
+            for item in _list_value(evidence.get("messages"))[:10]
+        ],
+    }
+
+
+def _contribution_brief(context: dict[str, Any]) -> dict[str, Any]:
+    if "upstream" not in context:
+        cards = [
+            item
+            for item in _list_value(context.get("cards"))
+            if isinstance(item, dict)
+        ]
+        idea_kinds = {"problem", "research_question", "constraint", "open_question"}
+        return {
+            "idea": {
+                "cards": [item for item in cards if item.get("kind") in idea_kinds]
+            },
+            "research_inputs": {},
+            "related_work": {
+                "studies": _list_value(context.get("related_work")),
+                "coverage": {},
+            },
+            "confirmed_gap": {
+                "statement": _compact_text(context.get("gap_statement"), limit=3_000),
+                "cards": [item for item in cards if item.get("kind") == "gap"],
+            },
+            "working_draft": _dict_value(context.get("working_draft")),
+        }
+    upstream = _dict_value(context.get("upstream"))
+    research_inputs = _dict_value(
+        _dict_value(upstream.get(WorkflowNode.RESEARCH_INPUTS.value)).get("narrative")
+    )
+    return {
+        "idea": _compact_idea(upstream),
+        "research_inputs": {
+            "keywords": [
+                _compact_text(item, limit=300)
+                for item in _list_value(research_inputs.get("keywords"))[:20]
+            ],
+            "preferred_sources": _dict_value(
+                research_inputs.get("preferred_sources")
+            ),
+        },
+        "related_work": _compact_related_work(upstream),
+        "confirmed_gap": _compact_gap(upstream),
+    }
+
+
 def _is_vietnamese(text: str) -> bool:
     normalized = text.casefold()
     if any(character in _VIETNAMESE_CHARACTERS for character in normalized):
         return True
     words = set(re.findall(r"[a-z]+", normalized))
     return len(words & _VIETNAMESE_ASCII_WORDS) >= 2
+
+
+def _direction_description(
+    direction: _GeneratedDirection, output_language: str
+) -> str:
+    if output_language == "Vietnamese":
+        return (
+            f"Cơ chế: {direction.mechanism} "
+            f"Liên hệ Gap: {direction.gap_link} "
+            f"Điểm mới: {direction.novelty} "
+            f"Kiểm chứng: {direction.validation}"
+        )
+    return (
+        f"Mechanism: {direction.mechanism} "
+        f"Gap link: {direction.gap_link} "
+        f"Novelty: {direction.novelty} "
+        f"Validation: {direction.validation}"
+    )
+
+
+def _parse_generated_directions(
+    raw: str,
+    output_language: str,
+    *,
+    allow_truncated_recovery: bool = False,
+) -> list[_GeneratedDirection]:
+    cleaned = re.sub(
+        r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE
+    )
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        payload = _recover_complete_direction_items(cleaned)
+        if not payload or not allow_truncated_recovery:
+            raise
+    if isinstance(payload, dict):
+        payload = payload.get("directions")
+    if not isinstance(payload, list):
+        raise TypeError("Expected a JSON object containing a directions array")
+    if not 1 <= len(payload) <= 3:
+        raise ValueError("Expected between one and three directions")
+    proposed = [_GeneratedDirection.model_validate(item) for item in payload]
+    normalized_titles = [item.title.strip().casefold() for item in proposed]
+    if len(set(normalized_titles)) != len(normalized_titles):
+        raise ValueError("Direction titles must be distinct")
+    if any(
+        title.startswith(prefix)
+        for title in normalized_titles
+        for prefix in _GENERIC_DIRECTION_PREFIXES
+    ):
+        raise ValueError("Direction titles must name a concrete proposal")
+    generated_text = " ".join(
+        f"{item.title} {item.mechanism} {item.gap_link} "
+        f"{item.novelty} {item.validation}"
+        for item in proposed
+    )
+    if _is_vietnamese(generated_text) != (output_language == "Vietnamese"):
+        raise ValueError("Directions did not match the confirmed Gap language")
+    return proposed
+
+
+def _recover_complete_direction_items(raw: str) -> list[dict[str, Any]]:
+    """Recover valid flat items before a token-truncated directions tail."""
+    stripped = raw.rstrip()
+    if stripped.endswith(("}", "]")):
+        return []
+    wrapper = re.search(r'"directions"\s*:\s*\[', raw)
+    if wrapper is not None:
+        position = wrapper.end()
+    else:
+        array = re.match(r"\s*\[", raw)
+        if array is None:
+            return []
+        position = array.end()
+
+    decoder = json.JSONDecoder()
+    recovered: list[dict[str, Any]] = []
+    while position < len(raw) and len(recovered) < 3:
+        while position < len(raw) and raw[position] in " \t\r\n,":
+            position += 1
+        if position >= len(raw) or raw[position] == "]":
+            break
+        try:
+            item, end = decoder.raw_decode(raw, position)
+        except json.JSONDecodeError:
+            break
+        if not isinstance(item, dict):
+            break
+        recovered.append(item)
+        position = end
+    return recovered
 
 
 class SpecService:
@@ -211,7 +505,7 @@ class SpecService:
             ContributionDirection(
                 id=f"direction-{chr(97 + index)}",
                 title=item.title,
-                description=item.description,
+                description=_direction_description(item, output_language),
             )
             for index, item in enumerate(proposed[:3])
         ]
@@ -393,76 +687,89 @@ class SpecService:
     async def _propose_directions(
         self, view: dict[str, Any], output_language: str
     ) -> list[_GeneratedDirection]:
-        try:
-            raw = await self._llm.complete(
-                system=(
-                    "spec-contribution-directions: return only a JSON array with 1 to 3 "
-                    "objects containing title and description. Propose distinct contribution "
-                    "directions grounded in the confirmed research idea, Related Work, and Gap. "
-                    "Use the language of the confirmed Gap statement for every title and "
-                    "description, regardless of the language used by citations or Related Work. "
-                    f"The required output language is {output_language}. "
-                    "Do not include Combine or Other; the application adds those fixed choices."
-                ),
-                prompt=json.dumps(
-                    {
-                        "required_output_language": output_language,
-                        "prompt_view": view,
-                    },
-                    default=str,
-                    ensure_ascii=False,
-                ),
-            )
-            cleaned = re.sub(
-                r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.IGNORECASE
-            )
-            payload = json.loads(cleaned)
-            if not isinstance(payload, list):
-                raise TypeError("Expected a JSON array")
-            proposed = [_GeneratedDirection.model_validate(item) for item in payload]
-            if not proposed:
-                raise ValueError("No directions returned")
-            generated_text = " ".join(
-                f"{item.title} {item.description}" for item in proposed
-            )
-            if _is_vietnamese(generated_text) != (output_language == "Vietnamese"):
-                raise ValueError("Directions did not match the confirmed Gap language")
-            return proposed
-        except Exception:  # noqa: BLE001 - keep contribution selection usable on provider failure
-            if output_language == "Vietnamese":
-                return [
-                    _GeneratedDirection(
-                        title="Tập trung vào phương pháp cốt lõi",
-                        description=(
-                            "Đặt đóng góp vào thuật toán hoặc thiết kế hệ thống nhằm giải quyết "
-                            "Gap đã được xác nhận."
-                        ),
-                    ),
-                    _GeneratedDirection(
-                        title="Tập trung vào khâu kiểm chứng",
-                        description=(
-                            "Đặt đóng góp vào cách các luận điểm hoặc kết quả được đối chiếu với "
-                            "bằng chứng."
-                        ),
-                    ),
-                    _GeneratedDirection(
-                        title="Tập trung vào kiểm soát có con người tham gia",
-                        description=(
-                            "Đặt đóng góp vào cách con người xác nhận và điều chỉnh quy trình."
-                        ),
-                    ),
-                ]
-            return [
-                _GeneratedDirection(
-                    title="Focus on the core method",
-                    description="Place the contribution in the algorithm or system design that addresses the confirmed Gap.",
-                ),
-                _GeneratedDirection(
-                    title="Focus on verification",
-                    description="Place the contribution in how claims or outcomes are checked against evidence.",
-                ),
-                _GeneratedDirection(
-                    title="Focus on human-in-the-loop control",
-                    description="Place the contribution in how people confirm and adjust the process.",
-                ),
-            ]
+        gap_statement = _confirmed_gap_statement(view)
+        brief = _contribution_brief(view)
+        system = (
+            "spec-contribution-directions: propose one to three genuinely distinct, "
+            "research-ready Contribution directions grounded only in the confirmed Idea, "
+            "Related Work, and Gap in the supplied Contribution Brief. A direction is not a "
+            "theme or category: it must state what artifact or mechanism would be introduced, "
+            "which exact limitation it changes, why that differs from the closest Related Work, "
+            "and how the difference could be falsified. Titles must name the proposed mechanism "
+            "or artifact; never use generic titles such as 'Focus on ...' or 'Tập trung vào ...'. "
+            "Do not invent datasets, numeric gains, citations, or capabilities absent from the "
+            "context. If the context cannot support a detail, state the decision that the Account "
+            "must resolve instead of fabricating it. Return only one JSON object with a single "
+            "directions field containing an array. Every array item must contain exactly these "
+            "string fields: title, mechanism, gap_link, novelty, validation. "
+            "Generate exactly three distinct directions whenever the supplied evidence supports "
+            "them. Keep title at no more than 100 characters. Keep mechanism to one short, direct "
+            "sentence of no more than 140 characters. Keep gap_link, novelty, and validation to "
+            "one sentence and no more than 220 characters each. Compact fields instead of "
+            "dropping a grounded direction. "
+            "Use gap_link to explicitly connect the mechanism to the confirmed Gap; use novelty "
+            "to compare against the closest named Related Work; use validation to name a baseline, "
+            "observable outcome, and rejection condition without made-up target values. "
+            f"Write every field in {output_language}. Do not include Combine or Other."
+        )
+        prompt = json.dumps(
+            {
+                "required_output_language": output_language,
+                "confirmed_gap_statement": gap_statement,
+                "contribution_brief": brief,
+            },
+            default=str,
+            ensure_ascii=False,
+        )
+        last_error: Exception | None = None
+        previous_output = ""
+        for attempt in range(2):
+            try:
+                if attempt == 0:
+                    attempt_system = system
+                    attempt_prompt = prompt
+                else:
+                    attempt_system = (
+                        system
+                        + " Your previous response failed the output contract. Repair it; do not "
+                        "explain the repair and do not repeat generic wording. Shorten aggressively "
+                        "to the stated character limits and return three complete directions when "
+                        "the context supports them. Return fewer only when the evidence cannot "
+                        "ground three genuinely distinct directions. Always close the JSON object."
+                    )
+                    attempt_prompt = json.dumps(
+                        {
+                            "input": json.loads(prompt),
+                            "previous_output": previous_output,
+                            "validation_error": str(last_error),
+                        },
+                        default=str,
+                        ensure_ascii=False,
+                    )
+                previous_output = await self._llm.complete(
+                    system=attempt_system,
+                    prompt=attempt_prompt,
+                )
+                return _parse_generated_directions(
+                    previous_output,
+                    output_language,
+                    allow_truncated_recovery=attempt == 1,
+                )
+            except Exception as error:  # noqa: BLE001 - retry provider/contract failures once
+                last_error = error
+
+        if isinstance(last_error, (LlmCompleteError, LlmProviderError)):
+            _raise_llm_operational(last_error)
+        logger.warning(
+            "Contribution direction generation failed after repair attempt",
+            exc_info=(type(last_error), last_error, last_error.__traceback__)
+            if last_error is not None
+            else None,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Could not generate specific contribution directions from the confirmed Gap. "
+                "Please retry; no generic fallback was saved."
+            ),
+        )

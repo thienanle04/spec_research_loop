@@ -125,35 +125,44 @@ class SemanticScholarSource:
         preferences: SourcePreferences | None = None,
         limit: int = 10,
     ) -> list[ScholarlyRecord]:
-        """Coalesce logical queries into one Semantic Scholar bulk request."""
+        """Search each logical query independently so one broad branch cannot dominate."""
         normalized = list(dict.fromkeys(query.strip() for query in queries if query.strip()))
         if not normalized:
             return []
-        provider_queries = _provider_query_plan(normalized)
-        records = await self.search(
-            query=_combined_query(provider_queries),
-            preferences=preferences,
-            limit=limit,
+        per_query_limit = max(1, (max(limit, 1) + len(normalized) - 1) // len(normalized))
+
+        async def search_one(query: str) -> list[ScholarlyRecord]:
+            records = await self.search(
+                query=query,
+                preferences=preferences,
+                limit=per_query_limit,
+            )
+            for record in records:
+                record.metadata["discovery_queries"] = (
+                    [query] if _query_match_score(record, query) > (0, 0) else []
+                )
+                record.metadata["provider_query_plan"] = [query]
+            return records
+
+        batches = await asyncio.gather(
+            *(search_one(query) for query in normalized),
+            return_exceptions=True,
         )
-        for record in records:
-            matches = [
-                query
-                for query in normalized
-                if _query_match_score(record, query) > (0, 0)
-            ]
-            # An unmatched result can still be returned by Semantic Scholar's broad
-            # bulk search, but it must not receive synthetic coverage for every query.
-            # Downstream relevance gates use this field as evidence of discovery.
-            record.metadata["discovery_queries"] = matches
-            record.metadata["provider_query_plan"] = provider_queries
-        records.sort(
-            key=lambda row: (
-                max(_query_match_score(row, query) for query in normalized),
-                _preference_score(row, preferences),
-            ),
-            reverse=True,
+        records = [
+            record
+            for batch in batches
+            if isinstance(batch, list)
+            for record in batch
+        ]
+        if records:
+            return records
+        failure = next(
+            (batch for batch in batches if isinstance(batch, BaseException)),
+            None,
         )
-        return records
+        if failure is not None:
+            raise failure
+        return []
 
     async def get_source(self, *, identifier: str) -> ScholarlyRecord | None:
         paper_id = _paper_identifier(identifier)
@@ -346,51 +355,6 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
     return max(requested, fallback) + 0.25
 
 
-def _combined_query(queries: list[str]) -> str:
-    if len(queries) == 1:
-        return queries[0]
-    # Semantic Scholar's bulk-search parser accepts `term|term` but currently
-    # returns HTTP 500 for parenthesized groups or whitespace around `|`.
-    return "|".join(queries)
-
-
-def _provider_query_plan(queries: list[str]) -> list[str]:
-    """Add short recall anchors without spending additional HTTP requests."""
-    planned = list(queries)
-    seen = {query.casefold() for query in planned}
-    for query in queries:
-        anchor = _recall_anchor(query)
-        if anchor and anchor.casefold() not in seen:
-            planned.append(anchor)
-            seen.add(anchor.casefold())
-    return planned
-
-
-def _recall_anchor(query: str) -> str:
-    ignored = {
-        "and",
-        "or",
-        "not",
-        "benchmark",
-        "study",
-        "survey",
-        "review",
-        "evaluation",
-        "comparison",
-        "impact",
-        "limitation",
-        "challenge",
-    }
-    words = [
-        word
-        for word in re.findall(r"[^\W_]+", query.casefold(), flags=re.UNICODE)
-        if word not in ignored
-    ]
-    # Three domain-bearing terms retain intent while avoiding Semantic Scholar's
-    # implicit all-keyword constraint on long bulk-search queries.
-    return " ".join(words[:3]) if len(words) >= 2 else ""
-
-
 def _bulk_query(value: str) -> str:
     """Translate provider-neutral Boolean words to bulk-search operators."""
     segments = re.split(r'("(?:[^"\\]|\\.)*")', value)
@@ -474,8 +438,10 @@ def _query_match_score(record: ScholarlyRecord, query: str) -> tuple[int, int]:
         for term in re.findall(r"[^\W_]+", query, flags=re.UNICODE)
         if term.casefold() not in {"and", "or", "not"}
     }
-    title = record.title.casefold()
-    abstract = (record.abstract or "").casefold()
+    title = set(re.findall(r"[^\W_]+", record.title.casefold(), flags=re.UNICODE))
+    abstract = set(
+        re.findall(r"[^\W_]+", (record.abstract or "").casefold(), flags=re.UNICODE)
+    )
     return (
         sum(term in title for term in terms),
         sum(term in abstract for term in terms),

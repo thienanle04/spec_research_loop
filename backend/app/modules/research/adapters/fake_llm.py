@@ -50,6 +50,52 @@ class FakeLlmPort:
                     ]
                 }
             )
+        if "research-discovery" in system:
+            keywords = [str(item) for item in payload.get("confirmed_keywords", [])]
+            tool_keywords = [
+                keyword
+                for keyword in keywords
+                if any(
+                    term in keyword.casefold()
+                    for term in (
+                        "prompt",
+                        "optimization",
+                        "refinement",
+                        "feedback",
+                        "judge",
+                        "evaluation",
+                        "grading",
+                        "evaluator",
+                    )
+                )
+            ]
+            tool_keyword_keys = {keyword.casefold() for keyword in tool_keywords}
+            concept_text = " ".join(tool_keywords).casefold()
+            tools: list[str] = []
+            if any(
+                term in concept_text
+                for term in ("prompt", "optimization", "refinement", "feedback")
+            ):
+                tools.extend(["DSPy", "TextGrad", "OPRO", "ProTeGi"])
+            if any(
+                term in concept_text
+                for term in ("judge", "evaluation", "grading", "evaluator")
+            ):
+                tools.extend(["G-Eval", "Prometheus"])
+            return json.dumps(
+                {
+                    "tool_discovery_keywords": tool_keywords,
+                    "supporting_context_keywords": [
+                        keyword
+                        for keyword in keywords
+                        if keyword.casefold() not in tool_keyword_keys
+                    ],
+                    "tools_and_frameworks": list(dict.fromkeys(tools)),
+                    "techniques": keywords[:8],
+                    "candidate_work_titles": [],
+                    "aliases": [],
+                }
+            )
         if "research-query" in system:
             inputs = payload.get("inputs", {})
             keywords = inputs.get("keywords") or ["related work"]
@@ -85,6 +131,10 @@ class FakeLlmPort:
             evidence = {"passage": abstract[:500], "location": "Abstract"}
             return json.dumps(
                 {
+                    "study_name": (
+                        (citation.get("metadata") or {}).get("research_work_name")
+                        or str(citation.get("title", "Unnamed approach")).split(":", 1)[0]
+                    ),
                     "what_was_done": f"Analyzes {citation.get('title', 'the source')}.",
                     "method_or_feedback": "Iterative model feedback",
                     "limitation": "The reported evaluation does not isolate claim-level evidence errors.",
