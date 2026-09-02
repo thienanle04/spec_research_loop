@@ -23,12 +23,23 @@ _SPEC_CARD_UPSTREAM: tuple[WorkflowNode, ...] = (
     WorkflowNode.GAP,
     WorkflowNode.CONTRIBUTION,
     WorkflowNode.CLAIMS,
-    WorkflowNode.EVIDENCE,
 )
 
 _SPEC_CARD_KINDS: frozenset[str] = frozenset(kind.value for kind in CardKind)
 _CONTRIBUTION_RELATED_WORK_LIMIT = 8
 _CONTRIBUTION_TEXT_LIMIT = 1_200
+_GAP_JUDGE_OMIT_CARD_KINDS: frozenset[str] = frozenset(
+    {CardKind.CLAIM.value, CardKind.EVIDENCE.value}
+)
+_CONTRIBUTION_JUDGE_OMIT_CARD_KINDS: frozenset[str] = frozenset(
+    {CardKind.EVIDENCE.value}
+)
+_GAP_JUDGE_OMIT_SPEC_NODES: frozenset[WorkflowNode] = frozenset(
+    {WorkflowNode.CLAIMS, WorkflowNode.EVIDENCE}
+)
+_CONTRIBUTION_JUDGE_OMIT_SPEC_NODES: frozenset[WorkflowNode] = frozenset(
+    {WorkflowNode.EVIDENCE}
+)
 
 
 def prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any]:
@@ -80,23 +91,58 @@ def _aggregator_prompt_view(projection: dict[str, Any]) -> dict[str, Any]:
     return {"node": WorkflowNode.AGGREGATOR.value, "judge_runs": runs}
 
 
+def _judge_omit_card_kinds(node: WorkflowNode) -> frozenset[str]:
+    if node is WorkflowNode.GAP_JUDGE:
+        return _GAP_JUDGE_OMIT_CARD_KINDS
+    if node is WorkflowNode.CONTRIBUTION_JUDGE:
+        return _CONTRIBUTION_JUDGE_OMIT_CARD_KINDS
+    return frozenset()
+
+
+def _judge_omit_spec_nodes(node: WorkflowNode) -> frozenset[WorkflowNode]:
+    if node is WorkflowNode.GAP_JUDGE:
+        return _GAP_JUDGE_OMIT_SPEC_NODES
+    if node is WorkflowNode.CONTRIBUTION_JUDGE:
+        return _CONTRIBUTION_JUDGE_OMIT_SPEC_NODES
+    return frozenset()
+
+
+def _filter_cards(
+    cards: list[dict[str, Any]], omit_kinds: frozenset[str]
+) -> list[dict[str, Any]]:
+    if not omit_kinds:
+        return cards
+    return [card for card in cards if card.get("kind") not in omit_kinds]
+
+
 def _judge_prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any]:
-    cards = _spec_cards(projection, keep_ids=True, include_spec_version=True)
+    omit_kinds = _judge_omit_card_kinds(node)
+    cards = _filter_cards(
+        _spec_cards(projection, keep_ids=True, include_spec_version=True),
+        omit_kinds,
+    )
+    passages = _related_work_passages(projection)
     view: dict[str, Any] = {
         "node": node.value,
         "cards": cards,
         "gap_statement": _gap_statement(projection, cards),
-        "related_work": _related_work_passages(projection),
         "working_draft": _judge_working_draft(node, projection.get("working_draft")),
-        "valid_spec_version": _slim_valid_spec_version(projection.get("valid_spec_version")),
+        "valid_spec_version": _slim_valid_spec_version(
+            projection.get("valid_spec_version"),
+            omit_card_kinds=omit_kinds,
+            omit_nodes=_judge_omit_spec_nodes(node),
+        ),
     }
+    if node in (WorkflowNode.GAP_JUDGE, WorkflowNode.CONTRIBUTION_JUDGE):
+        compact = _compact_related_work(projection)
+        view["related_work"] = {**compact, "passages": passages}
+    else:
+        view["related_work"] = passages
     plan = _experiment_plan(projection)
     if plan:
         view["experiment_plan"] = plan
     if node is WorkflowNode.EVIDENCE_JUDGE:
-        view["claim_citation_passages"] = _claim_citation_passages(
-            cards, view["related_work"]
-        )
+        view["claim_citation_passages"] = _claim_citation_passages(cards, passages)
     return view
 
 
@@ -434,7 +480,12 @@ def _claim_citation_passages(
     return triples
 
 
-def _slim_valid_spec_version(raw: Any) -> dict[str, Any] | None:
+def _slim_valid_spec_version(
+    raw: Any,
+    *,
+    omit_card_kinds: frozenset[str] = frozenset(),
+    omit_nodes: frozenset[WorkflowNode] = frozenset(),
+) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     spec_id = raw.get("id")
@@ -450,17 +501,22 @@ def _slim_valid_spec_version(raw: Any) -> dict[str, Any] | None:
                 WorkflowNode.EXPERIMENT_PLAN,
                 WorkflowNode.FEASIBILITY,
             ):
+                if source in omit_nodes:
+                    continue
                 block = raw_nodes.get(source.value)
                 if not isinstance(block, dict):
                     continue
                 snapshot = block.get("card_snapshot")
                 cards = []
                 if isinstance(snapshot, list):
-                    cards = [
-                        slim
-                        for item in snapshot
-                        if (slim := _slim_card(item, keep_id=True)) is not None
-                    ]
+                    cards = _filter_cards(
+                        [
+                            slim
+                            for item in snapshot
+                            if (slim := _slim_card(item, keep_id=True)) is not None
+                        ],
+                        omit_card_kinds,
+                    )
                 narrative = block.get("narrative")
                 slim_narrative: dict[str, Any] = {}
                 if isinstance(narrative, dict):

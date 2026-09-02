@@ -24,7 +24,9 @@ from app.modules.loop.catalog import (
     LoopStage,
     NodeHeadStatus,
     WorkflowNode,
+    active_workflow_node,
     ancestors,
+    claims_confirmable,
     descendants,
     owned_kinds,
     prepare_landing,
@@ -457,6 +459,12 @@ class LoopService:
         saved_narratives = dict(session.working_draft_narratives)
         saved_narratives[session.working_draft_node] = next_narrative
         if node is not None:
+            if node is WorkflowNode.EVIDENCE:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="invalid_working_draft_target",
+                    detail="Working Draft cannot move to a retired Workflow Node",
+                )
             for ancestor in ancestors(node):
                 if heads[ancestor].status_enum() != NodeHeadStatus.CURRENT:
                     raise OperationalErrorException(
@@ -709,7 +717,7 @@ class LoopService:
                     code="handling_option_not_found",
                     detail="Handling Option is not on the current Aggregator Report",
                 )
-            target = WorkflowNode(str(option["target_node"]))
+            target = active_workflow_node(WorkflowNode(str(option["target_node"])))
             patch_prose = str(option.get("prose") or "")
             card_ids = _card_ids_for_option(report["issues"], option)
         else:
@@ -726,6 +734,7 @@ class LoopService:
                     code="invalid_working_draft_target",
                     detail="Other target must be a Handling Option Workflow Node",
                 )
+            target_node = active_workflow_node(target_node)
             if not report["issues"] and not report["options"]:
                 aggregator = heads.get(WorkflowNode.AGGREGATOR)
                 if (
@@ -874,6 +883,12 @@ class LoopService:
         stale_reaccept: bool = False,
     ) -> LoopSessionResponse:
         session = await self._load_session(session_id, account_id)
+        if node is WorkflowNode.EVIDENCE:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="invalid_working_draft_target",
+                detail="confirm must target the Working Draft Workflow Node",
+            )
         if session.working_draft_node != node.value:
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -917,6 +932,12 @@ class LoopService:
                 status_code=status.HTTP_409_CONFLICT,
                 code="interpretation_not_confirmable",
                 detail="Confirm requires a non-blank Idea Frame (intent, problem, and research_question)",
+            )
+        if node is WorkflowNode.CLAIMS and not claims_confirmable(session.cards):
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="claims_not_confirmable",
+                detail="Confirm claims requires a non-blank Claim Card and a non-blank Evidence Card",
             )
 
         await self._increment_session_version(
@@ -1333,7 +1354,147 @@ class LoopService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Loop Session not found"
             )
+        if await self._fold_retired_evidence_head(session):
+            await self._db.commit()
+            session = await self._db.scalar(
+                select(LoopSession)
+                .where(LoopSession.id == session_id, LoopSession.account_id == account_id)
+                .options(
+                    selectinload(LoopSession.cards),
+                    selectinload(LoopSession.node_heads),
+                    selectinload(LoopSession.stage_revisions),
+                    selectinload(LoopSession.decisions),
+                    selectinload(LoopSession.spec_versions),
+                    selectinload(LoopSession.export_scratches),
+                    selectinload(LoopSession.export_scratch_snapshots),
+                )
+            )
+            if session is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Loop Session not found"
+                )
         return session
+
+    async def _fold_retired_evidence_head(self, session: LoopSession) -> bool:
+        evidence_head = next(
+            (head for head in session.node_heads if head.node == WorkflowNode.EVIDENCE.value),
+            None,
+        )
+        changed = False
+        if session.working_draft_node == WorkflowNode.EVIDENCE.value:
+            session.working_draft_node = WorkflowNode.CLAIMS.value
+            narratives = dict(session.working_draft_narratives)
+            if WorkflowNode.EVIDENCE.value in narratives:
+                narratives[WorkflowNode.CLAIMS.value] = narratives.pop(
+                    WorkflowNode.EVIDENCE.value
+                )
+                session.working_draft_narratives = narratives
+                session.working_draft_narrative = dict(
+                    narratives.get(WorkflowNode.CLAIMS.value) or session.working_draft_narrative
+                )
+            changed = True
+        if evidence_head is None:
+            return changed
+
+        claims_head = next(
+            head for head in session.node_heads if head.node == WorkflowNode.CLAIMS.value
+        )
+        revisions = {rev.id: rev for rev in session.stage_revisions}
+        claims_rev = (
+            revisions.get(claims_head.stage_revision_id)
+            if claims_head.stage_revision_id is not None
+            else None
+        )
+        evidence_rev = (
+            revisions.get(evidence_head.stage_revision_id)
+            if evidence_head.stage_revision_id is not None
+            else None
+        )
+
+        def snapshot_kind(revision: StageRevision | None, kind: str) -> list[dict[str, Any]]:
+            if revision is None:
+                return []
+            return [
+                item
+                for item in revision.card_snapshot
+                if isinstance(item, dict) and item.get("kind") == kind
+            ]
+
+        claim_items = snapshot_kind(claims_rev, CardKind.CLAIM.value) or snapshot_kind(
+            evidence_rev, CardKind.CLAIM.value
+        )
+        evidence_items = snapshot_kind(evidence_rev, CardKind.EVIDENCE.value)
+        by_id = {str(card.id): card for card in session.cards}
+        for item in (*claim_items, *evidence_items):
+            raw_id = item.get("id")
+            body = item.get("body") if isinstance(item.get("body"), dict) else {}
+            kind = str(item.get("kind") or "")
+            if not isinstance(raw_id, str) or not kind:
+                continue
+            existing = by_id.get(raw_id)
+            if existing is None:
+                card = Card(
+                    id=UUID(raw_id),
+                    session_id=session.id,
+                    kind=kind,
+                    body=body,
+                )
+                self._db.add(card)
+                session.cards.append(card)
+                by_id[raw_id] = card
+            else:
+                existing.body = body
+                existing.kind = kind
+
+        owned = [
+            card
+            for card in session.cards
+            if card.kind in {CardKind.CLAIM.value, CardKind.EVIDENCE.value}
+        ]
+        snapshot = _card_snapshot(owned)
+        narrative: dict[str, Any] = {}
+        if claims_rev is not None:
+            narrative.update(dict(claims_rev.narrative))
+        if evidence_rev is not None:
+            narrative.update(dict(evidence_rev.narrative))
+        if snapshot and (
+            claims_rev is None
+            or list(claims_rev.card_snapshot) != snapshot
+            or claims_head.status_enum() is not NodeHeadStatus.CURRENT
+        ):
+            port = self._ports[WorkflowNode.CLAIMS.value]
+            typed_data = await port.fingerprint(
+                session_id=session.id, node=WorkflowNode.CLAIMS.value
+            )
+            digest = _freeze_hash(narrative, snapshot, typed_data)
+            next_n = 1 + max(
+                (
+                    rev.revision_n
+                    for rev in session.stage_revisions
+                    if rev.node == WorkflowNode.CLAIMS.value
+                ),
+                default=0,
+            )
+            revision = StageRevision(
+                session_id=session.id,
+                node=WorkflowNode.CLAIMS.value,
+                revision_n=next_n,
+                narrative=narrative,
+                card_snapshot=snapshot,
+                freeze_hash=digest,
+            )
+            self._db.add(revision)
+            await self._db.flush()
+            session.stage_revisions.append(revision)
+            claims_head.status = NodeHeadStatus.CURRENT.value
+            claims_head.stage_revision_id = revision.id
+            claims_head.generated_since_prepare = False
+
+        await self._db.delete(evidence_head)
+        session.node_heads = [
+            head for head in session.node_heads if head.node != WorkflowNode.EVIDENCE.value
+        ]
+        return True
 
     async def _seed_export_scratch_if_absent(self, session: LoopSession) -> None:
         spec_id = session.valid_spec_version_id
@@ -1404,7 +1565,12 @@ class LoopService:
                     SpecVersion, session.produced_spec_version_id
                 )
         heads = sorted(
-            session.node_heads, key=lambda head: WORKFLOW_NODES.index(head.node_enum())
+            (
+                head
+                for head in session.node_heads
+                if head.node_enum() in WORKFLOW_NODES
+            ),
+            key=lambda head: WORKFLOW_NODES.index(head.node_enum()),
         )
         revisions = {rev.id: rev for rev in session.stage_revisions}
         target_spec = await self._resolve_viewed_spec(session, spec_version_id)

@@ -1,6 +1,6 @@
 # Finer Loop Stages, navigable Contribution, and Spec Draft
 
-Loop Stage groupings match the session rail: Grilling; Related work (`research_inputs`, `related_work` only); Gap; Contribution; Claims/evidence; Experiment planning; Spec Draft (no nodes); Independent judges; Readiness. `recompute-prepare` still resets only Stale or empty nodes inside the requested Loop Stage (ADR 0016), so prepare on Related work no longer touches gap or contribution. Spec Draft is a read-only Loop Stage for the Produced Spec Version (Valid vs Stale); it is not a Workflow Node and does not mint or Confirm a Spec Version—feasibility Confirm still does (ADR 0010, 0014). Workflow Node set and invalidation edges are unchanged.
+Loop Stage groupings match the session rail: Grilling; Related work (`research_inputs`, `related_work` only); Gap; Contribution; Claims/evidence (`claims` only; ADR 0044); Experiment planning; Spec Draft (no nodes); Independent judges; Readiness. `recompute-prepare` still resets only Stale or empty nodes inside the requested Loop Stage (ADR 0016), so prepare on Related work no longer touches gap or contribution. Spec Draft is a read-only Loop Stage for the Produced Spec Version (Valid vs Stale); it is not a Workflow Node and does not mint or Confirm a Spec Version—feasibility Confirm still does (ADR 0010, 0014). Workflow Node set and invalidation edges follow ADR 0014 / ADR 0044.
 
 **Status:** accepted; partially supersedes ADR 0014’s “no separate navigable Contribution stage” and Related-work-includes-gap-and-contribution grouping.
 

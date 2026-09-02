@@ -17,7 +17,6 @@ CATALOG = [
     "gap",
     "contribution",
     "claims",
-    "evidence",
     "experiment_plan",
     "feasibility",
     "gap_judge",
@@ -240,8 +239,8 @@ async def test_create_session_has_empty_catalog_heads(client: AsyncClient) -> No
     assert payload["valid_spec_version_id"] is None
     nodes = [item["node"] for item in payload["node_heads"]]
     assert nodes == CATALOG
-    assert [item["status"] for item in payload["node_heads"]] == ["empty"] * 16
-    assert len(WORKFLOW_NODES) == 16
+    assert [item["status"] for item in payload["node_heads"]] == ["empty"] * 15
+    assert len(WORKFLOW_NODES) == 15
 
 
 @pytest.mark.asyncio
@@ -1278,7 +1277,6 @@ async def test_prepare_claims_evidence_still_lands_first_needs_work(
     )
     assert payload["working_draft_node"] == "claims"
     assert _head(payload, "claims")["status"] == "empty"
-    assert _head(payload, "evidence")["status"] == "empty"
 
 
 @pytest.mark.asyncio
@@ -1373,13 +1371,33 @@ async def test_feasibility_confirm_mints_spec_version(client: AsyncClient) -> No
     for stage, node in (
         ("contribution", "contribution"),
         ("claims_evidence", "claims"),
-        ("claims_evidence", "evidence"),
         ("experiment_planning", "experiment_plan"),
         ("experiment_planning", "feasibility"),
     ):
         prepared = await _prepare(client, session_id, stage, expected_version)
         assert prepared["working_draft_node"] == node
-        confirmed = await _confirm(client, session_id, node, prepared["version"])
+        if node == "claims":
+            claim = await _create_card(
+                client,
+                session_id,
+                kind="claim",
+                body={"statement": "Tiling reduces DRAM traffic."},
+                expected_version=prepared["version"],
+            )
+            assert claim.status_code == 201, claim.text
+            evidence = await _create_card(
+                client,
+                session_id,
+                kind="evidence",
+                body={"text": "Held-out DRAM traffic measurement."},
+                expected_version=claim.json()["version"],
+            )
+            assert evidence.status_code == 201, evidence.text
+            confirmed = await _confirm(
+                client, session_id, node, evidence.json()["version"]
+            )
+        else:
+            confirmed = await _confirm(client, session_id, node, prepared["version"])
         expected_version = confirmed["version"]
     fetched = await client.get(f"/api/loop/sessions/{session_id}")
     payload = fetched.json()

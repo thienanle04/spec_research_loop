@@ -26,6 +26,57 @@ export function HeadRevisionView({
   stageRevisionId?: string | null;
 }) {
   const title = WORKFLOW_NODE_LABELS[node];
+  const interpretationHead = node === WorkflowNode.idea_interpretation;
+  const body = !available ? (
+    <p className="text-sm text-muted-foreground">
+      Upstream Workflow Nodes are not current
+      {upstreamNames.length > 0 ? `: ${upstreamNames.join(", ")}.` : "."}
+    </p>
+  ) : status === NodeHeadStatus.empty || revision == null ? (
+    <p className="text-sm text-muted-foreground">No Stage Revision yet.</p>
+  ) : (
+    <div className="grid gap-3">
+      {status === NodeHeadStatus.stale ? (
+        <p className="text-sm font-medium text-pending">Stale</p>
+      ) : null}
+      {isJudgeNode(node) ? (
+        <JudgeRunRevisionView
+          sessionId={sessionId}
+          node={node}
+          stageRevisionId={stageRevisionId ?? null}
+        />
+      ) : (
+        <StageRevisionBody
+          node={node}
+          payload={{ narrative: revision.narrative, card_snapshot: revision.card_snapshot }}
+          showNodeLabel={false}
+          sessionId={sessionId}
+          stageRevisionId={stageRevisionId ?? null}
+        />
+      )}
+    </div>
+  );
+
+  const header = (
+    <div className="flex items-start justify-between gap-3">
+      <h2 className="font-serif text-navy font-semibold leading-none tracking-tight">{title}</h2>
+      {onEdit ? (
+        <Button type="button" variant="outline" size="sm" onClick={onEdit}>
+          Edit {title}
+        </Button>
+      ) : null}
+    </div>
+  );
+
+  if (interpretationHead) {
+    return (
+      <section className="grid gap-4" aria-label={`${title} Stage Revision`}>
+        {header}
+        {body}
+      </section>
+    );
+  }
+
   return (
     <section aria-label={`${title} Stage Revision`}>
       <Card>
@@ -37,37 +88,7 @@ export function HeadRevisionView({
             </Button>
           ) : null}
         </CardHeader>
-        <CardContent>
-          {!available ? (
-            <p className="text-sm text-muted-foreground">
-              Upstream Workflow Nodes are not current
-              {upstreamNames.length > 0 ? `: ${upstreamNames.join(", ")}.` : "."}
-            </p>
-          ) : status === NodeHeadStatus.empty || revision == null ? (
-            <p className="text-sm text-muted-foreground">No Stage Revision yet.</p>
-          ) : (
-            <div className="grid gap-3">
-              {status === NodeHeadStatus.stale ? (
-                <p className="text-sm font-medium text-pending">Stale</p>
-              ) : null}
-              {isJudgeNode(node) ? (
-                <JudgeRunRevisionView
-                  sessionId={sessionId}
-                  node={node}
-                  stageRevisionId={stageRevisionId ?? null}
-                />
-              ) : (
-                <StageRevisionBody
-                  node={node}
-                  payload={{ narrative: revision.narrative, card_snapshot: revision.card_snapshot }}
-                  showNodeLabel={false}
-                  sessionId={sessionId}
-                  stageRevisionId={stageRevisionId ?? null}
-                />
-              )}
-            </div>
-          )}
-        </CardContent>
+        <CardContent>{body}</CardContent>
       </Card>
     </section>
   );

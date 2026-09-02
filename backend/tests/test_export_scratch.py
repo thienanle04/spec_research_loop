@@ -191,22 +191,15 @@ async def _mint_valid_spec_from_decomposition(
         text=claim_text,
         expected_version=claims_prepared["version"],
     )
-    expected_version = (
-        await _confirm(client, session_id, "claims", expected_version)
-    )["version"]
-
-    evidence_prepared = await _prepare(
-        client, session_id, "claims_evidence", expected_version
-    )
     expected_version = await _post_card(
         client,
         session_id,
         kind="evidence",
         text=EVIDENCE_TEXT,
-        expected_version=evidence_prepared["version"],
+        expected_version=expected_version,
     )
     expected_version = (
-        await _confirm(client, session_id, "evidence", expected_version)
+        await _confirm(client, session_id, "claims", expected_version)
     )["version"]
 
     experiment_prepared = await _prepare(
@@ -454,18 +447,8 @@ async def _remint_second_spec(client: AsyncClient, session: dict) -> dict:
         claims_prepared["version"],
         stale_reaccept=True,
     )
-    evidence_prepared = await _prepare(
-        client, session_id, "claims_evidence", claims_confirmed["version"]
-    )
-    evidence_confirmed = await _confirm(
-        client,
-        session_id,
-        "evidence",
-        evidence_prepared["version"],
-        stale_reaccept=True,
-    )
     experiment_prepared = await _prepare(
-        client, session_id, "experiment_planning", evidence_confirmed["version"]
+        client, session_id, "experiment_planning", claims_confirmed["version"]
     )
     experiment_confirmed = await _confirm(
         client,

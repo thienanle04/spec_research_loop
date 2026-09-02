@@ -262,8 +262,9 @@ def _spec_generate_system(node: WorkflowNode) -> str:
     )
     if node is WorkflowNode.CLAIMS:
         return (
-            "You generate Claims for a Research Spec from the Prompt View. "
-            "Each Claim needs baseline, metric, expected evidence, and rejection_condition. "
+            "You generate Claims and Evidence Cards for a Research Spec from the Prompt View. "
+            "Each generated item becomes one Claim Card (claim, baseline, metric, rejection_condition) "
+            "and one Evidence Card (expected evidence). "
             + ground
         )
     if node is WorkflowNode.EXPERIMENT_PLAN:

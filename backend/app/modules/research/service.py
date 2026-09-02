@@ -5345,11 +5345,13 @@ def _merge_verified_counter_record(
 
 
 def _record_result_key(record: ScholarlyRecord) -> str:
-    return str(
-        normalize_doi(record.doi)
-        or record.provider_source_id
-        or normalize_url(record.url)
-        or citation_key(record.title, record.year)
+    return utf8_safe_text(
+        str(
+            normalize_doi(record.doi)
+            or record.provider_source_id
+            or normalize_url(record.url)
+            or citation_key(record.title, record.year)
+        )
     )
 
 

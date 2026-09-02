@@ -94,6 +94,7 @@ export function ClaimsStageContainer({
   const generatedCards = (narrative?.cards || []) as ClaimEvidenceCard[];
   const isSaved = narrative?.saved === true;
   const confirmedClaimCards = session.cards.filter(c => c.kind === CardKind.claim);
+  const confirmedEvidenceCards = session.cards.filter(c => c.kind === CardKind.evidence);
 
   const running = generateClaims.isPending || saving;
 
@@ -103,9 +104,9 @@ export function ClaimsStageContainer({
   }, [onRunningChange, running]);
 
   useEffect(() => {
-    onConfirmabilityChange?.(confirmedClaimCards.length > 0);
+    onConfirmabilityChange?.(confirmedClaimCards.length > 0 && confirmedEvidenceCards.length > 0);
     return () => onConfirmabilityChange?.(false);
-  }, [confirmedClaimCards.length, onConfirmabilityChange]);
+  }, [confirmedClaimCards.length, confirmedEvidenceCards.length, onConfirmabilityChange]);
 
   function currentSession(): LoopSessionResponse {
     const cached = queryClient.getQueryData(sessionKey) as any;
@@ -156,31 +157,48 @@ export function ClaimsStageContainer({
     setError(null);
     try {
       let latestVersion = currentSession().version;
-      const bodies = generatedCards.map(card => {
-        const bodyText = `Claim: ${card.claim}\nBaseline: ${card.baseline}\nMetric: ${card.metric}\nEvidence: ${card.evidence}\nRejection Condition: ${card.rejection_condition}`;
+      const claimBodies = generatedCards.map(card => {
+        const bodyText = `Claim: ${card.claim}\nBaseline: ${card.baseline}\nMetric: ${card.metric}\nRejection Condition: ${card.rejection_condition}`;
         return { text: bodyText, metadata: card };
       });
-      const response = await queue.enqueue(() =>
+      const evidenceBodies = generatedCards.map(card => {
+        return { text: card.evidence, metadata: { source_claim_id: card.id } };
+      });
+      const claimResponse = await queue.enqueue(() =>
         replaceCards.mutateAsync({
           sessionId,
           data: {
             kind: CardKind.claim,
-            bodies,
+            bodies: claimBodies,
             expected_version: latestVersion,
           },
         })
       );
-      if (response.status !== 200) throw new Error("Could not save the Claim Cards");
-      latestVersion = response.data.version;
-      const savedCards = response.data.cards;
+      if (claimResponse.status !== 200) throw new Error("Could not save the Claim Cards");
+      latestVersion = claimResponse.data.version;
+      const evidenceResponse = await queue.enqueue(() =>
+        replaceCards.mutateAsync({
+          sessionId,
+          data: {
+            kind: CardKind.evidence,
+            bodies: evidenceBodies,
+            expected_version: latestVersion,
+          },
+        })
+      );
+      if (evidenceResponse.status !== 200) throw new Error("Could not save the Evidence Cards");
+      latestVersion = evidenceResponse.data.version;
+      const savedClaims = claimResponse.data.cards;
+      const savedEvidence = evidenceResponse.data.cards;
 
       updateSession((current) => ({
         ...current,
         version: latestVersion,
         working_draft_narrative: { ...current.working_draft_narrative as object, saved: true },
         cards: [
-          ...current.cards.filter(c => c.kind !== CardKind.claim),
-          ...savedCards,
+          ...current.cards.filter(c => c.kind !== CardKind.claim && c.kind !== CardKind.evidence),
+          ...savedClaims,
+          ...savedEvidence,
         ],
       }));
     } catch (caught) {

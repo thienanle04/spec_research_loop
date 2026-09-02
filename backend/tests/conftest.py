@@ -33,7 +33,6 @@ _RESEARCH_NODES = {
 _STRUCTURED_NODES = {
     WorkflowNode.CONTRIBUTION,
     WorkflowNode.CLAIMS,
-    WorkflowNode.EVIDENCE,
     WorkflowNode.EXPERIMENT_PLAN,
     WorkflowNode.FEASIBILITY,
 }

@@ -117,27 +117,36 @@ async def _mint_valid_spec(
     for stage, node in (
         ("contribution", "contribution"),
         ("claims_evidence", "claims"),
-        ("claims_evidence", "evidence"),
         ("experiment_planning", "experiment_plan"),
         ("experiment_planning", "feasibility"),
     ):
         prepared = await _prepare(client, session_id, stage, expected_version)
-        if node == "claims" and claim_statement is not None:
-            assert citation_keys, "fixture Related Work must yield a Citation"
+        if node == "claims":
+            statement = claim_statement or "Tiling reduces DRAM traffic."
+            claim_body: dict = {"statement": statement}
+            if claim_statement is not None:
+                assert citation_keys, "fixture Related Work must yield a Citation"
+                claim_body["supporting_citation_keys"] = [citation_keys[0]]
             claim = await client.post(
                 f"/api/loop/sessions/{session_id}/cards",
                 json={
                     "kind": "claim",
-                    "body": {
-                        "statement": claim_statement,
-                        "supporting_citation_keys": [citation_keys[0]],
-                    },
+                    "body": claim_body,
                     "expected_version": prepared["version"],
                 },
             )
             assert claim.status_code == 201, claim.text
+            evidence = await client.post(
+                f"/api/loop/sessions/{session_id}/cards",
+                json={
+                    "kind": "evidence",
+                    "body": {"text": "Held-out measurement of the claim."},
+                    "expected_version": claim.json()["version"],
+                },
+            )
+            assert evidence.status_code == 201, evidence.text
             confirmed = await _confirm(
-                client, session_id, node, claim.json()["version"]
+                client, session_id, node, evidence.json()["version"]
             )
         else:
             confirmed = await _confirm(client, session_id, node, prepared["version"])
@@ -1271,7 +1280,6 @@ async def test_conference_judge_generate_payload_excludes_peer_judge_runs(
     assert "gap" in nodes
     assert "contribution" in nodes
     assert "claims" in nodes
-    assert "evidence" in nodes
     assert "experiment_plan" in nodes
     assert view["gap_statement"]
 

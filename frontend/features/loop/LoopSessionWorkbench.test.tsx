@@ -114,6 +114,24 @@ vi.mock("@/features/judgement", () => ({
   ),
 }));
 
+vi.mock("@/features/spec/ClaimsStageContainer", () => ({
+  ClaimsStageContainer: ({
+    sessionId,
+    onRunningChange,
+    onConfirmabilityChange,
+  }: {
+    sessionId: string;
+    onRunningChange?: (running: boolean) => void;
+    onConfirmabilityChange?: (confirmable: boolean) => void;
+  }) => {
+    React.useEffect(() => {
+      onRunningChange?.(false);
+      onConfirmabilityChange?.(true);
+    }, [onConfirmabilityChange, onRunningChange]);
+    return <p>Claims/Evidence editor for {sessionId}</p>;
+  },
+}));
+
 vi.mock("@/features/spec/FeasibilityStageContainer", () => ({
   FeasibilityStageContainer: ({
     onRunningChange,
@@ -2857,6 +2875,65 @@ describe("LoopSessionWorkbench", () => {
       { scroll: false },
     );
     expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+  });
+
+  it("continues from confirmed Claims to Experiment planning", async () => {
+    const throughContribution = {
+      [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+      [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+      [WorkflowNode.related_work]: NodeHeadStatus.current,
+      [WorkflowNode.gap]: NodeHeadStatus.current,
+      [WorkflowNode.contribution]: NodeHeadStatus.current,
+    };
+    search = new URLSearchParams(
+      `stage=${LoopStage.claims_evidence}&node=${WorkflowNode.claims}`,
+    );
+    getHook.mockReturnValue({
+      data: {
+        status: 200,
+        data: session({
+          version: 20,
+          working_draft_node: WorkflowNode.claims,
+          node_heads: heads(throughContribution),
+        }),
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const confirmed = session({
+      version: 21,
+      working_draft_node: WorkflowNode.claims,
+      node_heads: heads({
+        ...throughContribution,
+        [WorkflowNode.claims]: NodeHeadStatus.current,
+      }),
+    });
+    const prepared = session({
+      version: 22,
+      working_draft_node: WorkflowNode.experiment_plan,
+      node_heads: heads({
+        ...throughContribution,
+        [WorkflowNode.claims]: NodeHeadStatus.current,
+      }),
+    });
+    const confirmMutate = vi.fn().mockResolvedValue({ status: 200, data: confirmed });
+    const prepareMutate = vi.fn().mockResolvedValue({ status: 200, data: prepared });
+    confirmHook.mockReturnValue({ mutateAsync: confirmMutate, error: null });
+    prepareHook.mockReturnValue({ mutateAsync: prepareMutate, error: null });
+
+    render(<LoopSessionWorkbench sessionId="session-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(prepareMutate).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      data: { stage: LoopStage.experiment_planning, expected_version: 21 },
+    });
+    expect(replace).toHaveBeenCalledWith(
+      path(LoopStage.experiment_planning, WorkflowNode.experiment_plan),
+      { scroll: false },
+    );
   });
 
   it("does not show Continue on a current Contribution Loop Stage", () => {

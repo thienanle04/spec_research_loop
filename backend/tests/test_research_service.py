@@ -4080,6 +4080,38 @@ async def test_counter_evidence_persists_source_text_that_contains_utf16_surroga
 
 
 @pytest.mark.asyncio
+async def test_counter_evidence_persists_when_result_key_contains_utf16_surrogates() -> None:
+    """Gap generate must not crash when a provider id still contains lone surrogates."""
+    storage = MemoryObjectStorage()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        object_storage=storage,
+    )
+    record = ScholarlyRecord(
+        title="Counter source",
+        abstract="This source evaluates an existing competing method.",
+        provider="fixture",
+        provider_source_id="id\ud800bad",
+    )
+
+    materials, warnings = await service._counter_evidence_materials(
+        [record],
+        session_id=uuid4(),
+    )
+
+    assert warnings == []
+    assert len(materials) == 1
+    object_key = materials[0].source_object_key
+    assert object_key is not None
+    stored = await storage.get_bytes(key=object_key)
+    stored.decode("utf-8")
+    object_key.encode("utf-8")
+
+
+@pytest.mark.asyncio
 async def test_counter_evidence_full_text_is_loaded_concurrently() -> None:
     class ConcurrentDocumentTextSource:
         def __init__(self) -> None:

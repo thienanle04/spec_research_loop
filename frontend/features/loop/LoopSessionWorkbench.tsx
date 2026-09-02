@@ -52,6 +52,7 @@ import {
   sessionHref,
   stageForWorkflowNode,
   stagePathNodes,
+  stageWorkNodes,
   workingDraftStop,
   type NavStop,
 } from "./catalog";
@@ -140,7 +141,7 @@ function continueTargetAfterConfirm(
   confirmedNode: WorkflowNode,
 ): ContinueTarget | null {
   const currentStage = stageForWorkflowNode(confirmedNode);
-  const currentStageNodes = catalogStage(currentStage).nodes as readonly WorkflowNode[];
+  const currentStageNodes = stageWorkNodes(currentStage);
   const confirmedIndex = currentStageNodes.indexOf(confirmedNode);
   const nextNode = currentStageNodes[confirmedIndex + 1];
   const nextNodeHead = next.node_heads.find((head) => head.node === nextNode);
