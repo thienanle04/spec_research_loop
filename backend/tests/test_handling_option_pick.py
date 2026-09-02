@@ -192,7 +192,7 @@ async def test_pick_reopens_current_target_without_stale_or_card_patch(
 
 
 @pytest.mark.asyncio
-async def test_pick_shared_issue_targets_chosen_node(client: AsyncClient) -> None:
+async def test_pick_catalog_claims_option_reopens_claims(client: AsyncClient) -> None:
     await _auth_client(client)
     confirmed, options, _issues = await _confirmed_aggregator_with_options(
         client, [CLAIM_OPTION, EVIDENCE_OPTION]
@@ -200,37 +200,22 @@ async def test_pick_shared_issue_targets_chosen_node(client: AsyncClient) -> Non
     kinds = {(item["finding_kind"], item["source_node"]) for item in options}
     assert kinds == {("unsupported_citation", "evidence_judge")}
     assert {item["target_node"] for item in options} == {"claims"}
-    first = next(item for item in options if item["label"] == EVIDENCE_OPTION["label"])
+    assert len(options) == 1
     picked = await client.post(
         f"/api/loop/sessions/{confirmed['id']}/pick",
         json={
             "expected_version": confirmed["version"],
-            "handling_option_id": first["id"],
+            "handling_option_id": options[0]["id"],
         },
     )
     assert picked.status_code == 200, picked.text
     assert picked.json()["working_draft_node"] == "claims"
-    assert (
-        picked.json()["working_draft_narrative"]["suggested_patch"]
-        == EVIDENCE_OPTION["prose"]
-    )
-    restored = await _patch_working_draft(
-        client,
-        confirmed["id"],
-        expected_version=picked.json()["version"],
-        node="aggregator",
-    )
-    remaining = next(item for item in options if item["id"] != first["id"])
-    second = await client.post(
-        f"/api/loop/sessions/{confirmed['id']}/pick",
-        json={
-            "expected_version": restored.json()["version"],
-            "handling_option_id": remaining["id"],
-        },
-    )
-    assert second.status_code == 200, second.text
-    assert second.json()["working_draft_node"] == "claims"
-    assert _head(second.json(), "claims")["status"] == "current"
+    assert _head(picked.json(), "claims")["status"] == "current"
+    assert picked.json()["working_draft_narrative"]["suggested_patch"] in {
+        CLAIM_OPTION["prose"],
+        EVIDENCE_OPTION["prose"],
+        "Cite a passage that entails the claim.",
+    }
 
 
 @pytest.mark.asyncio

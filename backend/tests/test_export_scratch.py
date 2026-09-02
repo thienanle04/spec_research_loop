@@ -31,8 +31,7 @@ PAPER_TITLES = (
     "Related Work",
     "Research Gap",
     "Proposed Approach & Contribution",
-    "Claims",
-    "Evidence",
+    "Claims and Evidence",
     "Experiment Plan",
     "Constraints",
     "Required Resources",
@@ -246,7 +245,7 @@ async def _mint_valid_spec_from_decomposition(
 
 
 @pytest.mark.asyncio
-async def test_confirm_aggregator_seeds_thirteen_section_export_scratch(
+async def test_confirm_aggregator_seeds_twelve_section_export_scratch(
     client: AsyncClient,
 ) -> None:
     await _auth_client(client)
@@ -258,13 +257,13 @@ async def test_confirm_aggregator_seeds_thirteen_section_export_scratch(
     scratch = confirmed["export_scratch"]
     assert scratch["spec_version_id"] == confirmed["valid_spec_version_id"]
     body = scratch["document"]["markdown"]
-    _assert_thirteen_atx_headings(body)
+    _assert_twelve_atx_headings(body)
     assert str(confirmed["valid_spec_version_id"]) in body
     snapshots = confirmed["export_scratch_snapshots"]
     assert len(snapshots) == 1
     assert snapshots[0]["snapshot_n"] == 1
     assert snapshots[0]["spec_version_id"] == confirmed["valid_spec_version_id"]
-    _assert_thirteen_atx_headings(snapshots[0]["document"]["markdown"])
+    _assert_twelve_atx_headings(snapshots[0]["document"]["markdown"])
 
 
 @pytest.mark.asyncio
@@ -277,9 +276,14 @@ async def test_export_scratch_projection_maps_spec_version_sources(
     body = _markdown(confirmed)
     assert GAP_TEXT in body
     assert CONTRIBUTION_TEXT in body
-    assert CLAIM_TEXT in body
+    assert f"### **{CLAIM_TEXT}**" in body
+    assert "### **Unpaired evidence**" in body
     assert EVIDENCE_TEXT in body
+    assert "**Action:**" in body
     assert EXPERIMENT_ACTION in body
+    assert "## 6. Claims and Evidence" in body
+    assert "## 7. Experiment Plan" in body
+    assert "## 7. Evidence" not in body
     assert RESOURCE_TEXT in body
     assert BOTTLENECK_TEXT in body
     assert MITIGATION_TEXT in body
@@ -333,7 +337,7 @@ async def test_export_scratch_projects_constraint_and_open_question_cards(
     assert IDEA_FRAME["intent"] not in body
     assert CONSTRAINT_TEXT in body
     assert OPEN_Q_TEXT in body
-    _assert_thirteen_atx_headings(body)
+    _assert_twelve_atx_headings(body)
 
 
 @pytest.mark.asyncio
@@ -556,7 +560,7 @@ async def test_get_spec_version_without_snapshot_projects_buffer_only(
     await _auth_client(client)
     minted = await _mint_spec_with_paper_sources(client)
     assert minted["export_scratch"]["spec_version_id"] == minted["valid_spec_version_id"]
-    _assert_thirteen_atx_headings(_markdown(minted))
+    _assert_twelve_atx_headings(_markdown(minted))
     assert minted["export_scratch_snapshots"] == []
     again = await client.get(f"/api/loop/sessions/{minted['id']}")
     assert again.status_code == 200, again.text
@@ -618,7 +622,7 @@ async def test_patch_export_scratch_updates_buffer_and_get_returns_it(
     assert fetched.status_code == 200, fetched.text
     payload = fetched.json()
     assert "Overlay problem statement for export only" in _markdown(payload)
-    _assert_thirteen_atx_headings(_markdown(payload))
+    _assert_twelve_atx_headings(_markdown(payload))
 
 
 @pytest.mark.asyncio
@@ -944,7 +948,7 @@ def _pdf_payload_text(payload: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(payload)).pages)
 
 
-def _assert_thirteen_atx_headings(body: str) -> None:
+def _assert_twelve_atx_headings(body: str) -> None:
     for heading in ATX_HEADINGS:
         assert heading in body
     positions = [body.index(heading) for heading in ATX_HEADINGS]
@@ -952,7 +956,7 @@ def _assert_thirteen_atx_headings(body: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ready_markdown_download_has_thirteen_headings_and_writes_no_decision(
+async def test_ready_markdown_download_has_twelve_headings_and_writes_no_decision(
     client: AsyncClient,
 ) -> None:
     await _auth_client(client)
@@ -966,7 +970,7 @@ async def test_ready_markdown_download_has_thirteen_headings_and_writes_no_decis
     assert spec_id in download.headers.get("content-disposition", "")
     body = download.text
     assert spec_id in body
-    _assert_thirteen_atx_headings(body)
+    _assert_twelve_atx_headings(body)
     after = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
     assert after.json() == before.json()
     assert all(row["kind"] != "export_ack" for row in after.json())

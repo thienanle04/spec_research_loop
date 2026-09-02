@@ -32,13 +32,13 @@ _GAP_JUDGE_OMIT_CARD_KINDS: frozenset[str] = frozenset(
     {CardKind.CLAIM.value, CardKind.EVIDENCE.value}
 )
 _CONTRIBUTION_JUDGE_OMIT_CARD_KINDS: frozenset[str] = frozenset(
-    {CardKind.EVIDENCE.value}
+    {CardKind.CLAIM.value, CardKind.EVIDENCE.value}
 )
 _GAP_JUDGE_OMIT_SPEC_NODES: frozenset[WorkflowNode] = frozenset(
     {WorkflowNode.CLAIMS, WorkflowNode.EVIDENCE}
 )
 _CONTRIBUTION_JUDGE_OMIT_SPEC_NODES: frozenset[WorkflowNode] = frozenset(
-    {WorkflowNode.EVIDENCE}
+    {WorkflowNode.CLAIMS, WorkflowNode.EVIDENCE}
 )
 
 

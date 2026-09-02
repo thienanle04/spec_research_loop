@@ -26,9 +26,12 @@ from app.modules.judgement.catalog import (
 )
 from app.modules.judgement.composer import (
     ComposedReport,
+    apply_handling_option_phrasing,
     compose_from_view,
-    filter_handling_options,
+    needs_handling_option_phrasing,
+    plant_handling_options,
 )
+from app.modules.judgement.inflight import aggregator_phrasing_lock
 from app.modules.judgement.issues import merge_issues, normalize_llm_issues
 from app.modules.judgement.models import (
     AggregatorIssue,
@@ -129,6 +132,11 @@ class JudgementService:
                         label=item["label"],
                         target_node=item["target_node"],
                         prose=item["prose"],
+                        aggregator_issue_id=(
+                            UUID(item["aggregator_issue_id"])
+                            if item.get("aggregator_issue_id")
+                            else None
+                        ),
                     )
                     for item in options
                 ]
@@ -275,6 +283,10 @@ class JudgementService:
         ]
 
     async def generate(self, run: GenerationRun) -> AsyncIterator[dict[str, Any]]:
+        if run.node is WorkflowNode.AGGREGATOR:
+            async for event in self._run_aggregator(run):
+                yield event
+            return
         try:
             yield _starting_event(run)
             llm = self._llm if self._llm is not None else self._port_for(run.node)
@@ -331,14 +343,7 @@ class JudgementService:
 
     async def _complete_llm(self, run: GenerationRun, llm: LlmPort) -> Any:
         if run.node is WorkflowNode.AGGREGATOR:
-            report = compose_from_view(run.view)
-            parsed = await llm.complete_structured(
-                system=_aggregator_system(),
-                prompt=_prompt_payload(run.view),
-                schema=AggregatorLlmResponse,
-            )
-            options = filter_handling_options(parsed.options, report.issues)
-            return ("aggregator", report, options)
+            raise RuntimeError("Aggregator generate uses _run_aggregator")
         if run.node is WorkflowNode.CONFERENCE_JUDGE:
             parsed = await llm.complete_structured(
                 system=_judge_system(run.node),
@@ -357,12 +362,6 @@ class JudgementService:
 
     async def _persist_completed(self, run: GenerationRun, parsed: Any) -> None:
         kind = parsed[0]
-        if kind == "aggregator":
-            _, report, options = parsed
-            await self._replace_working_aggregator(
-                session_id=run.session_id, report=report, options=options
-            )
-            return
         if kind == "conference":
             await self._replace_working_issues(
                 session_id=run.session_id, node=run.node, issues=[]
@@ -389,6 +388,117 @@ class JudgementService:
             account_id=run.account_id,
             node=run.node,
         )
+
+    async def _run_aggregator(
+        self, run: GenerationRun, *, emit_starting: bool = True
+    ) -> AsyncIterator[dict[str, Any]]:
+        epoch = aggregator_phrasing_lock.bump_epoch(run.session_id)
+        acquired = False
+        try:
+            while not await aggregator_phrasing_lock.acquire(run.session_id):
+                await asyncio.sleep(0.05)
+            acquired = True
+            if emit_starting:
+                yield _starting_event(run)
+            report = compose_from_view(run.view)
+            await self._replace_working_aggregator(
+                session_id=run.session_id, report=report
+            )
+            await self._mark_generated_since_prepare(
+                run.session_id, run.node.value
+            )
+            await self._db.commit()
+            yield await self._draft_patch_event(run)
+            if needs_handling_option_phrasing(report.issues):
+                llm = (
+                    self._llm
+                    if self._llm is not None
+                    else self._port_for(WorkflowNode.AGGREGATOR)
+                )
+                try:
+                    parsed = await llm.complete_structured(
+                        system=_aggregator_system(),
+                        prompt=_prompt_payload(run.view),
+                        schema=AggregatorLlmResponse,
+                    )
+                    if aggregator_phrasing_lock.epoch(run.session_id) == epoch:
+                        await self._apply_working_option_phrasing(
+                            session_id=run.session_id,
+                            drafts=parsed.options,
+                            issues=report.issues,
+                        )
+                        await self._db.commit()
+                except Exception:  # noqa: BLE001 - templates remain; generate succeeds
+                    await self._db.rollback()
+            yield await self._draft_patch_event(run)
+            yield ProgressEvent(
+                node=JudgementNode(run.node.value),
+                message=f"{_judge_label(run.node)} complete",
+                pct=100,
+            ).model_dump(mode="json")
+            yield DoneEvent(
+                node=JudgementNode(run.node.value),
+                version=run.version,
+            ).model_dump(mode="json")
+        except Exception as exc:  # noqa: BLE001 - compose failure is not Confirm
+            await self._db.rollback()
+            yield _failure_event(run, exc)
+        finally:
+            if acquired:
+                await aggregator_phrasing_lock.release(run.session_id)
+
+    async def _draft_patch_event(self, run: GenerationRun) -> dict[str, Any]:
+        stored = await self.get_run(
+            session_id=run.session_id,
+            account_id=run.account_id,
+            node=JudgementNode(run.node.value),
+        )
+        return DraftPatchEvent(
+            node=JudgementNode(run.node.value),
+            issues=stored.issues,
+            scores=stored.scores,
+            clusters=stored.clusters,
+            handling_options=stored.handling_options,
+            readiness=stored.readiness,
+        ).model_dump(mode="json")
+
+    async def _apply_working_option_phrasing(
+        self,
+        *,
+        session_id: UUID,
+        drafts: list[Any],
+        issues: list,
+    ) -> None:
+        rows = list(
+            await self._db.scalars(
+                select(HandlingOption)
+                .where(
+                    HandlingOption.session_id == session_id,
+                    HandlingOption.stage_revision_id.is_(None),
+                )
+                .order_by(HandlingOption.sort_index, HandlingOption.id)
+            )
+        )
+        planted = [
+            {
+                "id": str(row.id),
+                "finding_kind": row.finding_kind,
+                "source_node": row.source_node,
+                "label": row.label,
+                "target_node": row.target_node,
+                "prose": row.prose,
+            }
+            for row in rows
+        ]
+        updated = apply_handling_option_phrasing(planted, drafts, issues)
+        by_id = {item["id"]: item for item in updated}
+        for row in rows:
+            item = by_id.get(str(row.id))
+            if item is None:
+                continue
+            row.label = item["label"]
+            row.prose = item["prose"]
+        await self._db.flush()
 
     async def _generate_aggregator_if_five_current(
         self, source: GenerationRun
@@ -421,11 +531,7 @@ class JudgementService:
                 view=view,
             )
             yield _starting_event(agg_run)
-            await self._complete_and_persist(
-                agg_run, self._port_for(WorkflowNode.AGGREGATOR)
-            )
-            await self._db.commit()
-            async for event in self._result_events(agg_run):
+            async for event in self._run_aggregator(agg_run, emit_starting=False):
                 yield event
         except Exception as exc:  # noqa: BLE001 - Aggregator failure is not Confirm
             await self._db.rollback()
@@ -522,7 +628,6 @@ class JudgementService:
         *,
         session_id: UUID,
         report: ComposedReport,
-        options: list[dict[str, str]],
     ) -> None:
         await self._db.execute(
             delete(AggregatorIssue).where(
@@ -561,26 +666,23 @@ class JudgementService:
             )
         self._db.add_all(issue_rows)
         await self._db.flush()
-        by_key = {
-            (row.finding_kind, row.source_node): row.id for row in issue_rows
-        }
         option_rows: list[HandlingOption] = []
-        for index, option in enumerate(options):
-            issue_id = by_key.get((option["finding_kind"], option["source_node"]))
-            if issue_id is None:
-                continue
-            option_rows.append(
-                HandlingOption(
-                    session_id=session_id,
-                    aggregator_issue_id=issue_id,
-                    finding_kind=option["finding_kind"],
-                    source_node=option["source_node"],
-                    label=option["label"],
-                    target_node=option["target_node"],
-                    prose=option["prose"],
-                    sort_index=index,
+        sort_index = 0
+        for row, item in zip(issue_rows, report.issues, strict=True):
+            for option in plant_handling_options([item]):
+                option_rows.append(
+                    HandlingOption(
+                        session_id=session_id,
+                        aggregator_issue_id=row.id,
+                        finding_kind=option["finding_kind"],
+                        source_node=option["source_node"],
+                        label=option["label"],
+                        target_node=option["target_node"],
+                        prose=option["prose"],
+                        sort_index=sort_index,
+                    )
                 )
-            )
+                sort_index += 1
         self._db.add_all(option_rows)
         if report.scores is not None:
             self._db.add(
@@ -802,6 +904,12 @@ def _judge_system(node: WorkflowNode) -> str:
         extra = (
             f" Verifiers may emit {FindingKind.GAP_UNSUPPORTED_BY_SOURCES.value} "
             f"at floor {Severity.CRITICAL.value}; do not drop that Issue."
+        )
+    elif node is WorkflowNode.CONTRIBUTION_JUDGE:
+        extra = (
+            f" {FindingKind.CONTRIBUTION_OVERCLAIMED.value} means the contribution "
+            "is broader than the gap, problem, or related work. "
+            "Do not evaluate Claim Cards."
         )
     elif node is WorkflowNode.EVIDENCE_JUDGE:
         extra = (

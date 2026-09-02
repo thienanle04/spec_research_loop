@@ -32,6 +32,7 @@ export type HandlingOption = {
   label: string;
   target_node: string;
   prose: string;
+  aggregator_issue_id?: string | null;
 };
 
 export type ReadinessState = "not_evaluated" | "blocked" | "ready";

@@ -251,6 +251,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const patchWorkingDraft = usePatchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatch();
   const confirmMutation = useConfirmApiLoopSessionsSessionIdConfirmPost();
   const [appliedSession, setAppliedSession] = useState<LoopSessionResponse | null>(null);
+  const [followPickedWorkingDraft, setFollowPickedWorkingDraft] = useState(false);
   const [transitionError, setTransitionError] = useState<OperationalError | null>(null);
   const [researchRunning, setResearchRunning] = useState(false);
   const prepareAttemptRef = useRef<string | null>(null);
@@ -266,13 +267,19 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
 
   const queriedSession = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
   const session = newerSession(queriedSession, appliedSession);
-  const selectedStage = session
+  const urlStage = session
     ? resolveSelectedStage(searchParams.get("stage"), session.working_draft_node)
     : null;
-  const selectedNode =
-    session && selectedStage
-      ? resolveSelectedNode(selectedStage, searchParams.get("node"), session.working_draft_node)
+  const urlNode =
+    session && urlStage
+      ? resolveSelectedNode(urlStage, searchParams.get("node"), session.working_draft_node)
       : undefined;
+  const pickedStop =
+    followPickedWorkingDraft && session
+      ? workingDraftStop(session.working_draft_node)
+      : null;
+  const selectedStage = pickedStop?.stage ?? urlStage;
+  const selectedNode = pickedStop?.node ?? urlNode;
   const exportScratchOpen = isExportScratchEditorOpen(selectedStage, searchParams);
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
@@ -319,6 +326,13 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   function hrefForSession(next: LoopSessionResponse): string {
     return sessionHref(sessionId, workingDraftStop(next.working_draft_node));
   }
+
+  useEffect(() => {
+    if (!followPickedWorkingDraft || !session || !urlStage) return;
+    if (urlStage === stageForWorkflowNode(session.working_draft_node)) {
+      setFollowPickedWorkingDraft(false);
+    }
+  }, [followPickedWorkingDraft, session, urlStage]);
 
   useEffect(() => {
     if (!session || !selectedStage) return;
@@ -829,6 +843,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
                 onPicked={(next) => {
+                  setFollowPickedWorkingDraft(true);
                   queryClient.setQueryData(sessionKey, { status: 200, data: next });
                   setAppliedSession(next);
                   void queryClient.invalidateQueries({

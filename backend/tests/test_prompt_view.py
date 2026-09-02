@@ -317,17 +317,17 @@ def test_gap_judge_prompt_view_omits_claim_and_evidence_cards() -> None:
     assert view["related_work"]["passages"][0]["supporting_passage"] == "y"
 
 
-def test_contribution_judge_prompt_view_omits_evidence_keeps_claims() -> None:
+def test_contribution_judge_prompt_view_omits_claim_and_evidence_cards() -> None:
     projection = _with_claims_and_evidence(_fat_projection(with_plan=True))
     view = prompt_view(WorkflowNode.CONTRIBUTION_JUDGE, projection)
     kinds = {card["kind"] for card in view["cards"]}
-    assert "claim" in kinds
+    assert "claim" not in kinds
     assert "evidence" not in kinds
     nodes = view["valid_spec_version"]["document"]["nodes"]
-    assert "claims" in nodes
+    assert "claims" not in nodes
     assert "evidence" not in nodes
     blob = str(view)
-    assert "Claim Card must not reach Gap Judge." in blob
+    assert "Claim Card must not reach Gap Judge." not in blob
     assert "Evidence Card must not reach Gap or Contribution Judge." not in blob
 
 

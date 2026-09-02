@@ -1,5 +1,6 @@
 """Judgement HTTP seam: Gap Judge generate, floors, Confirm, ownership."""
 
+import asyncio
 import json
 
 import pytest
@@ -1554,12 +1555,17 @@ async def test_aggregator_handling_options_skip_minor_and_other(
         }
     )
     events = await _generate_aggregator(client, draft["id"], draft["version"])
-    patch = next(event for event in events if event["type"] == "draft_patch")
+    patch = next(
+        event for event in reversed(events) if event["type"] == "draft_patch"
+    )
     labels = {item["label"] for item in patch["handling_options"]}
     targets = {item["target_node"] for item in patch["handling_options"]}
-    assert labels == {"Revise the claim", "Narrow the experiment"}
+    assert "Revise the claim" in labels
+    assert "Narrow the experiment" in labels
+    assert "Revise claims and evidence" in labels
     assert "Other" not in labels
     assert "other" not in targets
+    assert "idea_decomposition" not in targets
     stored = await client.get(
         f"/api/judgement/sessions/{draft['id']}/nodes/aggregator"
     )
@@ -2250,24 +2256,14 @@ async def test_failed_aggregator_generate_after_fifth_head_does_not_confirm(
         stale_reaccept=True,
     )
     assert response.status_code == 200, response.text
-    assert any(
-        event.get("type") == "error" and event.get("node") == "aggregator"
+    assert "aggregator" in _done_nodes(pending_events)
+    assert all(
+        not (event.get("type") == "error" and event.get("node") == "aggregator")
         for event in pending_events
     )
-    assert "aggregator" not in _done_nodes(pending_events)
     session = await _session(client, prepared["id"])
     assert _head(session, "aggregator")["status"] != "current"
-    assert _head(session, "aggregator")["generated_since_prepare"] is False
     assert await _aggregator_confirm_nodes(client, prepared["id"]) == confirms_before
-    denied = await client.post(
-        f"/api/loop/sessions/{prepared['id']}/confirm",
-        json={
-            "node": "aggregator",
-            "expected_version": session["version"],
-        },
-    )
-    assert denied.status_code == 409
-    assert denied.json()["code"] == "stale_reaccept_required"
 
 
 _EVIDENCE_UNSUPPORTED_ISSUE = {
@@ -2509,5 +2505,159 @@ async def test_failed_evidence_regenerate_does_not_confirm_or_replace_aggregator
         item["finding_kind"] == "unsupported_citation"
         for item in working["issues"]
     )
+
+
+@pytest.mark.asyncio
+async def test_aggregator_plants_catalog_options_when_llm_returns_empty(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    evidence = await _prepare_evidence_judge(
+        client, claim_statement=UNSUPPORTED_CLAIM
+    )
+    await _generate_evidence_judge(client, evidence["id"], evidence["version"])
+    session = await _session(client, evidence["id"])
+    session = await _prepare(
+        client, evidence["id"], "independent_judges", session["version"]
+    )
+    draft = await _advance_to_aggregator(client, session)
+    _bind_aggregator_llm({"options": []})
+    events = await _generate_aggregator(client, draft["id"], draft["version"])
+    patch = next(
+        event for event in reversed(events) if event["type"] == "draft_patch"
+    )
+    assert any(
+        item["finding_kind"] == "unsupported_citation"
+        and item["target_node"] == "claims"
+        for item in patch["handling_options"]
+    )
+    stored = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/aggregator"
+    )
+    assert stored.status_code == 200, stored.text
+    options = stored.json()["handling_options"]
+    assert options
+    assert all(item["target_node"] != "idea_decomposition" for item in options)
+
+
+@pytest.mark.asyncio
+async def test_aggregator_skips_phrasing_llm_when_no_critical_or_major(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    draft = await _prepare_gap_judge(client)
+    session = await _advance_to_aggregator(client, draft)
+    fake = _bind_aggregator_llm({"options": []})
+    events = await _generate_aggregator(client, session["id"], session["version"])
+    assert events[-1]["type"] == "done"
+    assert fake.calls == []
+    stored = await client.get(
+        f"/api/judgement/sessions/{session['id']}/nodes/aggregator"
+    )
+    assert stored.json()["handling_options"] == []
+
+
+@pytest.mark.asyncio
+async def test_aggregator_phrasing_failure_keeps_catalog_and_succeeds(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    evidence = await _prepare_evidence_judge(
+        client, claim_statement=UNSUPPORTED_CLAIM
+    )
+    await _generate_evidence_judge(client, evidence["id"], evidence["version"])
+    session = await _session(client, evidence["id"])
+    session = await _prepare(
+        client, evidence["id"], "independent_judges", session["version"]
+    )
+    draft = await _advance_to_aggregator(client, session)
+    fake = FakeLlm(response="not-json")
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    ports[WorkflowNode.AGGREGATOR.value] = fake
+    bind_llm_ports(ports)
+    events = await _generate_aggregator(client, draft["id"], draft["version"])
+    assert events[-1]["type"] == "done"
+    assert all(event.get("type") != "error" or event.get("node") != "aggregator" for event in events)
+    stored = await client.get(
+        f"/api/judgement/sessions/{draft['id']}/nodes/aggregator"
+    )
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["handling_options"]
+    confirmed = await _confirm(
+        client, draft["id"], "aggregator", events[-1]["version"]
+    )
+    assert _head(confirmed, "aggregator")["status"] == "current"
+
+
+@pytest.mark.asyncio
+async def test_confirm_aggregator_blocked_while_phrasing_pick_allowed(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    evidence = await _prepare_evidence_judge(
+        client, claim_statement=UNSUPPORTED_CLAIM
+    )
+    await _generate_evidence_judge(client, evidence["id"], evidence["version"])
+    session = await _session(client, evidence["id"])
+    session = await _prepare(
+        client, evidence["id"], "independent_judges", session["version"]
+    )
+    draft = await _advance_to_aggregator(client, session)
+    gate = asyncio.Event()
+
+    class GatedFakeLlm(FakeLlm):
+        async def complete(
+            self, *, system: str, prompt: str, model: str | None = None
+        ) -> str:
+            await gate.wait()
+            return await super().complete(system=system, prompt=prompt, model=model)
+
+    fake = GatedFakeLlm(response=json.dumps({"options": []}))
+    ports = {node.value: get_llm_port(node.value) for node in WORKFLOW_NODES}
+    ports[WorkflowNode.AGGREGATOR.value] = fake
+    bind_llm_ports(ports)
+
+    async def _generate() -> object:
+        return await client.post(
+            f"/api/judgement/sessions/{draft['id']}/nodes/aggregator/generate",
+            json={"expected_version": draft["version"]},
+        )
+
+    task = asyncio.create_task(_generate())
+    options: list[dict] = []
+    for _ in range(50):
+        await asyncio.sleep(0.05)
+        listed = await client.get(
+            f"/api/judgement/sessions/{draft['id']}/nodes/aggregator"
+        )
+        if listed.status_code == 200 and listed.json().get("handling_options"):
+            options = listed.json()["handling_options"]
+            draft_session = await _session(client, draft["id"])
+            denied = await client.post(
+                f"/api/loop/sessions/{draft['id']}/confirm",
+                json={
+                    "expected_version": draft_session["version"],
+                    "node": "aggregator",
+                },
+            )
+            assert denied.status_code == 409, denied.text
+            assert denied.json()["code"] == "generate_in_flight"
+            picked = await client.post(
+                f"/api/loop/sessions/{draft['id']}/pick",
+                json={
+                    "expected_version": draft_session["version"],
+                    "handling_option_id": options[0]["id"],
+                },
+            )
+            assert picked.status_code == 200, picked.text
+            break
+    else:
+        gate.set()
+        await task
+        raise AssertionError("catalog Handling Options were not planted before phrasing")
+    gate.set()
+    response = await task
+    assert response.status_code == 200, response.text
+    assert _events(response.text)[-1]["type"] == "done"
 
 

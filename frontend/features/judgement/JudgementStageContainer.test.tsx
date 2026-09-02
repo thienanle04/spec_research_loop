@@ -987,6 +987,52 @@ describe("JudgementStageContainer", () => {
     await waitFor(() => expect(onConfirmabilityChange).toHaveBeenCalledWith(true));
   });
 
+  it("does not signal Confirm while Aggregator phrasing is in-flight", async () => {
+    mocks.running = true;
+    const onConfirmabilityChange = vi.fn();
+    mocks.customFetch.mockResolvedValue({
+      status: 200,
+      data: {
+        node: "aggregator",
+        issues: [
+          {
+            id: "issue-1",
+            finding_kind: "unsupported_citation",
+            severity: "CRITICAL",
+            reason: "The cited passage does not entail the claim.",
+            suggestion: "Cite a passage that entails the claim.",
+            target_card_id: null,
+          },
+        ],
+        handling_options: [
+          {
+            id: "opt-1",
+            finding_kind: "unsupported_citation",
+            source_node: "evidence_judge",
+            label: "Revise claims and evidence",
+            target_node: "claims",
+            prose: "Cite a passage that entails the claim.",
+          },
+        ],
+        scores: null,
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JudgementStageContainer
+          sessionId="session-1"
+          session={session(WorkflowNode.aggregator, currentIndependentJudgesHeads())}
+          onConfirmabilityChange={onConfirmabilityChange}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(onConfirmabilityChange).toHaveBeenCalledWith(false));
+    expect(onConfirmabilityChange).not.toHaveBeenCalledWith(true);
+  });
+
   it("does not offer PICK on a frozen Aggregator Head Revision view", async () => {
     mocks.customFetch.mockResolvedValue({
       status: 200,

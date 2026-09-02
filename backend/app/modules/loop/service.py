@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes, selectinload
 
 from app.core.errors import OperationalErrorException
+from app.modules.judgement.inflight import aggregator_phrasing_lock
 from app.modules.loop.catalog import (
     CARD_KIND_OWNERS,
     FIVE_JUDGE_NODES,
@@ -117,17 +118,20 @@ def _head_revision(
 def _card_ids_for_option(
     issues: list[dict[str, Any]], option: dict[str, Any]
 ) -> list[str]:
-    finding_kind = option.get("finding_kind")
-    source_node = option.get("source_node")
+    issue_id = option.get("aggregator_issue_id")
     ids: list[str] = []
     seen: set[str] = set()
     for item in issues:
         if not isinstance(item, dict):
             continue
-        if item.get("finding_kind") != finding_kind:
-            continue
-        if item.get("source_node") != source_node:
-            continue
+        if issue_id:
+            if item.get("id") != issue_id:
+                continue
+        else:
+            if item.get("finding_kind") != option.get("finding_kind"):
+                continue
+            if item.get("source_node") != option.get("source_node"):
+                continue
         card_id = item.get("target_card_id")
         if isinstance(card_id, str) and card_id and card_id not in seen:
             seen.add(card_id)
@@ -894,6 +898,15 @@ class LoopService:
                 status_code=status.HTTP_409_CONFLICT,
                 code="invalid_working_draft_target",
                 detail="confirm must target the Working Draft Workflow Node",
+            )
+        if (
+            node is WorkflowNode.AGGREGATOR
+            and aggregator_phrasing_lock.held(session_id)
+        ):
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="generate_in_flight",
+                detail="Confirm Aggregator is blocked while Handling Options are being phrased",
             )
         heads = {head.node_enum(): head for head in session.node_heads}
         for ancestor in ancestors(node):

@@ -1,6 +1,6 @@
 # Export Scratch is an opaque markdown document
 
-Export Scratch is stored and downloaded as one markdown string (JSONB `{ markdown }`), not thirteen section records. First paint is still a paper-shaped projection (`Source Spec Version`, optional validity banner, `## N. Title` plus Card bodies); later edits may delete those headings. The stored markdown is the `.md` file. PDF renders that markdown as GFM plus `$`/`$$` math (same features as the Readiness preview, not pixel-identical). Diffs are whole-document text. Legacy `{ sections }` rows migrate to markdown with the Spec Version header and headings, without stamping today’s Readiness banner.
+Export Scratch is stored and downloaded as one markdown string (JSONB `{ markdown }`), not thirteen section records. First paint is still a paper-shaped projection (`Source Spec Version`, optional validity banner, `## N. Title` plus Card bodies; heading catalog and Claim/Evidence pairing are ADR 0045); later edits may delete those headings. The stored markdown is the `.md` file. PDF renders that markdown as GFM plus `$`/`$$` math (same features as the Readiness preview, not pixel-identical). Diffs are whole-document text. Legacy `{ sections }` rows migrate to markdown with the Spec Version header and headings, without stamping today’s Readiness banner.
 
 **Status:** accepted
 
