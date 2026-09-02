@@ -8,10 +8,9 @@ import {
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
-  isInvalidationSubjectDismissed,
+  invalidationBannerNodeSubject,
   needsStaleReaccept,
   shouldAutoPrepare,
-  shouldDimStaleContent,
   specInvalidationInView,
   staleInvalidationStages,
   withGeneratedSincePrepare,
@@ -327,6 +326,27 @@ describe("Loop Stage actions", () => {
     ).toEqual({ canStart: true, canRecompute: false, editableNodes: [] });
   });
 
+  it("does not start Claims/evidence when Claims is already current", () => {
+    expect(
+      deriveStageActions({
+        stage: LoopStage.claims_evidence,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.current,
+          [WorkflowNode.gap]: NodeHeadStatus.current,
+          [WorkflowNode.contribution]: NodeHeadStatus.current,
+          [WorkflowNode.claims]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toEqual({
+      canStart: false,
+      canRecompute: false,
+      editableNodes: [WorkflowNode.claims],
+    });
+  });
+
   it("does not start Related work when only Gap is empty", () => {
     expect(
       deriveStageActions({
@@ -522,6 +542,27 @@ describe("Confirm signals", () => {
     ).toEqual([LoopStage.grilling, LoopStage.related_work, LoopStage.gap]);
   });
 
+  it("does not treat retired Evidence as a Claims descendant", () => {
+    expect(
+      staleInvalidationStages({
+        node: WorkflowNode.claims,
+        nodeHeads: heads({
+          [WorkflowNode.claims]: NodeHeadStatus.current,
+          [WorkflowNode.evidence]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toEqual([]);
+    const allCurrent = Object.fromEntries(
+      Object.values(WorkflowNode).map((node) => [node, NodeHeadStatus.current]),
+    ) as Partial<Record<WorkflowNode, NodeHeadStatus>>;
+    expect(() =>
+      staleInvalidationStages({
+        node: WorkflowNode.idea_interpretation,
+        nodeHeads: heads(allCurrent),
+      }),
+    ).not.toThrow();
+  });
+
   it("treats nonblank narrative text or a nonblank owned Card as confirmable", () => {
     expect(
       hasConfirmableWorkingDraft({
@@ -607,16 +648,27 @@ describe("Stale re-accept flag", () => {
     expect(needsStaleReaccept(marked)).toBe(false);
   });
 
-  it("dims only when re-accept is needed and the invalidation banner is visible", () => {
-    const stale = heads({ [WorkflowNode.contribution]: NodeHeadStatus.stale }).find(
-      (item) => item.node === WorkflowNode.contribution,
-    );
-    expect(shouldDimStaleContent(stale, true)).toBe(true);
-    expect(shouldDimStaleContent(stale, false)).toBe(false);
-    expect(shouldDimStaleContent({ ...stale!, generated_since_prepare: true }, true)).toBe(false);
+  it("hides the node invalidation subject after generate even while the Node Head is Stale", () => {
+    const stale = heads({
+      [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+    }).find((head) => head.node === WorkflowNode.idea_decomposition);
+    expect(
+      invalidationBannerNodeSubject({
+        selectedStage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        viewedHead: stale,
+      }),
+    ).toBe(WorkflowNode.idea_decomposition);
+    expect(
+      invalidationBannerNodeSubject({
+        selectedStage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        viewedHead: { ...stale!, generated_since_prepare: true },
+      }),
+    ).toBeNull();
   });
 
-  it("tracks Spec Draft invalidation in view and per-subject dismiss against the wave key", () => {
+  it("tracks Spec Draft invalidation in the current view", () => {
     expect(
       specInvalidationInView({
         selectedNode: WorkflowNode.idea_decomposition,
@@ -635,29 +687,41 @@ describe("Stale re-accept flag", () => {
     ).toBe(false);
     expect(
       specInvalidationInView({
+        selectedNode: WorkflowNode.feasibility,
+        selectedStage: LoopStage.experiment_planning,
+        viewedNodeStale: false,
+        specVersionStale: true,
+      }),
+    ).toBe(false);
+    expect(
+      specInvalidationInView({
         selectedNode: undefined,
         selectedStage: LoopStage.spec_draft,
         viewedNodeStale: false,
         specVersionStale: true,
       }),
     ).toBe(true);
+  });
 
-    const wave = "idea_decomposition|spec:1";
+  it("does not use Aggregator as the Independent judges invalidation subject", () => {
+    const viewedHead = heads({
+      [WorkflowNode.aggregator]: NodeHeadStatus.stale,
+    }).find((head) => head.node === WorkflowNode.aggregator);
     expect(
-      isInvalidationSubjectDismissed(WorkflowNode.idea_decomposition, wave, {
-        [WorkflowNode.idea_decomposition]: wave,
+      invalidationBannerNodeSubject({
+        selectedStage: LoopStage.independent_judges,
+        selectedNode: WorkflowNode.aggregator,
+        viewedHead,
       }),
-    ).toBe(true);
+    ).toBeNull();
     expect(
-      isInvalidationSubjectDismissed(WorkflowNode.idea_interpretation, wave, {
-        [WorkflowNode.idea_decomposition]: wave,
+      invalidationBannerNodeSubject({
+        selectedStage: LoopStage.grilling,
+        selectedNode: WorkflowNode.idea_decomposition,
+        viewedHead: heads({
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.stale,
+        }).find((head) => head.node === WorkflowNode.idea_decomposition),
       }),
-    ).toBe(false);
-    expect(
-      isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: wave }),
-    ).toBe(true);
-    expect(
-      isInvalidationSubjectDismissed("spec_draft", wave, { spec_draft: "other-wave" }),
-    ).toBe(false);
+    ).toBe(WorkflowNode.idea_decomposition);
   });
 });

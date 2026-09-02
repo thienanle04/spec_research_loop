@@ -33,6 +33,21 @@ def normalize_url(value: str | None) -> str | None:
     )
 
 
+def utf8_safe_text(value: str) -> str:
+    """Return text that can be encoded as UTF-8.
+
+    PDF extractors sometimes emit UTF-16 surrogate code points as Python
+    characters. Strict ``str.encode("utf-8")`` rejects those, including with
+    ``errors="replace"``. A UTF-16 round-trip reassembles valid pairs and
+    replaces lone surrogates.
+    """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return value
+
+
 def citation_key(title: str, year: int | None) -> str:
     words = re.findall(r"[a-z0-9]+", title.casefold())
     stem = "-".join(words[:5]) or "citation"

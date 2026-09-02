@@ -57,6 +57,7 @@ def _fat_projection(*, with_plan: bool = False) -> dict:
                     "citations": [
                         {
                             "id": "cite-1",
+                            "citation_key": "paper-2024",
                             "title": "Paper",
                             "abstract": "Very long abstract " * 40,
                             "metadata": {"provider_ids": {"x": "y"}},
@@ -66,7 +67,10 @@ def _fat_projection(*, with_plan: bool = False) -> dict:
                     ],
                     "related_work": [
                         {
+                            "citation_id": "cite-1",
+                            "citation_key": "paper-2024",
                             "what_was_done": "x",
+                            "limitation": "Does not localize unsupported claims.",
                             "supporting_passage": "y",
                         }
                     ],
@@ -116,6 +120,32 @@ def _fat_projection(*, with_plan: bool = False) -> dict:
     return projection
 
 
+def _with_claims_and_evidence(projection: dict) -> dict:
+    projection["upstream"][WorkflowNode.CLAIMS.value] = {
+        "card_snapshot": [
+            {
+                "id": "claim-leak",
+                "kind": "claim",
+                "body": {"statement": "Claim Card must not reach Gap Judge."},
+            },
+            {
+                "id": "ev-leak",
+                "kind": "evidence",
+                "body": {"text": "Evidence Card must not reach Gap or Contribution Judge."},
+            },
+        ],
+        "narrative": {},
+        "projected": {},
+    }
+    spec = projection.setdefault("valid_spec_version", {"id": "spec-1", "document": {"nodes": {}}})
+    nodes = spec["document"].setdefault("nodes", {})
+    nodes[WorkflowNode.CLAIMS.value] = {
+        "card_snapshot": projection["upstream"][WorkflowNode.CLAIMS.value]["card_snapshot"],
+        "narrative": {},
+    }
+    return projection
+
+
 def test_prompt_view_keeps_cards_and_gap_drops_grilling_and_citations() -> None:
     view = prompt_view(WorkflowNode.CLAIMS, _fat_projection())
     assert view["node"] == "claims"
@@ -129,6 +159,17 @@ def test_prompt_view_keeps_cards_and_gap_drops_grilling_and_citations() -> None:
     assert "text_object_key" not in blob
     assert "idea_interpretation" not in blob
     assert "related_work" not in blob
+
+
+def test_contribution_prompt_view_adds_compact_related_work_studies() -> None:
+    view = prompt_view(WorkflowNode.CONTRIBUTION, _fat_projection())
+    studies = view["related_work"]["studies"]
+    assert studies[0]["source"]["title"] == "Paper"
+    assert studies[0]["limitation"] == "Does not localize unsupported claims."
+    blob = str(view)
+    assert "Very long abstract" not in blob
+    assert "text_object_key" not in blob
+    assert "long grilling transcript" not in blob
 
 
 def test_feasibility_prompt_view_adds_experiment_plan() -> None:
@@ -174,7 +215,10 @@ def test_gap_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_runs() 
     assert view["node"] == "gap_judge"
     assert view["valid_spec_version"]["id"] == "spec-1"
     assert view["gap_statement"] == "Confirmed gap statement"
-    assert view["related_work"][0]["supporting_passage"] == "y"
+    assert view["related_work"]["passages"][0]["supporting_passage"] == "y"
+    assert view["related_work"]["studies"][0]["limitation"] == (
+        "Does not localize unsupported claims."
+    )
     assert view["experiment_plan"]["experiments"][0]["claim"] == "c"
     kinds = {card["kind"] for card in view["cards"]}
     assert "gap" in kinds
@@ -250,6 +294,41 @@ def test_contribution_and_experiment_judge_prompt_views_drop_peer_judge_runs() -
         assert "unsupported_citation" not in blob
         assert "gap_judge" not in blob
         assert "evidence_judge" not in blob
+        if node is WorkflowNode.CONTRIBUTION_JUDGE:
+            assert view["related_work"]["passages"][0]["supporting_passage"] == "y"
+            assert view["related_work"]["studies"][0]["what_was_done"] == "x"
+        else:
+            assert view["related_work"][0]["supporting_passage"] == "y"
+
+
+def test_gap_judge_prompt_view_omits_claim_and_evidence_cards() -> None:
+    projection = _with_claims_and_evidence(_fat_projection(with_plan=True))
+    view = prompt_view(WorkflowNode.GAP_JUDGE, projection)
+    kinds = {card["kind"] for card in view["cards"]}
+    assert "claim" not in kinds
+    assert "evidence" not in kinds
+    assert "gap" in kinds
+    nodes = view["valid_spec_version"]["document"]["nodes"]
+    assert "claims" not in nodes
+    assert "evidence" not in nodes
+    blob = str(view)
+    assert "Claim Card must not reach Gap Judge." not in blob
+    assert "Evidence Card must not reach Gap or Contribution Judge." not in blob
+    assert view["related_work"]["passages"][0]["supporting_passage"] == "y"
+
+
+def test_contribution_judge_prompt_view_omits_evidence_keeps_claims() -> None:
+    projection = _with_claims_and_evidence(_fat_projection(with_plan=True))
+    view = prompt_view(WorkflowNode.CONTRIBUTION_JUDGE, projection)
+    kinds = {card["kind"] for card in view["cards"]}
+    assert "claim" in kinds
+    assert "evidence" not in kinds
+    nodes = view["valid_spec_version"]["document"]["nodes"]
+    assert "claims" in nodes
+    assert "evidence" not in nodes
+    blob = str(view)
+    assert "Claim Card must not reach Gap Judge." in blob
+    assert "Evidence Card must not reach Gap or Contribution Judge." not in blob
 
 
 def test_conference_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_runs() -> None:
@@ -284,17 +363,12 @@ def test_conference_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_
                             "id": "claim-1",
                             "kind": "claim",
                             "body": {"statement": "The method improves nitrogen fixation."},
-                        }
-                    ],
-                    "narrative": {},
-                },
-                WorkflowNode.EVIDENCE.value: {
-                    "card_snapshot": [
+                        },
                         {
                             "id": "ev-1",
                             "kind": "evidence",
                             "body": {"text": "Cited passage supports the claim."},
-                        }
+                        },
                     ],
                     "narrative": {},
                 },
@@ -322,18 +396,12 @@ def test_conference_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_
                 "id": "claim-1",
                 "kind": "claim",
                 "body": {"statement": "The method improves nitrogen fixation."},
-            }
-        ],
-        "narrative": {},
-        "projected": {},
-    }
-    projection["upstream"][WorkflowNode.EVIDENCE.value] = {
-        "card_snapshot": [
+            },
             {
                 "id": "ev-1",
                 "kind": "evidence",
                 "body": {"text": "Cited passage supports the claim."},
-            }
+            },
         ],
         "narrative": {},
         "projected": {},

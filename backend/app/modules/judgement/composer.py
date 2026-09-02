@@ -1,4 +1,4 @@
-"""Deterministic Aggregator composer: copy Severity, group, never majority-vote."""
+"""Deterministic Aggregator composer: copy Severity, group, never invent a verdict."""
 
 from __future__ import annotations
 
@@ -91,12 +91,14 @@ def filter_handling_options(
         if item.severity == Severity.MINOR.value
     }
     kept: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for draft in drafts:
         finding_kind = str(getattr(draft, "finding_kind", "") or "").strip()
         source_node = str(getattr(draft, "source_node", "") or "").strip()
         label = str(getattr(draft, "label", "") or "").strip()
         target_node = str(getattr(draft, "target_node", "") or "").strip()
+        if target_node == WorkflowNode.EVIDENCE.value:
+            target_node = WorkflowNode.CLAIMS.value
         prose = str(getattr(draft, "prose", "") or "").strip()
         if not finding_kind or not source_node or not label or not target_node:
             continue
@@ -107,7 +109,7 @@ def filter_handling_options(
         key = (finding_kind, source_node)
         if key in minor or key not in offered:
             continue
-        option_key = (finding_kind, source_node, target_node)
+        option_key = (finding_kind, source_node, target_node, label)
         if option_key in seen:
             continue
         seen.add(option_key)

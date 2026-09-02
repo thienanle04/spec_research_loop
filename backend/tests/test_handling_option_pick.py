@@ -199,17 +199,17 @@ async def test_pick_shared_issue_targets_chosen_node(client: AsyncClient) -> Non
     )
     kinds = {(item["finding_kind"], item["source_node"]) for item in options}
     assert kinds == {("unsupported_citation", "evidence_judge")}
-    by_target = {item["target_node"]: item for item in options}
-    assert set(by_target) == {"claims", "evidence"}
+    assert {item["target_node"] for item in options} == {"claims"}
+    first = next(item for item in options if item["label"] == EVIDENCE_OPTION["label"])
     picked = await client.post(
         f"/api/loop/sessions/{confirmed['id']}/pick",
         json={
             "expected_version": confirmed["version"],
-            "handling_option_id": by_target["evidence"]["id"],
+            "handling_option_id": first["id"],
         },
     )
     assert picked.status_code == 200, picked.text
-    assert picked.json()["working_draft_node"] == "evidence"
+    assert picked.json()["working_draft_node"] == "claims"
     assert (
         picked.json()["working_draft_narrative"]["suggested_patch"]
         == EVIDENCE_OPTION["prose"]
@@ -220,16 +220,17 @@ async def test_pick_shared_issue_targets_chosen_node(client: AsyncClient) -> Non
         expected_version=picked.json()["version"],
         node="aggregator",
     )
+    remaining = next(item for item in options if item["id"] != first["id"])
     second = await client.post(
         f"/api/loop/sessions/{confirmed['id']}/pick",
         json={
             "expected_version": restored.json()["version"],
-            "handling_option_id": by_target["claims"]["id"],
+            "handling_option_id": remaining["id"],
         },
     )
     assert second.status_code == 200, second.text
     assert second.json()["working_draft_node"] == "claims"
-    assert _head(second.json(), "evidence")["status"] == "current"
+    assert _head(second.json(), "claims")["status"] == "current"
 
 
 @pytest.mark.asyncio
@@ -288,7 +289,7 @@ async def test_pick_does_not_clear_critical_export_gate(client: AsyncClient) -> 
     assert picked.json()["readiness"]["state"] == "blocked"
     denied = await client.post(f"/api/loop/sessions/{blocked['id']}/spec-artifact")
     assert denied.status_code == 409
-    assert denied.json()["code"] == "critical_issues_block_export"
+    assert denied.json()["code"] == "critical_export_confirmation_required"
 
     draft = await _prepare_gap_judge(client)
     session = await _advance_to_aggregator(client, draft)

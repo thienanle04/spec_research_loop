@@ -8,6 +8,7 @@ import {
   descendants,
   ownedCardKinds,
   stageForWorkflowNode,
+  stageWorkNodes,
   upstreamOfStage,
 } from "./catalog";
 
@@ -45,7 +46,7 @@ export function deriveStageActions({
   stage: LoopStage;
   nodeHeads: NodeHeadResponse[];
 }): StageActions {
-  const nodes = catalogStage(stage).nodes;
+  const nodes = stageWorkNodes(stage);
   if (nodes.length === 0 || incompleteUpstreamNodes({ stage, nodeHeads }).length > 0) {
     return { canStart: false, canRecompute: false, editableNodes: [] };
   }
@@ -89,7 +90,7 @@ export function shouldAutoPrepare({
   if (wdStatus !== NodeHeadStatus.current) {
     return false;
   }
-  const stageNodes = catalogStage(stage).nodes as readonly WorkflowNode[];
+  const stageNodes = stageWorkNodes(stage);
   return !stageNodes.includes(workingDraftNode);
 }
 
@@ -105,7 +106,7 @@ export function deriveStageSignals({
   readinessState?: "not_evaluated" | "blocked" | "ready";
 }): StageSignals {
   const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
-  const nodes = catalogStage(stage).nodes;
+  const nodes = stageWorkNodes(stage);
   const editing = stageForWorkflowNode(workingDraftNode) === stage;
   const incompleteUpstream = incompleteUpstreamNodes({ stage, nodeHeads });
   const available = incompleteUpstream.length === 0;
@@ -158,7 +159,7 @@ export function needsStaleReaccept(head: NodeHeadResponse | undefined | null): b
   );
 }
 
-/** Mirror server mark after a successful node generate so Confirm/dimming update without refetch. */
+/** Mirror server mark after a successful node generate so Confirm/banner update without refetch. */
 export function withGeneratedSincePrepare(
   session: LoopSessionResponse,
   node: WorkflowNode = session.working_draft_node,
@@ -172,37 +173,24 @@ export function withGeneratedSincePrepare(
 }
 
 /**
- * Dim Stale revision/draft while the invalidation banner is showing and
- * Stale re-accept is still needed (ADR 0036). Dismiss hides the banner and undims.
+ * Independent judges is a dashboard, not an Aggregator node tab. Judge Confirm
+ * marks Aggregator Stale until Confirm Aggregator; that must not open the
+ * “Aggregator is Stale / Generate again” banner (ADR 0040). Node line only while
+ * Stale re-accept is still needed (ADR 0036); generate hides it even when browsing
+ * the Stale Stage Revision.
  */
-export function shouldDimStaleContent(
-  head: NodeHeadResponse | undefined | null,
-  invalidationBannerVisible: boolean,
-): boolean {
-  return needsStaleReaccept(head) && invalidationBannerVisible;
-}
-
-/** Banner dismiss subject: one Workflow Node or Spec Draft (ADR 0036). */
-export type InvalidationBannerSubject = WorkflowNode | "spec_draft";
-
-export function invalidationWaveKey(
-  session: Pick<
-    LoopSessionResponse,
-    "node_heads" | "produced_spec_version" | "valid_spec_version_id"
-  >,
-): string {
-  const staleNodes = session.node_heads
-    .filter((head) => head.status === NodeHeadStatus.stale)
-    .map((head) => head.node)
-    .sort()
-    .join(",");
-  const specStale =
-    session.produced_spec_version != null &&
-    session.valid_spec_version_id !== session.produced_spec_version.id;
-  if (!staleNodes && !specStale) {
-    return "";
+export function invalidationBannerNodeSubject(args: {
+  selectedStage: LoopStage;
+  selectedNode: WorkflowNode | undefined;
+  viewedHead: NodeHeadResponse | undefined | null;
+}): WorkflowNode | null {
+  if (args.selectedStage === LoopStage.independent_judges) {
+    return null;
   }
-  return `${staleNodes}|spec:${specStale ? "1" : "0"}`;
+  if (args.selectedNode == null || !needsStaleReaccept(args.viewedHead)) {
+    return null;
+  }
+  return args.selectedNode;
 }
 
 /** Whether Spec Draft's invalidation line belongs in the current-view banner. */
@@ -220,14 +208,6 @@ export function specInvalidationInView(args: {
     args.selectedStage === LoopStage.spec_draft ||
     args.selectedNode == null
   );
-}
-
-export function isInvalidationSubjectDismissed(
-  subject: InvalidationBannerSubject,
-  waveKey: string,
-  dismissedBySubject: Readonly<Record<string, string>>,
-): boolean {
-  return waveKey !== "" && dismissedBySubject[subject] === waveKey;
 }
 
 function fieldText(value: unknown): string {
@@ -251,6 +231,25 @@ export function hasConfirmableWorkingDraft(
   if (fieldText(session.working_draft_narrative)) {
     return true;
   }
-  const owned = new Set(ownedCardKinds(session.working_draft_node));
-  return session.cards.some((card) => owned.has(card.kind) && fieldText(card.body));
+  const owned = ownedCardKinds(session.working_draft_node);
+  if (session.working_draft_node === WorkflowNode.claims) {
+    return owned.every((kind) =>
+      session.cards.some((card) => card.kind === kind && cardBodyNonblank(card.body)),
+    );
+  }
+  return session.cards.some((card) => owned.includes(card.kind) && cardBodyNonblank(card.body));
+}
+
+function cardBodyNonblank(body: unknown): boolean {
+  if (fieldText(body)) {
+    return true;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return false;
+  }
+  const record = body as Record<string, unknown>;
+  return ["statement", "claim", "evidence"].some((key) => {
+    const value = record[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
 }

@@ -1,7 +1,9 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { frameHasContent } from "@/features/idea/turns";
+import { Download } from "lucide-react";
+import { specDraftIdeaFrameVisible } from "@/features/idea/turns";
 import { CardKind, WorkflowNode, type SpecVersionResponse } from "@/lib/api/generated/model";
 
 import { LOOP_STAGE_CATALOG } from "./catalog";
@@ -19,7 +21,7 @@ function isGrillingNarrative(narrative: Record<string, unknown>): boolean {
   return Array.isArray(narrative.turns) || isRecord(narrative.frame);
 }
 
-/** Spec Draft hides grilling turn lists; blank Idea Frames omit the whole node section. */
+/** Spec Draft hides grilling turns and Intent; blank problem/RQ omit interpretation. */
 function includeOnSpecDraft(node: WorkflowNode, payload: unknown): boolean {
   if (SPEC_DRAFT_HIDDEN_NODES.has(node)) {
     return false;
@@ -27,8 +29,17 @@ function includeOnSpecDraft(node: WorkflowNode, payload: unknown): boolean {
   if (!isRecord(payload)) {
     return true;
   }
+  if (node === WorkflowNode.idea_decomposition) {
+    const cards = Array.isArray(payload.card_snapshot) ? payload.card_snapshot : [];
+    return cards.some((card) => {
+      if (!isRecord(card) || typeof card.kind !== "string") {
+        return false;
+      }
+      return card.kind !== CardKind.problem && card.kind !== CardKind.research_question;
+    });
+  }
   const narrative = isRecord(payload.narrative) ? payload.narrative : null;
-  if (narrative && isGrillingNarrative(narrative) && !frameHasContent(narrative)) {
+  if (narrative && isGrillingNarrative(narrative) && !specDraftIdeaFrameVisible(narrative)) {
     return false;
   }
   return true;
@@ -346,6 +357,11 @@ function SpecDraftNode({
       sessionId={sessionId}
       showLeftovers={false}
       showTurns={false}
+      hiddenCardKinds={
+        node === WorkflowNode.idea_decomposition
+          ? [CardKind.problem, CardKind.research_question]
+          : undefined
+      }
     />
   );
 }
@@ -406,15 +422,38 @@ export function ProducedSpecVersionView({
   return (
     <section aria-label="Produced Spec Version">
       <Card>
-        <CardHeader>
-          <CardTitle className="font-serif text-navy">Produced Spec Version</CardTitle>
-          <CardDescription>
-            {produced
-              ? stale
-                ? "Stale. This Produced Spec Version is not the Valid Spec Version."
-                : "This Produced Spec Version is the Valid Spec Version."
-              : "No Produced Spec Version"}
-          </CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between">
+          <div className="space-y-1">
+            <CardTitle className="font-serif text-navy">Produced Spec Version</CardTitle>
+            <CardDescription>
+              {produced
+                ? stale
+                  ? "Stale. This Produced Spec Version is not the Valid Spec Version."
+                  : "This Produced Spec Version is the Valid Spec Version."
+                : "No Produced Spec Version"}
+            </CardDescription>
+          </div>
+          {produced && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-0"
+              onClick={() => {
+                const blob = new Blob([JSON.stringify(produced.document, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `spec_draft_${sessionId}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              }}
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Export JSON
+            </Button>
+          )}
         </CardHeader>
         <CardContent>
           {produced ? (

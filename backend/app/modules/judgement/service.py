@@ -17,9 +17,12 @@ from sqlalchemy.orm import attributes
 from app.adapters.llm import get_llm_port
 from app.core.errors import OperationalErrorException
 from app.modules.judgement.catalog import (
+    FINDING_KIND_FLOOR,
     FIVE_JUDGE_NODES,
     GENERATABLE_JUDGE_NODES,
     JUDGE_NODES,
+    FindingKind,
+    Severity,
 )
 from app.modules.judgement.composer import (
     ComposedReport,
@@ -280,6 +283,10 @@ class JudgementService:
         except Exception as exc:  # noqa: BLE001 - stream converts failures to typed events
             await self._db.rollback()
             yield _failure_event(run, exc)
+            return
+        if run.node in FIVE_JUDGE_NODES:
+            async for event in self._generate_aggregator_if_five_current(run):
+                yield event
 
     async def generate_pending(
         self, runs: list[GenerationRun]
@@ -298,20 +305,24 @@ class JudgementService:
 
         try:
             completed = await asyncio.gather(*[_invoke(run) for run in runs])
+            last_success: GenerationRun | None = None
             for run, parsed, error in completed:
                 if error is not None:
                     yield _failure_event(run, error)
                     continue
                 await self._persist_completed(run, parsed)
-                await self._mark_generated_since_prepare(
-                    run.session_id, run.node.value
-                )
+                await self._confirm_completed_judge(run)
                 await self._db.commit()
                 async for event in self._result_events(run):
                     yield event
+                last_success = run
         except Exception as exc:  # noqa: BLE001 - stream converts failures to typed events
             await self._db.rollback()
             yield _failure_event(runs[0], exc)
+            return
+        if last_success is not None:
+            async for event in self._generate_aggregator_if_five_current(last_success):
+                yield event
 
     def _port_for(self, node: WorkflowNode) -> LlmPort:
         return get_llm_port(node.value)
@@ -320,7 +331,7 @@ class JudgementService:
         if run.node is WorkflowNode.AGGREGATOR:
             report = compose_from_view(run.view)
             parsed = await llm.complete_structured(
-                system="aggregator",
+                system=_aggregator_system(),
                 prompt=_prompt_payload(run.view),
                 schema=AggregatorLlmResponse,
             )
@@ -365,7 +376,65 @@ class JudgementService:
     async def _complete_and_persist(self, run: GenerationRun, llm: LlmPort) -> None:
         parsed = await self._complete_llm(run, llm)
         await self._persist_completed(run, parsed)
-        await self._mark_generated_since_prepare(run.session_id, run.node.value)
+        await self._confirm_completed_judge(run)
+
+    async def _confirm_completed_judge(self, run: GenerationRun) -> None:
+        if run.node not in FIVE_JUDGE_NODES:
+            await self._mark_generated_since_prepare(run.session_id, run.node.value)
+            return
+        await LoopService(self._db).confirm_generated_judge(
+            session_id=run.session_id,
+            account_id=run.account_id,
+            node=run.node,
+        )
+
+    async def _generate_aggregator_if_five_current(
+        self, source: GenerationRun
+    ) -> AsyncIterator[dict[str, Any]]:
+        agg_run: GenerationRun | None = None
+        try:
+            if not await self._five_judge_heads_are_current(source.session_id):
+                return
+            session = await self._load_owned_session(
+                source.session_id, source.account_id
+            )
+            await self._assert_upstream_current(
+                source.session_id, WorkflowNode.AGGREGATOR
+            )
+            view = await LoopService(self._db).project_prompt_view(
+                session_id=source.session_id,
+                account_id=source.account_id,
+                node=WorkflowNode.AGGREGATOR,
+            )
+            version = await self._claim_version(
+                session=session,
+                account_id=source.account_id,
+                expected_version=session.version,
+            )
+            agg_run = GenerationRun(
+                session_id=source.session_id,
+                account_id=source.account_id,
+                node=WorkflowNode.AGGREGATOR,
+                version=version,
+                view=view,
+            )
+            yield _starting_event(agg_run)
+            await self._complete_and_persist(
+                agg_run, self._port_for(WorkflowNode.AGGREGATOR)
+            )
+            await self._db.commit()
+            async for event in self._result_events(agg_run):
+                yield event
+        except Exception as exc:  # noqa: BLE001 - Aggregator failure is not Confirm
+            await self._db.rollback()
+            failed = agg_run or GenerationRun(
+                session_id=source.session_id,
+                account_id=source.account_id,
+                node=WorkflowNode.AGGREGATOR,
+                version=source.version,
+                view={},
+            )
+            yield _failure_event(failed, exc)
 
     async def _result_events(
         self, run: GenerationRun
@@ -538,19 +607,22 @@ class JudgementService:
             )
         return session
 
+    async def _five_judge_heads_are_current(self, session_id: UUID) -> bool:
+        rows = await self._db.scalars(
+            select(NodeHead).where(NodeHead.session_id == session_id)
+        )
+        heads = {WorkflowNode(row.node): row for row in rows.all()}
+        return all(
+            heads[judge].status == NodeHeadStatus.CURRENT.value
+            for judge in FIVE_JUDGE_NODES
+        )
+
     async def _assert_five_judge_heads_current(
         self, session_id: UUID, node: WorkflowNode
     ) -> None:
         if node is not WorkflowNode.AGGREGATOR:
             return
-        rows = await self._db.scalars(
-            select(NodeHead).where(NodeHead.session_id == session_id)
-        )
-        heads = {WorkflowNode(row.node): row for row in rows.all()}
-        if any(
-            heads[judge].status != NodeHeadStatus.CURRENT.value
-            for judge in FIVE_JUDGE_NODES
-        ):
+        if not await self._five_judge_heads_are_current(session_id):
             raise OperationalErrorException(
                 status_code=status.HTTP_409_CONFLICT,
                 code="judge_heads_not_current",
@@ -678,16 +750,77 @@ def _judge_label(node: WorkflowNode) -> str:
     return node.value.replace("_", " ").title()
 
 
+def _kind_lines(kinds: tuple[FindingKind, ...]) -> str:
+    return "\n".join(
+        f"- {kind.value}: Severity floor {FINDING_KIND_FLOOR[kind].value}"
+        for kind in kinds
+    )
+
+
+def _judge_independence_rules() -> str:
+    return (
+        "Evaluate independently. Do not use another Judge Run. "
+        "Do not invent Finding Kinds; unknown tags are dropped. "
+        "You may raise Severity above the floor, never lower it. "
+        "Do not drop or lower verifier-emitted Issues. "
+        "Do not invent Other as a Finding Kind."
+    )
+
+
 def _judge_system(node: WorkflowNode) -> str:
-    if node is WorkflowNode.EVIDENCE_JUDGE:
-        return "judge-evidence"
-    if node is WorkflowNode.CONTRIBUTION_JUDGE:
-        return "judge-contribution"
-    if node is WorkflowNode.EXPERIMENT_JUDGE:
-        return "judge-experiment"
     if node is WorkflowNode.CONFERENCE_JUDGE:
-        return "judge-conference"
-    return "judge-gap"
+        return (
+            "You are the Conference Judge for a Valid Spec Version. "
+            "Emit criterion scores only for originality, significance, soundness, "
+            "clarity, and reproducibility. Do not emit Judge Issues or Finding Kinds. "
+            "Evaluate independently. Do not use another Judge Run."
+        )
+    catalogs: dict[WorkflowNode, tuple[FindingKind, ...]] = {
+        WorkflowNode.GAP_JUDGE: (
+            FindingKind.GAP_UNSUPPORTED_BY_SOURCES,
+            FindingKind.GAP_ALREADY_ADDRESSED,
+            FindingKind.GAP_UNTESTABLE,
+        ),
+        WorkflowNode.CONTRIBUTION_JUDGE: (
+            FindingKind.CONTRIBUTION_NOT_NOVEL,
+            FindingKind.CONTRIBUTION_OVERCLAIMED,
+        ),
+        WorkflowNode.EVIDENCE_JUDGE: (FindingKind.UNSUPPORTED_CITATION,),
+        WorkflowNode.EXPERIMENT_JUDGE: (
+            FindingKind.CLAIM_BROADER_THAN_EXPERIMENT,
+            FindingKind.EXPERIMENT_INSUFFICIENT_FOR_CLAIM,
+        ),
+    }
+    kinds = catalogs.get(node, catalogs[WorkflowNode.GAP_JUDGE])
+    extra = ""
+    if node is WorkflowNode.GAP_JUDGE:
+        extra = (
+            f" Verifiers may emit {FindingKind.GAP_UNSUPPORTED_BY_SOURCES.value} "
+            f"at floor {Severity.CRITICAL.value}; do not drop that Issue."
+        )
+    elif node is WorkflowNode.EVIDENCE_JUDGE:
+        extra = (
+            f" Verifiers may emit {FindingKind.UNSUPPORTED_CITATION.value} "
+            f"at floor {Severity.CRITICAL.value}; do not drop that Issue."
+        )
+    return (
+        f"You are the {_judge_label(node)} for a Valid Spec Version. "
+        "Emit Judge Issues using only these Finding Kinds:\n"
+        f"{_kind_lines(kinds)}\n"
+        f"{_judge_independence_rules()}"
+        f"{extra}"
+    )
+
+
+def _aggregator_system() -> str:
+    return (
+        "You phrase Handling Options only for the Aggregator Report. "
+        "You are not a sixth Judge. Do not change Severity. "
+        "Do not invent a majority verdict. "
+        "Do not invent Other; Other is an Account-supplied Handling Option. "
+        "Do not drop verifier Issues from the composed report. "
+        "Phrase options for CRITICAL and MAJOR Issues only."
+    )
 
 
 def _verifier_issues(node: WorkflowNode, view: dict[str, Any]) -> list[JudgeIssueDraft]:

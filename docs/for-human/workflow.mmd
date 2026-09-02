@@ -40,12 +40,11 @@ flowchart TD
     end
 
     subgraph SpecConstruction [Spec Construction Workflow]
-        S1[Claims]
-        S2[Evidence]
+        S1[Claims/evidence]
         S3[Experiment Plan]
         S4[Check Feasibility]
 
-        S1 --> S2 --> S3 --> S4
+        S1 --> S3 --> S4
     end
 
     R4 --> S1
@@ -55,8 +54,8 @@ flowchart TD
     ContextBuilder{Context Builder}
 
     subgraph Context_Payloads [Dữ liệu động được nhúng vào Prompt]
-        GapContext[Gap<br/>+ Problem<br/>+ Related Work<br/>+ Relevant Evidence]
-        ContributionContext[Contribution<br/>+ Gap<br/>+ Related Work<br/>+ Relevant Evidence<br/>]
+        GapContext[Gap<br/>+ Problem<br/>+ Related Work<br/>+ Citation passages]
+        ContributionContext[Contribution<br/>+ Gap<br/>+ Related Work<br/>+ Citation passages<br/>]
         EvidenceContext["Claims<br/>+ Citations<br/>+ Retrieved Passages<br/>+ Source Metadata<br/>"]
         ExperimentContext["Claims<br/>+ Proposed Approach<br/>+ Experiment Plan<br/>+ Baselines<br/>+ Metrics<br/>+ Dataset<br/>+ Compute Constraints"]
         ConferenceContext["Spec Draft<br/>+ Gap<br/>+ Contribution<br/>+ Claims<br/>+ Evidence Summary<br/>+ Experiment Plan<br/>+ Risks & Limitations"]

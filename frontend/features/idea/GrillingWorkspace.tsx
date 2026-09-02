@@ -23,6 +23,7 @@ import {
   toAnswers,
 } from "./GrillingClusterForm";
 import { GrillingTurns } from "./GrillingTurns";
+import { IdeaFrameCard } from "./IdeaFrameCard";
 import {
   hasIdea,
   isExhaustedHint,
@@ -122,38 +123,13 @@ export function GrillingWorkspace({
   return (
     <div className="grid gap-4">
       {interpretation && ideaReady ? (
-        <>
-          <Card>
-            <CardHeader>
-              <CardTitle className="font-serif text-navy">Idea Frame</CardTitle>
-              <CardDescription>
-                Model restatement of the research idea. Confirm freezes this with the turn list.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-3">
-              <div className="grid gap-1">
-                <p className="text-sm font-medium">Intent</p>
-                <p className="whitespace-pre-wrap break-words text-sm">
-                  {frame.intent.trim() ? frame.intent : "Waiting for generate."}
-                </p>
-              </div>
-              <div className="grid gap-1">
-                <p className="text-sm font-medium">Problem</p>
-                <p className="whitespace-pre-wrap break-words text-sm">
-                  {frame.problem.trim() ? frame.problem : "Waiting for generate."}
-                </p>
-              </div>
-              <div className="grid gap-1">
-                <p className="text-sm font-medium">Research question</p>
-                <p className="whitespace-pre-wrap break-words text-sm">
-                  {frame.research_question.trim()
-                    ? frame.research_question
-                    : "Waiting for generate."}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </>
+        <IdeaFrameCard
+          description="Model restatement of the research idea. Confirm freezes this with the turn list."
+          intent={frame.intent}
+          placeholders
+          problem={frame.problem}
+          researchQuestion={frame.research_question}
+        />
       ) : null}
       {showTurns ? (
         <Card>

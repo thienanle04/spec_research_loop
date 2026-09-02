@@ -71,6 +71,15 @@ export const FIVE_JUDGE_NODES = [
   "conference_judge",
 ] as const;
 
+export const JUDGE_HEAD_PURPOSE: Record<(typeof FIVE_JUDGE_NODES)[number], string> = {
+  gap_judge: "Check whether the gap is actually supported by the literature.",
+  contribution_judge: "Check whether the contribution is new, clear, and overstated.",
+  evidence_judge: "Check whether citations actually support the accompanying content.",
+  experiment_judge: "Check whether the experiments are sufficient to support the claim.",
+  conference_judge:
+    "Evaluate originality, significance, soundness, clarity, and reproducibility.",
+};
+
 export type JudgeNode = (typeof JUDGE_NODES)[number];
 
 export function isJudgeNode(node: string): node is JudgeNode {

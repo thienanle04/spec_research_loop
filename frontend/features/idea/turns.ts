@@ -109,10 +109,16 @@ export function frameComplete(narrative: Record<string, unknown> | undefined): b
   );
 }
 
-/** Any Idea Frame field present (Spec Draft may still show a partial frame). */
+/** Any Idea Frame field present (Node Head / Working Draft). */
 export function frameHasContent(narrative: Record<string, unknown> | undefined): boolean {
   const frame = parseFrame(narrative);
   return Boolean(frame.intent.trim() || frame.problem.trim() || frame.research_question.trim());
+}
+
+/** Spec Draft interpretation shows problem and research_question only. */
+export function specDraftIdeaFrameVisible(narrative: Record<string, unknown> | undefined): boolean {
+  const frame = parseFrame(narrative);
+  return Boolean(frame.problem.trim() || frame.research_question.trim());
 }
 
 export function parseTurns(narrative: Record<string, unknown> | undefined): GrillingTurn[] {

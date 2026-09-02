@@ -18,7 +18,52 @@ import {
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
 import { withGeneratedSincePrepare } from "../loop/stage-signals";
-import { CheckCircle2, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Edit, Plus, Trash2, Save, X, Target, Activity, FileSearch, FileText } from "lucide-react";
+
+function FormattedText({ text }: { text: string }) {
+  if (!text) return null;
+  return (
+    <div className="space-y-2">
+      {text.split("\n").filter(l => l.trim().length > 0).map((line, lineIndex) => {
+        const trimmed = line.trim();
+        const bulletMatch = trimmed.match(/^[-*]\s+(.*)$/);
+        const numberMatch = trimmed.match(/^(\d+\.)\s+(.*)$/);
+
+        let prefix = null;
+        let contentStr = trimmed;
+
+        if (bulletMatch) {
+          prefix = <span className="text-slate-400 font-bold w-4 inline-block mt-0.5 shrink-0">•</span>;
+          contentStr = bulletMatch[1];
+        } else if (numberMatch) {
+          prefix = <span className="text-slate-500 font-medium w-6 inline-block shrink-0 mt-0.5">{numberMatch[1]}</span>;
+          contentStr = numberMatch[2];
+        }
+
+        const strongRegex = /\*\*(.*?)\*\*/g;
+        const parts = contentStr.split(strongRegex);
+        const content = parts.map((part, partIndex) =>
+          partIndex % 2 === 1 ? <strong key={partIndex} className="font-semibold text-foreground">{part}</strong> : part
+        );
+
+        if (prefix) {
+          return (
+            <div key={lineIndex} className="flex items-start gap-1">
+              {prefix}
+              <div className="flex-1 leading-relaxed">{content}</div>
+            </div>
+          );
+        }
+
+        return (
+          <p key={lineIndex} className="leading-relaxed">
+            {content}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
 
 export function ClaimsStageContainer({
   sessionId,
@@ -49,6 +94,7 @@ export function ClaimsStageContainer({
   const generatedCards = (narrative?.cards || []) as ClaimEvidenceCard[];
   const isSaved = narrative?.saved === true;
   const confirmedClaimCards = session.cards.filter(c => c.kind === CardKind.claim);
+  const confirmedEvidenceCards = session.cards.filter(c => c.kind === CardKind.evidence);
 
   const running = generateClaims.isPending || saving;
 
@@ -58,9 +104,9 @@ export function ClaimsStageContainer({
   }, [onRunningChange, running]);
 
   useEffect(() => {
-    onConfirmabilityChange?.(confirmedClaimCards.length > 0);
+    onConfirmabilityChange?.(confirmedClaimCards.length > 0 && confirmedEvidenceCards.length > 0);
     return () => onConfirmabilityChange?.(false);
-  }, [confirmedClaimCards.length, onConfirmabilityChange]);
+  }, [confirmedClaimCards.length, confirmedEvidenceCards.length, onConfirmabilityChange]);
 
   function currentSession(): LoopSessionResponse {
     const cached = queryClient.getQueryData(sessionKey) as any;
@@ -111,31 +157,48 @@ export function ClaimsStageContainer({
     setError(null);
     try {
       let latestVersion = currentSession().version;
-      const bodies = generatedCards.map(card => {
-        const bodyText = `Claim: ${card.claim}\nBaseline: ${card.baseline}\nMetric: ${card.metric}\nEvidence: ${card.evidence}\nRejection Condition: ${card.rejection_condition}`;
+      const claimBodies = generatedCards.map(card => {
+        const bodyText = `Claim: ${card.claim}\nBaseline: ${card.baseline}\nMetric: ${card.metric}\nRejection Condition: ${card.rejection_condition}`;
         return { text: bodyText, metadata: card };
       });
-      const response = await queue.enqueue(() =>
+      const evidenceBodies = generatedCards.map(card => {
+        return { text: card.evidence, metadata: { source_claim_id: card.id } };
+      });
+      const claimResponse = await queue.enqueue(() =>
         replaceCards.mutateAsync({
           sessionId,
           data: {
             kind: CardKind.claim,
-            bodies,
+            bodies: claimBodies,
             expected_version: latestVersion,
           },
         })
       );
-      if (response.status !== 200) throw new Error("Could not save the Claim Cards");
-      latestVersion = response.data.version;
-      const savedCards = response.data.cards;
+      if (claimResponse.status !== 200) throw new Error("Could not save the Claim Cards");
+      latestVersion = claimResponse.data.version;
+      const evidenceResponse = await queue.enqueue(() =>
+        replaceCards.mutateAsync({
+          sessionId,
+          data: {
+            kind: CardKind.evidence,
+            bodies: evidenceBodies,
+            expected_version: latestVersion,
+          },
+        })
+      );
+      if (evidenceResponse.status !== 200) throw new Error("Could not save the Evidence Cards");
+      latestVersion = evidenceResponse.data.version;
+      const savedClaims = claimResponse.data.cards;
+      const savedEvidence = evidenceResponse.data.cards;
 
       updateSession((current) => ({
         ...current,
         version: latestVersion,
         working_draft_narrative: { ...current.working_draft_narrative as object, saved: true },
         cards: [
-          ...current.cards.filter(c => c.kind !== CardKind.claim),
-          ...savedCards,
+          ...current.cards.filter(c => c.kind !== CardKind.claim && c.kind !== CardKind.evidence),
+          ...savedClaims,
+          ...savedEvidence,
         ],
       }));
     } catch (caught) {
@@ -221,6 +284,40 @@ export function ClaimsStageContainer({
                       rows={2}
                     />
                   </div>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Baseline</label>
+                      <Textarea
+                        value={card.baseline}
+                        onChange={(e) => updateEditCard(idx, "baseline", e.target.value)}
+                        rows={1}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-sm font-semibold text-slate-700">Metric</label>
+                      <Textarea
+                        value={card.metric}
+                        onChange={(e) => updateEditCard(idx, "metric", e.target.value)}
+                        rows={1}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-semibold text-slate-700">Expected Evidence</label>
+                    <Textarea
+                      value={card.evidence}
+                      onChange={(e) => updateEditCard(idx, "evidence", e.target.value)}
+                      rows={2}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-semibold text-slate-700">Rejection Condition</label>
+                    <Textarea
+                      value={card.rejection_condition}
+                      onChange={(e) => updateEditCard(idx, "rejection_condition", e.target.value)}
+                      rows={2}
+                    />
+                  </div>
                 </div>
               </div>
             ))}
@@ -242,11 +339,49 @@ export function ClaimsStageContainer({
           <div className="space-y-6">
             {generatedCards.map((card, idx) => (
               <div key={idx} className="bg-white border rounded-lg shadow-sm overflow-hidden">
-                <div className="bg-indigo-50/50 border-b px-5 py-4">
-                  <h4 className="flex items-start gap-2 font-semibold text-slate-800 text-base leading-snug">
-                    <span className="bg-indigo-100 text-indigo-700 w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0 mt-0.5">{idx + 1}</span>
-                    {card.claim}
+                <div className="bg-slate-50 border-b px-5 py-3">
+                  <h4 className="flex items-start gap-2 font-semibold text-slate-800 text-sm">
+                    <FileText className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
+                    <span className="leading-snug">{card.claim}</span>
                   </h4>
+                </div>
+                <div className="p-6 space-y-6">
+                  <div className="grid md:grid-cols-2 gap-6 items-stretch">
+                    <div className="flex min-h-0 flex-col">
+                      <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
+                        <Target className="w-4 h-4 text-indigo-500" /> Baseline
+                      </h5>
+                      <div className="flex-1 text-sm text-slate-800 bg-indigo-50/40 p-4 rounded-md border border-indigo-100/60 shadow-sm">
+                        <FormattedText text={card.baseline} />
+                      </div>
+                    </div>
+                    <div className="flex min-h-0 flex-col">
+                      <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
+                        <Activity className="w-4 h-4 text-indigo-500" /> Metric
+                      </h5>
+                      <div className="flex-1 text-sm text-slate-800 bg-indigo-50/40 p-4 rounded-md border border-indigo-100/60 shadow-sm">
+                        <FormattedText text={card.metric} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
+                      <FileSearch className="w-4 h-4 text-emerald-500" /> Expected Evidence
+                    </h5>
+                    <div className="text-sm text-slate-800 bg-emerald-50/40 p-4 rounded-md border border-emerald-100/60 shadow-sm">
+                      <FormattedText text={card.evidence} />
+                    </div>
+                  </div>
+
+                  <div>
+                    <h5 className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2.5 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-500" /> Rejection Condition
+                    </h5>
+                    <div className="text-sm text-slate-800 bg-amber-50/40 p-4 rounded-md border border-amber-100/60 shadow-sm">
+                      <FormattedText text={card.rejection_condition} />
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}

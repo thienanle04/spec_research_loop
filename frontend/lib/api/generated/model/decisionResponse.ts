@@ -4,6 +4,7 @@
  * SpecResearch Loop
  * OpenAPI spec version: 0.1.0
  */
+import type { DecisionResponseDetail } from './decisionResponseDetail';
 import type { WorkflowNode } from './workflowNode';
 
 export interface DecisionResponse {
@@ -11,5 +12,6 @@ export interface DecisionResponse {
   kind: string;
   node: WorkflowNode | null;
   stage_revision_id: string | null;
+  detail?: DecisionResponseDetail;
   created_at: string;
 }

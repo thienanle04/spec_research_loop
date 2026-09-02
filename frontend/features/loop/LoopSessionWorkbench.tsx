@@ -33,9 +33,8 @@ import {
   ContributionStageContainer,
   ResearchStageContainer,
 } from "@/features/research";
-import { isJudgeNode, JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
+import { JudgementStageContainer, ReadinessStageView } from "@/features/judgement";
 import { ClaimsStageContainer } from "@/features/spec/ClaimsStageContainer";
-import { EvidenceStageContainer } from "@/features/spec/EvidenceStageContainer";
 import { ExperimentPlanStageContainer } from "@/features/spec/ExperimentPlanStageContainer";
 import { FeasibilityStageContainer } from "@/features/spec/FeasibilityStageContainer";
 
@@ -45,11 +44,15 @@ import {
   adjacentStop,
   ancestors,
   catalogStage,
+  isIndependentJudgeNode,
+  isExportScratchEditorOpen,
   railStop,
   resolveSelectedNode,
   resolveSelectedStage,
   sessionHref,
   stageForWorkflowNode,
+  stagePathNodes,
+  stageWorkNodes,
   workingDraftStop,
   type NavStop,
 } from "./catalog";
@@ -67,11 +70,9 @@ import {
   deriveStageSignals,
   hasConfirmableWorkingDraft,
   incompleteUpstreamNodes,
-  invalidationWaveKey,
-  isInvalidationSubjectDismissed,
+  invalidationBannerNodeSubject,
   needsStaleReaccept,
   shouldAutoPrepare,
-  shouldDimStaleContent,
   specInvalidationInView,
   staleInvalidationStages,
   type CompletionSignal,
@@ -140,7 +141,7 @@ function continueTargetAfterConfirm(
   confirmedNode: WorkflowNode,
 ): ContinueTarget | null {
   const currentStage = stageForWorkflowNode(confirmedNode);
-  const currentStageNodes = catalogStage(currentStage).nodes as readonly WorkflowNode[];
+  const currentStageNodes = stageWorkNodes(currentStage);
   const confirmedIndex = currentStageNodes.indexOf(confirmedNode);
   const nextNode = currentStageNodes[confirmedIndex + 1];
   const nextNodeHead = next.node_heads.find((head) => head.node === nextNode);
@@ -262,8 +263,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const [generateRequestId, setGenerateRequestId] = useState(0);
   const [generateRequestNode, setGenerateRequestNode] = useState<WorkflowNode | null>(null);
-  /** subject → waveKey dismissed for; cleared implicitly when waveKey changes. */
-  const [dismissedBySubject, setDismissedBySubject] = useState<Record<string, string>>({});
 
   const queriedSession = sessionQuery.data?.status === 200 ? sessionQuery.data.data : null;
   const session = newerSession(queriedSession, appliedSession);
@@ -274,6 +273,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     session && selectedStage
       ? resolveSelectedNode(selectedStage, searchParams.get("node"), session.working_draft_node)
       : undefined;
+  const exportScratchOpen = isExportScratchEditorOpen(selectedStage, searchParams);
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   function expectedVersion(): number {
@@ -322,15 +322,32 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!session || !selectedStage) return;
+    const canonicalStop =
+      selectedStage === LoopStage.independent_judges
+        ? { stage: selectedStage }
+        : { stage: selectedStage, node: selectedNode };
+    const exportScratchOpen = isExportScratchEditorOpen(selectedStage, searchParams);
     const stageMatches = searchParams.get("stage") === selectedStage;
-    const nodeMatches = selectedNode
-      ? searchParams.get("node") === selectedNode
+    const nodeMatches = canonicalStop.node
+      ? searchParams.get("node") === canonicalStop.node
       : !searchParams.get("node");
     if (stageMatches && nodeMatches) return;
-    router.replace(sessionHref(sessionId, { stage: selectedStage, node: selectedNode }), {
-      scroll: false,
-    });
+    router.replace(
+      sessionHref(sessionId, {
+        ...canonicalStop,
+        exportScratch: exportScratchOpen,
+        specVersionId: exportScratchOpen
+          ? (searchParams.get("spec_version") ?? undefined)
+          : undefined,
+      }),
+      { scroll: false },
+    );
   }, [router, searchParams, selectedNode, selectedStage, session, sessionId]);
+
+  useEffect(() => {
+    if (selectedStage !== LoopStage.spec_draft) return;
+    window.scrollTo(0, 0);
+  }, [selectedStage]);
 
   useEffect(() => {
     if (!session || !selectedStage) return;
@@ -415,18 +432,15 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     viewingWorkingDraft && workingDraftNode === WorkflowNode.contribution;
   const editingClaimsDraft =
     viewingWorkingDraft && workingDraftNode === WorkflowNode.claims;
-  const editingEvidenceDraft =
-    viewingWorkingDraft && workingDraftNode === WorkflowNode.evidence;
   const editingExperimentPlanDraft =
     viewingWorkingDraft && workingDraftNode === WorkflowNode.experiment_plan;
   const editingFeasibilityDraft =
     viewingWorkingDraft && workingDraftNode === WorkflowNode.feasibility;
-  const editingJudgementDraft = viewingWorkingDraft && isJudgeNode(workingDraftNode);
+  const editingJudgementDraft = selectedStage === LoopStage.independent_judges;
   const editingStructuredDraft =
     editingResearchDraft ||
     editingContributionDraft ||
     editingClaimsDraft ||
-    editingEvidenceDraft ||
     editingExperimentPlanDraft ||
     editingFeasibilityDraft ||
     editingJudgementDraft;
@@ -439,8 +453,17 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   const draftConfirmable = editingStructuredDraft
     ? researchConfirmable
     : hasConfirmableWorkingDraft(session);
+  const workingDraftIsJudgeHead = isIndependentJudgeNode(workingDraftNode);
+  const specDraftNeedsFeasibilityConfirm =
+    selectedStage === LoopStage.spec_draft &&
+    workingDraftNode === WorkflowNode.feasibility &&
+    !isValidSpecVersion(session);
   const showConfirm =
-    viewingWorkingDraft && selected.nodes.length > 0 && draftConfirmable;
+    specDraftNeedsFeasibilityConfirm ||
+    (viewingWorkingDraft &&
+      selected.nodes.length > 0 &&
+      draftConfirmable &&
+      !workingDraftIsJudgeHead);
   const confirmDisabled =
     generating ||
     grillEditing ||
@@ -449,7 +472,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     status === "failed" ||
     status === "conflict" ||
     researchRunning ||
-    !draftConfirmable;
+    (!draftConfirmable && !specDraftNeedsFeasibilityConfirm);
   const stageAvailable = incompleteUpstreamNodes({
     stage: selectedStage,
     nodeHeads: session.node_heads,
@@ -458,31 +481,23 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     ? session.node_heads.find((head) => head.node === selectedNode)
     : undefined;
   const workingDraftHead = session.node_heads.find((head) => head.node === workingDraftNode);
-  const waveKey = invalidationWaveKey(session);
-  const viewedNodeStale = viewedHead?.status === NodeHeadStatus.stale;
+  const viewedNodeStale = needsStaleReaccept(viewedHead);
   const specVersionStale =
     session.produced_spec_version != null &&
     session.valid_spec_version_id !== session.produced_spec_version.id;
-  const nodeBannerSubject =
-    viewedNodeStale && selectedNode != null ? selectedNode : null;
-  const specBannerInView = specInvalidationInView({
+  const nodeBannerSubject = invalidationBannerNodeSubject({
+    selectedStage,
+    selectedNode,
+    viewedHead,
+  });
+  const showNodeInvalidationLine = nodeBannerSubject != null;
+  const showSpecInvalidationLine = specInvalidationInView({
     selectedNode,
     selectedStage,
     viewedNodeStale,
     specVersionStale,
   });
-  const showNodeInvalidationLine =
-    nodeBannerSubject != null &&
-    !isInvalidationSubjectDismissed(nodeBannerSubject, waveKey, dismissedBySubject);
-  const showSpecInvalidationLine =
-    specBannerInView &&
-    !isInvalidationSubjectDismissed("spec_draft", waveKey, dismissedBySubject);
-  const showInvalidationBanner =
-    waveKey !== "" && (showNodeInvalidationLine || showSpecInvalidationLine);
-  const dimStaleContent = shouldDimStaleContent(
-    viewingWorkingDraft ? workingDraftHead : viewedHead,
-    showInvalidationBanner,
-  );
+  const showInvalidationBanner = showNodeInvalidationLine || showSpecInvalidationLine;
   const confirmNeedsReaccept = needsStaleReaccept(workingDraftHead);
   const stagedGenerateRequestId =
     generateRequestNode === workingDraftNode ? generateRequestId : 0;
@@ -620,7 +635,12 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-4 pb-12">
+    <div
+      className={cn(
+        "mx-auto flex flex-col gap-4 pb-12",
+        exportScratchOpen ? "max-w-none px-4" : "max-w-7xl",
+      )}
+    >
       <header
         aria-label="Loop Session"
         className="flex flex-wrap items-center gap-3 border-b border-border pb-3"
@@ -635,7 +655,13 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           <LoopSessionTitleEditor sessionId={sessionId} />
         </div>
       </header>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)] lg:items-start">
+      <div
+        className={cn(
+          "grid grid-cols-1 gap-4",
+          !exportScratchOpen && "lg:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)] lg:items-start",
+        )}
+      >
+        {exportScratchOpen ? null : (
         <aside className="grid gap-4 lg:sticky lg:top-6">
           <nav aria-label="Loop Stages" className="rounded-md border bg-card shadow-sm">
             <ol className="flex gap-2 overflow-x-auto p-2 lg:flex-col lg:overflow-visible">
@@ -644,7 +670,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   stage: stage.id,
                   nodeHeads: session.node_heads,
                   workingDraftNode: session.working_draft_node,
-                  readinessState: session.readiness?.state,
+                  readinessState: session.readiness?.state as
+                    | "not_evaluated"
+                    | "blocked"
+                    | "ready"
+                    | undefined,
                 });
                 const Icon = LOOP_STAGE_ICONS[stage.id];
                 const active = stage.id === selectedStage;
@@ -672,24 +702,24 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
             </ol>
           </nav>
         </aside>
+        )}
 
-      <div className="grid min-w-0 grid-cols-1 gap-4">
+      <div className={cn("grid min-w-0 grid-cols-1 gap-4", exportScratchOpen && "min-h-0")}>
+        {exportScratchOpen ? null : (
         <StagePathNav
           emptyTabLabel={
             selectedStage === LoopStage.spec_draft ? selected.name : undefined
           }
-          nodes={selected.nodes}
+          nodes={stagePathNodes(selectedStage)}
           nodeHeads={session.node_heads}
           viewedNode={selectedNode}
           previous={previousStop}
           next={nextStop}
           onBrowse={browseTo}
         />
-        {showInvalidationBanner ? (
-          <div
-            role="status"
-            className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-pending bg-card p-3"
-          >
+        )}
+        {exportScratchOpen || !showInvalidationBanner ? null : (
+          <div role="status" className="rounded-md border border-pending bg-card p-3">
             <div className="grid gap-1 text-sm text-pending">
               {showNodeInvalidationLine && nodeBannerSubject ? (
                 <p>
@@ -703,28 +733,8 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 <p>Spec Draft has no Valid Spec Version after upstream invalidation.</p>
               ) : null}
             </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="shrink-0 text-pending hover:bg-pending/10 hover:text-pending"
-              onClick={() =>
-                setDismissedBySubject((prev) => {
-                  const next = { ...prev };
-                  if (nodeBannerSubject) {
-                    next[nodeBannerSubject] = waveKey;
-                  }
-                  if (specBannerInView) {
-                    next.spec_draft = waveKey;
-                  }
-                  return next;
-                })
-              }
-            >
-              Dismiss
-            </Button>
           </div>
-        ) : null}
+        )}
         {transitionError ? (
           <div role="alert" className="rounded-md border border-pending bg-card p-3">
             <p className="text-sm">{transitionMessage(transitionError)}</p>
@@ -748,7 +758,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           </div>
         ) : null}
         {viewingWorkingDraft ? (
-          <div className={cn(dimStaleContent && "opacity-50")}>
+          <>
             <SuggestedPatchNotice
               narrative={session.working_draft_narrative as Record<string, unknown>}
             />
@@ -795,13 +805,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
               />
-            ) : editingEvidenceDraft ? (
-              <EvidenceStageContainer
-                sessionId={sessionId}
-                session={session}
-                onRunningChange={setResearchRunning}
-                onConfirmabilityChange={setResearchConfirmable}
-              />
             ) : editingExperimentPlanDraft ? (
               <ExperimentPlanStageContainer
                 sessionId={sessionId}
@@ -823,7 +826,6 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 key={workingDraftNode}
                 sessionId={sessionId}
                 session={session}
-                generateRequestId={stagedGenerateRequestId}
                 onRunningChange={setResearchRunning}
                 onConfirmabilityChange={setResearchConfirmable}
                 onPicked={(next) => {
@@ -841,14 +843,13 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                 <WorkingDraftCardCanvas locked={generating} sessionId={sessionId} />
               </>
             )}
-          </div>
+          </>
         ) : selectedNode ? (
           <HeadRevisionView
             node={selectedNode}
             status={viewedHead?.status ?? NodeHeadStatus.empty}
             revision={viewedHead?.head_revision ?? null}
             available={stageAvailable}
-            dimmed={dimStaleContent}
             upstreamNames={incompleteUpstreamNodes({
               stage: selectedStage,
               nodeHeads: session.node_heads,
@@ -915,9 +916,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               refresh it from upstream, or Confirm anyway as a Stale re-accept.
             </p>
             <div className="mt-4 grid gap-2">
-              <Button type="button" disabled={confirmDisabled} onClick={confirmDialogGenerate}>
-                Generate
-              </Button>
+              {editingJudgementDraft ? null : (
+                <Button type="button" disabled={confirmDisabled} onClick={confirmDialogGenerate}>
+                  Generate
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"

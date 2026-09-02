@@ -1,5 +1,8 @@
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { CardKind, WorkflowNode } from "@/lib/api/generated/model";
 
+import { GrillingTurns } from "@/features/idea/GrillingTurns";
+import { IdeaFrameCard } from "@/features/idea/IdeaFrameCard";
 import { parseFrame, parseTurns } from "@/features/idea/turns";
 
 import { CARD_KIND_LABELS, WORKFLOW_NODE_LABELS } from "./catalog";
@@ -61,45 +64,72 @@ function GrillingRevision({
   const frame = parseFrame(narrative);
   const turns = showTurns ? parseTurns(narrative) : [];
   const leftover = unknownFields(narrative, ["turns", "frame", "exhausted"]);
-  const hasFrame = Boolean(frame.intent || frame.problem || frame.research_question);
+  const hasSpecDraftFields = Boolean(frame.problem.trim() || frame.research_question.trim());
+  const hasNodeHeadFrame = Boolean(
+    frame.intent.trim() || frame.problem.trim() || frame.research_question.trim(),
+  );
+
+  if (!showTurns) {
+    return (
+      <div className="grid min-w-0 grid-cols-1 gap-3">
+        {hasSpecDraftFields ? (
+          <dl className="grid gap-2 text-sm">
+            {frame.problem.trim() ? (
+              <div>
+                <dt className="font-medium">Problem</dt>
+                <dd className="whitespace-pre-wrap">{frame.problem}</dd>
+              </div>
+            ) : null}
+            {frame.research_question.trim() ? (
+              <div>
+                <dt className="font-medium">Research question</dt>
+                <dd className="whitespace-pre-wrap">{frame.research_question}</dd>
+              </div>
+            ) : null}
+          </dl>
+        ) : null}
+        <DevLeftovers show={showLeftovers} value={leftover} />
+      </div>
+    );
+  }
+
+  const noop = () => undefined;
+
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-3">
-      {hasFrame ? (
-        <dl className="grid gap-2 text-sm">
-          {frame.intent ? (
-            <div>
-              <dt className="font-medium">Intent</dt>
-              <dd className="whitespace-pre-wrap">{frame.intent}</dd>
-            </div>
-          ) : null}
-          {frame.problem ? (
-            <div>
-              <dt className="font-medium">Problem</dt>
-              <dd className="whitespace-pre-wrap">{frame.problem}</dd>
-            </div>
-          ) : null}
-          {frame.research_question ? (
-            <div>
-              <dt className="font-medium">Research question</dt>
-              <dd className="whitespace-pre-wrap">{frame.research_question}</dd>
-            </div>
-          ) : null}
-        </dl>
+    <div className="grid min-w-0 grid-cols-1 gap-4">
+      {hasNodeHeadFrame ? (
+        <IdeaFrameCard
+          description="Model restatement of the research idea."
+          intent={frame.intent}
+          problem={frame.problem}
+          researchQuestion={frame.research_question}
+        />
       ) : null}
       {turns.length > 0 ? (
-        <ol className="grid gap-2 text-sm">
-          {turns.map((turn, index) => (
-            <li key={index} className="rounded-md border bg-muted/40 px-3 py-2">
-              {turn.role === "account" && turn.kind === "answers" ? (
-                <p>{turn.answers.map((answer) => ("option" in answer ? answer.option : answer.other)).join(", ")}</p>
-              ) : turn.role === "model" ? (
-                <p className="whitespace-pre-wrap">{turn.preamble || turn.questions.map((q) => q.text).join(" ")}</p>
-              ) : (
-                <p className="whitespace-pre-wrap">{turn.text}</p>
-              )}
-            </li>
-          ))}
-        </ol>
+        <Card>
+          <CardHeader>
+            <CardTitle className="font-serif text-navy">History</CardTitle>
+            <CardDescription>
+              Account replies, Account notes, and Grilling Questions.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <GrillingTurns
+              dirty={false}
+              draftTurn={null}
+              editingIndex={null}
+              generating={false}
+              locked
+              preview=""
+              readOnly
+              turns={turns}
+              onCancel={noop}
+              onDraftChange={noop}
+              onEdit={noop}
+              onSave={noop}
+            />
+          </CardContent>
+        </Card>
       ) : null}
       <DevLeftovers show={showLeftovers} value={leftover} />
     </div>
@@ -110,12 +140,15 @@ function CardSnapshotView({
   cards,
   preferGapBody,
   showLeftovers,
+  hiddenCardKinds = [],
 }: {
   cards: unknown[];
   preferGapBody: boolean;
   showLeftovers: boolean;
+  hiddenCardKinds?: CardKind[];
 }) {
   const hideKindTitle = new Set<string>([CardKind.gap, CardKind.contribution, CardKind.claim]);
+  const hidden = new Set<string>(hiddenCardKinds);
   return (
     <>
       {cards.map((card, index) => {
@@ -123,6 +156,9 @@ function CardSnapshotView({
           return (
             <DevLeftovers key={index} show={showLeftovers} value={card} label="Invalid card" />
           );
+        }
+        if (typeof card.kind === "string" && hidden.has(card.kind)) {
+          return null;
         }
         const body = isRecord(card.body) ? card.body : null;
         const text = body ? fieldText(body) : null;
@@ -161,6 +197,7 @@ export function StageRevisionBody({
   stageRevisionId,
   showLeftovers = true,
   showTurns = true,
+  hiddenCardKinds,
 }: {
   node: WorkflowNode;
   payload: unknown;
@@ -168,8 +205,9 @@ export function StageRevisionBody({
   sessionId?: string;
   stageRevisionId?: string | null;
   showLeftovers?: boolean;
-  /** When false (Spec Draft), grilling narratives omit the turn list and show Idea Frame only. */
+  /** When false (Spec Draft), grilling narratives omit the turn list and Intent. */
   showTurns?: boolean;
+  hiddenCardKinds?: CardKind[];
 }) {
   if (!isRecord(payload)) {
     return (
@@ -268,6 +306,7 @@ export function StageRevisionBody({
       {cards ? (
         <CardSnapshotView
           cards={cards}
+          hiddenCardKinds={hiddenCardKinds}
           preferGapBody={node === WorkflowNode.gap}
           showLeftovers={showLeftovers}
         />

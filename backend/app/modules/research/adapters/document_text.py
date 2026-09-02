@@ -8,6 +8,7 @@ from io import BytesIO
 import httpx
 from pypdf import PdfReader
 
+from app.modules.research.normalization import utf8_safe_text
 from app.modules.research.ports import DocumentText, ScholarlyRecord
 
 
@@ -287,4 +288,4 @@ def _normalize_text(text: str) -> str:
             continue
         normalized.append(line)
         blank = False
-    return "\n".join(normalized).strip()
+    return utf8_safe_text("\n".join(normalized).strip())

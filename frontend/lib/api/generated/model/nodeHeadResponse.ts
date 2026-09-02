@@ -13,5 +13,5 @@ export interface NodeHeadResponse {
   status: NodeHeadStatus;
   stage_revision_id: string | null;
   generated_since_prepare?: boolean;
-  head_revision: HeadRevisionResponse | null;
+  head_revision?: HeadRevisionResponse | null;
 }

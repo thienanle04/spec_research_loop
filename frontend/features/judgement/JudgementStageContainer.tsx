@@ -9,6 +9,7 @@ import { getApiErrorMessage } from "@/lib/api/config";
 import { getGetSessionApiLoopSessionsSessionIdGetQueryKey } from "@/lib/api/generated/endpoints";
 import { WorkflowNode, NodeHeadStatus, type LoopSessionResponse } from "@/lib/api/generated/model";
 import { customFetch } from "@/lib/api/mutator";
+import { cn } from "@/lib/utils";
 
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
@@ -16,23 +17,20 @@ import { withGeneratedSincePrepare } from "../loop/stage-signals";
 import { AggregatorReportView } from "./AggregatorReportView";
 import { ConferenceScoreList } from "./ConferenceScoreList";
 import { JudgeIssueList } from "./JudgeIssueList";
-import type { ConferenceScores, HandlingOption, JudgeIssue, JudgeNode, JudgeRun } from "./types";
-import { FIVE_JUDGE_NODES } from "./types";
+import type {
+  ConferenceScores,
+  HandlingOption,
+  JudgeIssue,
+  JudgeNode,
+  JudgeRun,
+  JudgementStreamEvent,
+} from "./types";
+import { FIVE_JUDGE_NODES, JUDGE_HEAD_PURPOSE } from "./types";
 import { useJudgementStream } from "./useJudgementStream";
-
-const GENERATABLE_JUDGE_NODES = new Set<string>([
-  WorkflowNode.gap_judge,
-  WorkflowNode.contribution_judge,
-  WorkflowNode.evidence_judge,
-  WorkflowNode.experiment_judge,
-  WorkflowNode.conference_judge,
-  WorkflowNode.aggregator,
-]);
 
 type Props = {
   sessionId: string;
   session: LoopSessionResponse;
-  generateRequestId?: number;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
   onPicked?: (next: LoopSessionResponse) => void;
@@ -42,10 +40,34 @@ function judgeRunQueryKey(sessionId: string, node: string, revisionId?: string |
   return ["/api/judgement/run", sessionId, node, revisionId ?? "working"] as const;
 }
 
+type CompactHeadStatus = "evaluating" | "none" | "done" | "stale";
+
+function compactHeadStatusLabel(
+  displayStatus: "running" | "current" | NodeHeadStatus | string,
+): CompactHeadStatus {
+  if (displayStatus === "running") return "evaluating";
+  if (displayStatus === NodeHeadStatus.empty) return "none";
+  if (displayStatus === NodeHeadStatus.current || displayStatus === "current") return "done";
+  return "stale";
+}
+
+const HEAD_STATUS_LABEL: Record<CompactHeadStatus, string> = {
+  evaluating: "Evaluating",
+  none: "None",
+  done: "Done",
+  stale: "Stale",
+};
+
+const HEAD_STATUS_CLASS: Record<CompactHeadStatus, string> = {
+  evaluating: "bg-sky-100 text-sky-800 dark:bg-sky-950/70 dark:text-sky-200",
+  none: "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
+  done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-200",
+  stale: "bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-200",
+};
+
 export function JudgementStageContainer({
   sessionId,
   session,
-  generateRequestId = 0,
   onRunningChange,
   onConfirmabilityChange,
   onPicked,
@@ -53,22 +75,20 @@ export function JudgementStageContainer({
   const queryClient = useQueryClient();
   const { queue } = useLoopSessionSave();
   const stream = useJudgementStream();
-  const seenGenerateRequestIdRef = useRef(generateRequestId);
+  const startedAggregatorKeyRef = useRef<string | null>(null);
   const [issues, setIssues] = useState<JudgeIssue[]>([]);
   const [scores, setScores] = useState<ConferenceScores | null>(null);
   const [handlingOptions, setHandlingOptions] = useState<HandlingOption[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
-  const node = session.working_draft_node as JudgeNode;
-  const isConference = node === WorkflowNode.conference_judge;
-  const isAggregator = node === WorkflowNode.aggregator;
-  const canGenerate = GENERATABLE_JUDGE_NODES.has(node);
-  const hasOutput = isConference
-    ? scores != null
-    : isAggregator
-      ? issues.length > 0 || scores != null || handlingOptions.length > 0
-      : issues.length > 0;
-  const workingHead = session.node_heads.find((head) => head.node === session.working_draft_node);
+  const [headSummaries, setHeadSummaries] = useState<
+    Partial<Record<JudgeNode, { status?: "running" | "current" }>>
+  >({});
+  const node = WorkflowNode.aggregator as JudgeNode;
+  const hasOutput = issues.length > 0 || scores != null || handlingOptions.length > 0;
+  const aggregatorConfirmable =
+    session.working_draft_node === WorkflowNode.aggregator && hasOutput;
+  const workingHead = session.node_heads.find((head) => head.node === WorkflowNode.aggregator);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;
   const pendingJudges = FIVE_JUDGE_NODES.filter((judge) => {
@@ -82,6 +102,15 @@ export function JudgementStageContainer({
     return head?.status === NodeHeadStatus.stale && head.generated_since_prepare !== true;
   });
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
+  const fiveJudgeHeadsCurrent = FIVE_JUDGE_NODES.every((judge) => {
+    const head = session.node_heads.find((item) => item.node === judge);
+    return head?.status === NodeHeadStatus.current;
+  });
+  const aggregatorNeedsGenerate =
+    (workingHead?.status ?? NodeHeadStatus.empty) !== NodeHeadStatus.current;
+  const aggregatorStartKey = fiveJudgeHeadsCurrent
+    ? `${sessionId}:${workingHead?.status ?? NodeHeadStatus.empty}:${workingHead?.stage_revision_id ?? ""}`
+    : null;
 
   const runQuery = useQuery({
     queryKey: judgeRunQueryKey(sessionId, node),
@@ -105,8 +134,9 @@ export function JudgementStageContainer({
   }, [runQuery.data]);
 
   useEffect(() => {
-    onConfirmabilityChange?.(true);
-  }, [onConfirmabilityChange]);
+    onConfirmabilityChange?.(aggregatorConfirmable);
+    return () => onConfirmabilityChange?.(false);
+  }, [aggregatorConfirmable, onConfirmabilityChange]);
 
   useEffect(() => {
     onRunningChange?.(stream.running);
@@ -192,6 +222,36 @@ export function JudgementStageContainer({
     }
   }
 
+  function applyAggregatorReportEvent(event: JudgementStreamEvent) {
+    if (event.node !== WorkflowNode.aggregator) return;
+    if (event.type === "draft_patch") {
+      setIssues(event.issues);
+      setScores(event.scores ?? null);
+      setHandlingOptions(event.handling_options ?? []);
+    }
+  }
+
+  function applyJudgeHeadEvent(event: JudgementStreamEvent) {
+    if (!(FIVE_JUDGE_NODES as readonly string[]).includes(event.node)) return;
+    const judge = event.node as JudgeNode;
+    if (event.type === "progress" || event.type === "draft_patch") {
+      setHeadSummaries((current) => ({
+        ...current,
+        [judge]: { status: "running" },
+      }));
+    } else if (event.type === "done") {
+      setHeadSummaries((current) => ({
+        ...current,
+        [judge]: { status: "current" },
+      }));
+    } else if (event.type === "error") {
+      setHeadSummaries((current) => ({
+        ...current,
+        [judge]: { status: undefined },
+      }));
+    }
+  }
+
   async function generatePending() {
     setSaveError(null);
     try {
@@ -201,12 +261,9 @@ export function JudgementStageContainer({
         expectedVersion: expectedVersion(),
         staleReaccept: pendingNeedsReaccept,
         onEvent: (event) => {
+          applyJudgeHeadEvent(event);
+          applyAggregatorReportEvent(event);
           if (event.type === "draft_patch") {
-            if (event.node === node) {
-              setIssues(event.issues);
-              setScores(event.scores ?? null);
-              setHandlingOptions(event.handling_options ?? []);
-            }
             void queryClient.invalidateQueries({
               queryKey: judgeRunQueryKey(sessionId, event.node),
             });
@@ -221,24 +278,39 @@ export function JudgementStageContainer({
                 event.node as WorkflowNode,
               ),
             );
+            void queryClient.invalidateQueries({ queryKey: sessionKey });
           }
         },
       });
       await queryClient.invalidateQueries({ queryKey: ["/api/judgement/run", sessionId] });
+      await queryClient.invalidateQueries({ queryKey: sessionKey });
     } catch (error) {
       setSaveError(getApiErrorMessage(error));
     }
   }
 
-  useEffect(() => {
-    const previous = seenGenerateRequestIdRef.current;
-    seenGenerateRequestIdRef.current = generateRequestId;
-    if (generateRequestId < 1 || generateRequestId <= previous) return;
-    void generate({ staleReaccept });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stale-dialog trigger only
-  }, [generateRequestId]);
+  const loadedAggregatorOutput =
+    (runQuery.data?.issues?.length ?? 0) > 0 ||
+    runQuery.data?.scores != null ||
+    (runQuery.data?.handling_options?.length ?? 0) > 0;
 
-  const title = WORKFLOW_NODE_LABELS[session.working_draft_node];
+  useEffect(() => {
+    if (aggregatorStartKey == null || !aggregatorNeedsGenerate) return;
+    if (runQuery.isPending || loadedAggregatorOutput || stream.running) return;
+    if (startedAggregatorKeyRef.current === aggregatorStartKey) return;
+    startedAggregatorKeyRef.current = aggregatorStartKey;
+    void generate({ staleReaccept });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- start once per empty/Stale Aggregator when five Judge heads are current
+  }, [
+    aggregatorStartKey,
+    aggregatorNeedsGenerate,
+    runQuery.isPending,
+    loadedAggregatorOutput,
+    stream.running,
+    staleReaccept,
+  ]);
+
+  const title = WORKFLOW_NODE_LABELS[WorkflowNode.aggregator];
   const error = stream.error ?? saveError ?? (runQuery.isError ? "Could not load Judge Run." : null);
 
   return (
@@ -246,52 +318,74 @@ export function JudgementStageContainer({
       <CardHeader>
         <CardTitle className="font-serif text-navy">{title}</CardTitle>
         <CardDescription>
-          {isAggregator
-            ? "The Aggregator copies Judge Issues and scores. It does not majority-vote. Confirm freezes the report even when CRITICAL Issues remain."
-            : "Independent Judges evaluate the Valid Spec Version. Confirm freezes this Judge Run even when CRITICAL Issues remain."}
+          The Aggregator copies Judge Issues and scores. Confirm freezes the report even when
+          CRITICAL Issues remain.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        {isAggregator ? (
-          <AggregatorReportView
-            issues={issues}
-            scores={scores}
-            handlingOptions={handlingOptions}
-            canPick
-            picking={picking}
-            onPick={(option) => void pick({ handling_option_id: option.id })}
-            onPickOther={(prose, targetNode) =>
-              void pick({ prose, target_node: targetNode })
-            }
-          />
-        ) : isConference ? (
-          <ConferenceScoreList scores={scores} />
-        ) : (
-          <JudgeIssueList issues={issues} />
-        )}
+        <ul
+          aria-label="Judge Node Heads"
+          className="grid gap-2 sm:grid-cols-5"
+        >
+          {FIVE_JUDGE_NODES.map((judge) => {
+            const head = session.node_heads.find((item) => item.node === judge);
+            const status = head?.status ?? NodeHeadStatus.empty;
+            const summary = headSummaries[judge];
+            const statusLabel = compactHeadStatusLabel(summary?.status ?? status);
+            return (
+              <li
+                key={judge}
+                aria-label={WORKFLOW_NODE_LABELS[judge]}
+                className="flex h-full flex-col gap-2 rounded-md border border-border bg-card px-3 py-2"
+              >
+                <div className="flex flex-col gap-1">
+                  <p className="font-serif text-sm font-semibold leading-tight text-navy">
+                    {WORKFLOW_NODE_LABELS[judge]}
+                  </p>
+                  <p className="text-xs leading-snug text-muted-foreground">{JUDGE_HEAD_PURPOSE[judge]}</p>
+                  <p
+                    className={cn(
+                      "inline-flex w-fit rounded-md px-2 py-0.5 text-xs font-semibold tracking-wide",
+                      HEAD_STATUS_CLASS[statusLabel],
+                    )}
+                  >
+                    {HEAD_STATUS_LABEL[statusLabel]}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
         {stream.running ? (
           <div className="flex flex-wrap items-center gap-3">
             <Button type="button" variant="outline" onClick={stream.abort}>
-              Stop Judge
+              Stop generation
             </Button>
             <p role="status" className="text-sm text-muted-foreground">
-              {stream.progressMessage ?? "Running Judge…"}
+              {stream.progressMessage ?? "Generating…"}
             </p>
           </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-3">
-            {canGenerate ? (
-              <Button type="button" variant="outline" onClick={() => void generate()}>
-                {hasOutput ? `Regenerate ${title}` : `Generate ${title}`}
-              </Button>
-            ) : null}
-            {canRunPending ? (
-              <Button type="button" variant="outline" onClick={() => void generatePending()}>
-                Run pending Judges
-              </Button>
-            ) : null}
-          </div>
-        )}
+        ) : canRunPending ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={() => void generatePending()}
+          >
+            Run evaluation
+          </Button>
+        ) : null}
+        <AggregatorReportView
+          issues={issues}
+          scores={scores}
+          handlingOptions={handlingOptions}
+          canPick={hasOutput}
+          picking={picking}
+          onPick={(option) => void pick({ handling_option_id: option.id })}
+          onPickOther={(prose, targetNode) =>
+            void pick({ prose, target_node: targetNode })
+          }
+        />
         {error ? (
           <p role="alert" className="text-sm text-destructive">
             {error}
