@@ -36,6 +36,11 @@ def test_unsupported_citation_emits_critical_when_passage_does_not_entail_claim(
     assert issue.finding_kind == "unsupported_citation"
     assert issue.severity == "CRITICAL"
     assert issue.target_card_id == CLAIM_ID
+    assert issue.grounds.subject == UNSUPPORTED_CLAIM
+    assert issue.grounds.excerpts[0].citation_key == (
+        "large-language-models-as-optimizers-2023"
+    )
+    assert issue.grounds.excerpts[0].passage == FIXTURE_PASSAGE
 
 
 def test_unsupported_citation_reads_triples_not_other_view_keys() -> None:
@@ -70,6 +75,46 @@ def test_unsupported_citation_reads_triples_not_other_view_keys() -> None:
     assert len(issues) == 1
     assert issues[0].finding_kind == "unsupported_citation"
     assert issues[0].severity == "CRITICAL"
+
+
+def test_unsupported_citation_silent_when_any_passage_entails_claim() -> None:
+    issues = unsupported_citation(
+        {
+            "claim_citation_passages": [
+                {
+                    "claim_id": str(CLAIM_ID),
+                    "claim": "An optimizer model proposes prompts",
+                    "citation_key": "unrelated-2020",
+                    "passage": "Soil nitrogen is unrelated.",
+                },
+                {
+                    "claim_id": str(CLAIM_ID),
+                    "claim": "An optimizer model proposes prompts",
+                    "citation_key": "large-language-models-as-optimizers-2023",
+                    "passage": FIXTURE_PASSAGE,
+                },
+            ]
+        }
+    )
+    assert issues == []
+
+
+def test_unsupported_citation_lists_empty_passage_on_cited_key() -> None:
+    issues = unsupported_citation(
+        {
+            "claim_citation_passages": [
+                {
+                    "claim_id": str(CLAIM_ID),
+                    "claim": UNSUPPORTED_CLAIM,
+                    "citation_key": "missing-passage-2024",
+                    "passage": "",
+                }
+            ]
+        }
+    )
+    assert len(issues) == 1
+    assert issues[0].grounds.excerpts[0].citation_key == "missing-passage-2024"
+    assert issues[0].grounds.excerpts[0].passage == ""
 
 
 def test_unsupported_citation_silent_when_passage_entails_claim() -> None:
@@ -132,3 +177,6 @@ def test_gap_unsupported_by_sources_reads_passages_from_related_work_dict() -> N
     )
     assert len(issues) == 1
     assert issues[0].finding_kind == "gap_unsupported_by_sources"
+    assert issues[0].grounds.subject == "No cited method does X."
+    assert issues[0].grounds.excerpts[0].citation_key == "paper-2024"
+    assert issues[0].grounds.excerpts[0].passage == ""

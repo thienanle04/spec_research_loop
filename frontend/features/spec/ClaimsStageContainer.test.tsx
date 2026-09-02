@@ -255,6 +255,43 @@ describe("ClaimsStageContainer", () => {
     });
   });
 
+  it("keeps existing Claim Cards when regenerate returns an empty card list", async () => {
+    mocks.generate.mockResolvedValue({
+      status: 200,
+      data: { version: 11, cards: [] },
+    });
+    const user = userEvent.setup();
+    const queryClient = new QueryClient();
+    const session = claimSession({
+      working_draft_narrative: { cards: [oldClaim], saved: true },
+    });
+    queryClient.setQueryData(["/api/loop/sessions", session.id], {
+      status: 200,
+      data: session,
+    });
+
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <ClaimsStageContainer sessionId={session.id} session={session} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("Old stale claim about memory bandwidth")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Regenerate Claims" }));
+    await waitFor(() => expect(mocks.generate).toHaveBeenCalledTimes(1));
+    const generated = queryClient.getQueryData(["/api/loop/sessions", session.id]) as {
+      status: number;
+      data: LoopSessionResponse;
+    };
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <ClaimsStageContainer sessionId={session.id} session={generated.data} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("Old stale claim about memory bandwidth")).toBeInTheDocument();
+  });
+
   it("replaces previously saved Claim Cards after regenerate then save", async () => {
     const user = userEvent.setup();
     const queryClient = new QueryClient();

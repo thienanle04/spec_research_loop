@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from app.modules.judgement.catalog import Severity
+from app.modules.judgement.schemas import grounds_payload
 from app.modules.loop.catalog import (
     FIVE_JUDGE_NODES,
     HANDLING_OPTION_TARGETS,
@@ -27,6 +28,7 @@ class CopiedIssue:
     reason: str
     suggestion: str
     target_card_id: UUID | None
+    grounds: dict[str, Any]
     cluster: str
 
 
@@ -162,6 +164,7 @@ def _copy_issue(source_node: str, item: Any) -> CopiedIssue | None:
         reason=reason if isinstance(reason, str) else "",
         suggestion=suggestion if isinstance(suggestion, str) else "",
         target_card_id=target_card_id,
+        grounds=grounds_payload(item.get("grounds")),
         cluster=CLUSTER_DISAGREEMENT,
     )
 

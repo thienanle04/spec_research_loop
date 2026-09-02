@@ -117,8 +117,12 @@ One Judge's immutable evaluation of a Spec Version, stored as typed rows on that
 _Avoid_: review, score, feedback (when you mean this stored run), verdict (alone), majority vote, auto-Confirm
 
 **Judge Issue**:
-A typed finding on a Judge Run: Finding Kind, Severity, reason, and suggestion. Not a Card. Not a Decision. Rule-based verifiers in `judgement` read Context Projection (not another module's tables). Evidence: citation passage does not entail the claim → `unsupported_citation`. Gap: no cited passage supports the gap statement → `gap_unsupported_by_sources` only. `gap_already_addressed` and `gap_untestable` are LLM-emitted. The LLM may add Issues and may raise Severity; it must not drop or lower a verifier-emitted Issue.
+A typed finding on a Judge Run: Finding Kind, Severity, reason, suggestion, and optional Judge Issue Grounds. Not a Card. Not a Decision. Rule-based verifiers in `judgement` read Context Projection (not another module's tables). Evidence: no cited passage entails the claim → `unsupported_citation` (one Issue per Claim; any entailing passage is support). Gap: no cited passage supports the gap statement → `gap_unsupported_by_sources` only. `gap_already_addressed` and `gap_untestable` are LLM-emitted. The LLM may add Issues and may raise Severity; it must not drop or lower a verifier-emitted Issue, and must not replace Judge Issue Grounds.
 _Avoid_: comment, complaint, flag, triage item, MAJOR (as a Judge-level result)
+
+**Judge Issue Grounds**:
+The frozen subject text and cited excerpts on a verifier-emitted Judge Issue at Judge Run time: Claim or gap body plus `citation_key` and passage pairs. A cited key with no passage is still listed. Not a Card, Citation, reason, or suggestion. Runs frozen before Grounds have none.
+_Avoid_: excerpt (alone), evidence (that is an Evidence Card), citation (that is the source record), reason
 
 **Finding Kind**:
 A closed tag on a Judge Issue that selects the Severity floor. Day-one catalog: `gap_unsupported_by_sources`, `gap_already_addressed`, `gap_untestable`, `contribution_not_novel`, `contribution_overclaimed`, `unsupported_citation`, `claim_broader_than_experiment`, `experiment_insufficient_for_claim`. The LLM may not invent kinds; unknown tags are dropped. It may raise Severity above the floor, never lower it. Conference Judge emits criterion scores only, not Judge Issues.
@@ -133,7 +137,7 @@ A proposed way to address a Judge Issue or disagreement cluster on the Aggregato
 _Avoid_: Grilling Option, override, export anyway, patch (when you mean the Decision), Apply suggestion
 
 **Aggregator Report**:
-The Aggregator's composed output from the five current Judge Runs: grouped Judge Issues, consensus vs disagreement, Readiness flags, and Handling Options. It copies Severity from Judge Runs and must not rewrite it. LLM copy may phrase Handling Options; it must not change Severity or invent a majority verdict. Independent judges shows Judge Issues and Handling Options here, not as five full Judge lists. Generate starts when all five Judge heads are current; Confirm Aggregator is still an Account Decision and advances to Readiness.
+The Aggregator's composed output from the five current Judge Runs: grouped Judge Issues, consensus vs disagreement, Readiness flags, and Handling Options. It copies Severity, originating Judge, and Judge Issue Grounds from Judge Runs and must not rewrite them. LLM copy may phrase Handling Options; it must not change Severity, invent a majority verdict, or be the source of Grounds. Independent judges shows Judge Issues (with originating Judge and Grounds) and Handling Options here, not as five full Judge lists. Generate starts when all five Judge heads are current; Confirm Aggregator is still an Account Decision and advances to Readiness.
 _Avoid_: verdict, majority vote, final score, Judge (the Aggregator is not a sixth Judge)
 
 **Stale**:

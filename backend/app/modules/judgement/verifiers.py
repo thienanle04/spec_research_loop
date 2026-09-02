@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from app.modules.judgement.catalog import FindingKind, Severity
-from app.modules.judgement.schemas import JudgeIssueDraft
+from app.modules.judgement.schemas import JudgeIssueDraft, JudgeIssueExcerpt, JudgeIssueGrounds
 from app.modules.loop.catalog import CardKind
 
 
@@ -51,28 +51,46 @@ def _supporting_citation_keys(card: dict[str, Any] | None) -> list[str]:
     return [key.strip() for key in keys if isinstance(key, str) and key.strip()]
 
 
+def _passages_by_citation_key(view: dict[str, Any]) -> dict[str, str]:
+    by_key: dict[str, str] = {}
+    for item in _view_related_work_passages(view):
+        key = item.get("citation_key")
+        if not isinstance(key, str) or not key.strip():
+            continue
+        passage = item.get("supporting_passage")
+        by_key[key.strip()] = passage.strip() if isinstance(passage, str) else ""
+    return by_key
+
+
+def _grounds(subject: str, keys: list[str], passages: dict[str, str]) -> JudgeIssueGrounds:
+    return JudgeIssueGrounds(
+        subject=subject,
+        excerpts=[
+            JudgeIssueExcerpt(citation_key=key, passage=passages.get(key, ""))
+            for key in keys
+        ],
+    )
+
+
 def gap_unsupported_by_sources(view: dict[str, Any]) -> list[JudgeIssueDraft]:
     card = _gap_card(view)
-    cited_keys = set(_supporting_citation_keys(card))
-    passage_keys: set[str] = set()
-    for item in _view_related_work_passages(view):
-        passage = item.get("supporting_passage")
-        if not isinstance(passage, str) or not passage.strip():
-            continue
-        key = item.get("citation_key")
-        if isinstance(key, str) and key.strip():
-            passage_keys.add(key.strip())
+    cited_keys = _supporting_citation_keys(card)
+    passages = _passages_by_citation_key(view)
+    passage_keys = {key for key, passage in passages.items() if passage}
     statement = view.get("gap_statement")
     has_statement = isinstance(statement, str) and bool(statement.strip())
-    cited_with_passage = bool(cited_keys and (cited_keys & passage_keys))
+    cited_with_passage = bool(cited_keys and (set(cited_keys) & passage_keys))
     if has_statement and cited_with_passage:
         return []
     if not has_statement:
         reason = "The gap statement is missing, so no cited passage can support it."
+        subject = ""
     elif not cited_keys:
         reason = "The gap statement has no supporting Citations, so no cited passage supports it."
+        subject = statement.strip()
     else:
         reason = "No cited passage among the gap's supporting Citations supports the gap statement."
+        subject = statement.strip()
     return [
         JudgeIssueDraft(
             finding_kind=FindingKind.GAP_UNSUPPORTED_BY_SOURCES.value,
@@ -80,6 +98,7 @@ def gap_unsupported_by_sources(view: dict[str, Any]) -> list[JudgeIssueDraft]:
             reason=reason,
             suggestion="Cite a supporting passage or revise the gap statement.",
             target_card_id=_gap_card_id(card),
+            grounds=_grounds(subject, cited_keys, passages),
         )
     ]
 
@@ -106,7 +125,7 @@ def _passage_entails_claim(claim: str, passage: str) -> bool:
 
 
 def unsupported_citation(view: dict[str, Any]) -> list[JudgeIssueDraft]:
-    grouped: dict[UUID | None, list[tuple[str, str]]] = {}
+    grouped: dict[UUID | None, list[tuple[str, str, str]]] = {}
     for item in view.get("claim_citation_passages") or []:
         if not isinstance(item, dict):
             continue
@@ -115,11 +134,13 @@ def unsupported_citation(view: dict[str, Any]) -> list[JudgeIssueDraft]:
             continue
         passage = item.get("passage")
         passage_text = passage.strip() if isinstance(passage, str) else ""
-        key = _parse_card_id(item.get("claim_id"))
-        grouped.setdefault(key, []).append((claim.strip(), passage_text))
+        citation_key = item.get("citation_key")
+        key_text = citation_key.strip() if isinstance(citation_key, str) else ""
+        card_id = _parse_card_id(item.get("claim_id"))
+        grouped.setdefault(card_id, []).append((claim.strip(), key_text, passage_text))
     issues: list[JudgeIssueDraft] = []
     for card_id, items in grouped.items():
-        if any(_passage_entails_claim(claim, passage) for claim, passage in items):
+        if any(_passage_entails_claim(claim, passage) for claim, _, passage in items):
             continue
         issues.append(
             JudgeIssueDraft(
@@ -128,6 +149,13 @@ def unsupported_citation(view: dict[str, Any]) -> list[JudgeIssueDraft]:
                 reason="The cited passage does not entail the claim.",
                 suggestion="Cite a passage that entails the claim or revise the claim.",
                 target_card_id=card_id,
+                grounds=JudgeIssueGrounds(
+                    subject=items[0][0],
+                    excerpts=[
+                        JudgeIssueExcerpt(citation_key=key, passage=passage)
+                        for _, key, passage in items
+                    ],
+                ),
             )
         )
     return issues

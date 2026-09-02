@@ -5,6 +5,8 @@
  * OpenAPI spec version: 0.1.0
  */
 
+import type { JudgeIssueGrounds } from './judgeIssueGrounds';
+
 export interface JudgeIssueResponse {
   id: string;
   finding_kind: string;
@@ -14,4 +16,5 @@ export interface JudgeIssueResponse {
   target_card_id?: string | null;
   source_node?: string | null;
   cluster?: string | null;
+  grounds?: JudgeIssueGrounds;
 }

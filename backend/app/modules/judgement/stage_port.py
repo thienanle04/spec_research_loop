@@ -15,6 +15,7 @@ from app.modules.judgement.models import (
     HandlingOption,
     JudgeIssue,
 )
+from app.modules.judgement.schemas import grounds_payload
 from app.modules.loop.catalog import WorkflowNode
 
 
@@ -26,6 +27,7 @@ def _issue_payload(row: JudgeIssue) -> dict[str, Any]:
         "reason": row.reason,
         "suggestion": row.suggestion,
         "target_card_id": str(row.target_card_id) if row.target_card_id else None,
+        "grounds": grounds_payload(row.grounds),
         "sort_index": row.sort_index,
     }
 
@@ -40,6 +42,7 @@ def _aggregator_issue_payload(row: AggregatorIssue) -> dict[str, Any]:
         "target_card_id": str(row.target_card_id) if row.target_card_id else None,
         "source_node": row.source_node,
         "cluster": row.cluster,
+        "grounds": grounds_payload(row.grounds),
         "sort_index": row.sort_index,
     }
 
@@ -77,6 +80,7 @@ def _clone_issue(row: JudgeIssue, revision_id: UUID | None) -> JudgeIssue:
         reason=row.reason,
         suggestion=row.suggestion,
         target_card_id=row.target_card_id,
+        grounds=grounds_payload(row.grounds),
         sort_index=row.sort_index,
     )
 
@@ -107,6 +111,7 @@ def _clone_aggregator_issue(
         reason=row.reason,
         suggestion=row.suggestion,
         target_card_id=row.target_card_id,
+        grounds=grounds_payload(row.grounds),
         cluster=row.cluster,
         sort_index=row.sort_index,
     )

@@ -169,3 +169,31 @@ def test_finish_without_delimiter_fails() -> None:
     splitter.feed("only prose")
     with pytest.raises(TrailerParseError, match="missing"):
         splitter.finish()
+
+
+def test_finish_recovers_fenced_json_without_delimiter() -> None:
+    """Grilling models often omit ---json--- and wrap the object in a fence."""
+    splitter = TrailerSplitter()
+    splitter.feed(
+        "Need the budget.\n"
+        "```json\n"
+        '{"exhausted": false, "cards": [], "questions": ['
+        '{"text": "Training or inference?", "options": ["Training", "Inference"]}'
+        '], "frame": {"intent": "I", "problem": "P", "research_question": "RQ"}}\n'
+        "```\n"
+    )
+    prose, payload = splitter.finish(interpretation=True)
+    assert prose == "Need the budget."
+    assert payload["questions"][0]["text"] == "Training or inference?"
+    assert payload["frame"]["problem"] == "P"
+
+
+def test_finish_recovers_raw_json_without_delimiter() -> None:
+    splitter = TrailerSplitter()
+    splitter.feed(
+        'Need the budget.\n{"exhausted": true, "cards": [], "questions": [],'
+        ' "frame": {"intent": "I", "problem": "P", "research_question": "RQ"}}'
+    )
+    prose, payload = splitter.finish(interpretation=True)
+    assert prose == "Need the budget."
+    assert payload["exhausted"] is True
