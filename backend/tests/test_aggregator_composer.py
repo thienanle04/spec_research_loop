@@ -1,6 +1,12 @@
 from types import SimpleNamespace
 
-from app.modules.judgement.composer import compose_from_view, filter_handling_options
+from app.modules.judgement.composer import (
+    apply_handling_option_phrasing,
+    compose_from_view,
+    filter_handling_options,
+    needs_handling_option_phrasing,
+    plant_handling_options,
+)
 
 CONFERENCE_SCORES = {
     "originality": 7,
@@ -97,6 +103,81 @@ def test_composer_lists_minor_without_handling_options() -> None:
         ),
     ]
     assert filter_handling_options(drafts, report.issues) == []
+    assert plant_handling_options(report.issues) == []
+    assert needs_handling_option_phrasing(report.issues) is False
+
+
+def test_plant_handling_options_covers_each_critical_issue_target() -> None:
+    report = compose_from_view(
+        {
+            "judge_runs": [
+                _run("gap_judge", []),
+                _run("contribution_judge", []),
+                _run(
+                    "evidence_judge",
+                    [
+                        {
+                            "finding_kind": "unsupported_citation",
+                            "severity": "CRITICAL",
+                            "reason": "No entailment.",
+                            "suggestion": "Cite a passage.",
+                        }
+                    ],
+                ),
+                _run(
+                    "experiment_judge",
+                    [
+                        {
+                            "finding_kind": "claim_broader_than_experiment",
+                            "severity": "MAJOR",
+                            "reason": "Too broad.",
+                            "suggestion": "Narrow the claim.",
+                        }
+                    ],
+                ),
+                _run("conference_judge", [], CONFERENCE_SCORES),
+            ]
+        }
+    )
+    planted = plant_handling_options(report.issues)
+    assert [(item["finding_kind"], item["target_node"]) for item in planted] == [
+        ("unsupported_citation", "claims"),
+        ("claim_broader_than_experiment", "claims"),
+        ("claim_broader_than_experiment", "experiment_plan"),
+    ]
+    assert all(item["label"] != "Other" for item in planted)
+    assert "idea_decomposition" not in {item["target_node"] for item in planted}
+    assert needs_handling_option_phrasing(report.issues) is True
+    drafts = [
+        SimpleNamespace(
+            finding_kind="unsupported_citation",
+            source_node="evidence_judge",
+            label="Revise the claim",
+            target_node="claims",
+            prose="Cite a passage that entails the claim.",
+        ),
+        SimpleNamespace(
+            finding_kind="unsupported_citation",
+            source_node="evidence_judge",
+            label="Other",
+            target_node="claims",
+            prose="Dropped.",
+        ),
+        SimpleNamespace(
+            finding_kind="claim_broader_than_experiment",
+            source_node="experiment_judge",
+            label="Go grill",
+            target_node="idea_decomposition",
+            prose="Dropped.",
+        ),
+    ]
+    phrased = apply_handling_option_phrasing(planted, drafts, report.issues)
+    assert [item["label"] for item in phrased] == [
+        "Revise the claim",
+        "Revise claims and evidence",
+        "Revise the experiment plan",
+    ]
+    assert phrased[0]["prose"] == "Cite a passage that entails the claim."
 
 
 def test_filter_handling_options_drops_other_and_keeps_critical() -> None:

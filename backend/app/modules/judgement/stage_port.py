@@ -55,6 +55,7 @@ def _option_payload(row: HandlingOption) -> dict[str, Any]:
         "label": row.label,
         "target_node": row.target_node,
         "prose": row.prose,
+        "aggregator_issue_id": str(row.aggregator_issue_id),
         "sort_index": row.sort_index,
     }
 

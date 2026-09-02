@@ -87,7 +87,7 @@ export function JudgementStageContainer({
   const node = WorkflowNode.aggregator as JudgeNode;
   const hasOutput = issues.length > 0 || scores != null || handlingOptions.length > 0;
   const aggregatorConfirmable =
-    session.working_draft_node === WorkflowNode.aggregator && hasOutput;
+    session.working_draft_node === WorkflowNode.aggregator && hasOutput && !stream.running;
   const workingHead = session.node_heads.find((head) => head.node === WorkflowNode.aggregator);
   const staleReaccept =
     workingHead?.status === NodeHeadStatus.stale && workingHead.generated_since_prepare !== true;

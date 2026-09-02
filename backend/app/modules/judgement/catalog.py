@@ -72,3 +72,31 @@ def parse_severity(raw: str) -> Severity | None:
         return Severity(raw.upper())
     except ValueError:
         return None
+
+
+HANDLING_OPTION_CATALOG: dict[FindingKind, tuple[WorkflowNode, ...]] = {
+    FindingKind.GAP_UNSUPPORTED_BY_SOURCES: (WorkflowNode.GAP,),
+    FindingKind.GAP_ALREADY_ADDRESSED: (WorkflowNode.GAP, WorkflowNode.CONTRIBUTION),
+    FindingKind.GAP_UNTESTABLE: (WorkflowNode.GAP, WorkflowNode.EXPERIMENT_PLAN),
+    FindingKind.CONTRIBUTION_NOT_NOVEL: (WorkflowNode.CONTRIBUTION,),
+    FindingKind.CONTRIBUTION_OVERCLAIMED: (
+        WorkflowNode.CONTRIBUTION,
+        WorkflowNode.CLAIMS,
+    ),
+    FindingKind.UNSUPPORTED_CITATION: (WorkflowNode.CLAIMS,),
+    FindingKind.CLAIM_BROADER_THAN_EXPERIMENT: (
+        WorkflowNode.CLAIMS,
+        WorkflowNode.EXPERIMENT_PLAN,
+    ),
+    FindingKind.EXPERIMENT_INSUFFICIENT_FOR_CLAIM: (
+        WorkflowNode.EXPERIMENT_PLAN,
+        WorkflowNode.CLAIMS,
+    ),
+}
+
+HANDLING_OPTION_TEMPLATE_LABEL: dict[WorkflowNode, str] = {
+    WorkflowNode.GAP: "Revise the gap",
+    WorkflowNode.CONTRIBUTION: "Revise the contribution",
+    WorkflowNode.CLAIMS: "Revise claims and evidence",
+    WorkflowNode.EXPERIMENT_PLAN: "Revise the experiment plan",
+}

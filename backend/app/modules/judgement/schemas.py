@@ -117,6 +117,7 @@ class HandlingOptionResponse(BaseModel):
     label: str
     target_node: str
     prose: str
+    aggregator_issue_id: UUID | None = None
 
 
 class ClusterMap(BaseModel):

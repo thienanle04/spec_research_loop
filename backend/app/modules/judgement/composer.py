@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from app.modules.judgement.catalog import Severity
-from app.modules.judgement.schemas import grounds_payload
-from app.modules.loop.catalog import (
-    FIVE_JUDGE_NODES,
-    HANDLING_OPTION_TARGETS,
-    WorkflowNode,
+from app.modules.judgement.catalog import (
+    HANDLING_OPTION_CATALOG,
+    HANDLING_OPTION_TEMPLATE_LABEL,
+    Severity,
+    parse_finding_kind,
 )
+from app.modules.judgement.schemas import grounds_payload
+from app.modules.loop.catalog import FIVE_JUDGE_NODES, WorkflowNode
 
 CLUSTER_CONSENSUS = "consensus"
 CLUSTER_DISAGREEMENT = "disagreement"
@@ -79,6 +80,45 @@ def compose_from_view(view: dict[str, Any]) -> ComposedReport:
     return ComposedReport(issues=issues, scores=scores, readiness=readiness)
 
 
+def needs_handling_option_phrasing(issues: list[CopiedIssue]) -> bool:
+    return any(
+        item.severity in {Severity.CRITICAL.value, Severity.MAJOR.value}
+        for item in issues
+    )
+
+
+def plant_handling_options(issues: list[CopiedIssue]) -> list[dict[str, str]]:
+    planted: list[dict[str, str]] = []
+    for item in issues:
+        if item.severity not in {Severity.CRITICAL.value, Severity.MAJOR.value}:
+            continue
+        kind = parse_finding_kind(item.finding_kind)
+        if kind is None:
+            continue
+        for target in HANDLING_OPTION_CATALOG.get(kind, ()):
+            label = HANDLING_OPTION_TEMPLATE_LABEL[target]
+            prose = item.suggestion.strip() or (
+                f"Address this Issue on the {target.value.replace('_', ' ')}."
+            )
+            planted.append(
+                {
+                    "finding_kind": item.finding_kind,
+                    "source_node": item.source_node,
+                    "label": label,
+                    "target_node": target.value,
+                    "prose": prose,
+                }
+            )
+    return planted
+
+
+def catalog_targets_for(finding_kind: str) -> frozenset[str]:
+    kind = parse_finding_kind(finding_kind)
+    if kind is None:
+        return frozenset()
+    return frozenset(node.value for node in HANDLING_OPTION_CATALOG.get(kind, ()))
+
+
 def filter_handling_options(
     drafts: list[Any], issues: list[CopiedIssue]
 ) -> list[dict[str, str]]:
@@ -106,7 +146,7 @@ def filter_handling_options(
             continue
         if _is_other(label) or _is_other(target_node):
             continue
-        if target_node not in HANDLING_OPTION_TARGETS:
+        if target_node not in catalog_targets_for(finding_kind):
             continue
         key = (finding_kind, source_node)
         if key in minor or key not in offered:
@@ -125,6 +165,26 @@ def filter_handling_options(
             }
         )
     return kept
+
+
+def apply_handling_option_phrasing(
+    planted: list[dict[str, str]], drafts: list[Any], issues: list[CopiedIssue]
+) -> list[dict[str, str]]:
+    phrases: dict[tuple[str, str, str], tuple[str, str]] = {}
+    for item in filter_handling_options(drafts, issues):
+        phrases[
+            (item["finding_kind"], item["source_node"], item["target_node"])
+        ] = (item["label"], item["prose"])
+    updated: list[dict[str, str]] = []
+    for option in planted:
+        key = (option["finding_kind"], option["source_node"], option["target_node"])
+        nxt = dict(option)
+        if key in phrases:
+            label, prose = phrases[key]
+            nxt["label"] = label
+            nxt["prose"] = prose
+        updated.append(nxt)
+    return updated
 
 
 def _copy_issue(source_node: str, item: Any) -> CopiedIssue | None:

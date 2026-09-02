@@ -12,4 +12,5 @@ export interface HandlingOptionResponse {
   label: string;
   target_node: string;
   prose: string;
+  aggregator_issue_id?: string | null;
 }
