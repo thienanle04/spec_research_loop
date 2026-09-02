@@ -255,17 +255,61 @@ def _related_work_from_prompt_view(context: dict[str, Any]) -> dict[str, Any]:
     return {"studies": _list_value(raw), "coverage": {}}
 
 
-def _spec_generate_system(node: WorkflowNode) -> str:
+def _spec_output_language(view: dict[str, Any]) -> str:
+    chunks: list[str] = [_confirmed_gap_statement(view)]
+    for item in _list_value(view.get("cards")):
+        if not isinstance(item, dict):
+            continue
+        chunks.append(str(item.get("text") or ""))
+        body = item.get("body")
+        if isinstance(body, str):
+            chunks.append(body)
+        elif isinstance(body, dict):
+            chunks.extend(str(value) for value in body.values() if isinstance(value, str))
+    return "Vietnamese" if _is_vietnamese(" ".join(chunks)) else "English"
+
+
+def _spec_language_contract(output_language: str) -> str:
+    if output_language == "Vietnamese":
+        return (
+            "Write Account-facing prose in Vietnamese. Do not switch the surrounding "
+            "prose to English just because retrieved papers or citation titles are English. "
+            "Do not translate established English technical terms, method names, model names, "
+            "dataset names, metrics, or acronyms; leave them in English. Keep paper titles, "
+            "citation_key values, and verbatim evidence passages in their original language. "
+            "JSON field names must remain exactly as specified. "
+        )
+    return (
+        "Write Account-facing prose in English. Keep paper titles, technical terms, acronyms, "
+        "citation_key values, and verbatim evidence passages in their original language. "
+        "JSON field names must remain exactly as specified. "
+    )
+
+
+def _spec_generate_payload(
+    view: dict[str, Any], *, extra: dict[str, Any] | None = None
+) -> tuple[str, str]:
+    output_language = _spec_output_language(view)
+    payload = dict(view)
+    if extra:
+        payload.update(extra)
+    payload["required_output_language"] = output_language
+    return output_language, json.dumps(payload, default=str, ensure_ascii=False)
+
+
+def _spec_generate_system(node: WorkflowNode, output_language: str) -> str:
     ground = (
         "Ground every output only in the supplied Prompt View. "
         "Do not invent datasets, numeric gains, citations, or capabilities absent from the Prompt View. "
-        "If a detail is missing, name the Account decision instead of fabricating it."
+        "If a detail is missing, name the Account decision instead of fabricating it. "
+        + _spec_language_contract(output_language)
     )
     if node is WorkflowNode.CLAIMS:
         return (
             "You generate Claims and Evidence Cards for a Research Spec from the Prompt View. "
             "Each generated item becomes one Claim Card (claim, baseline, metric, rejection_condition) "
             "and one Evidence Card (expected evidence). "
+            "If you cite prior work, use only citation_key values present in related_work passages. "
             + ground
         )
     if node is WorkflowNode.EXPERIMENT_PLAN:
@@ -607,8 +651,8 @@ class SpecService:
             node=WorkflowNode.CLAIMS,
         )
 
-        system = _spec_generate_system(WorkflowNode.CLAIMS)
-        prompt = json.dumps(view, default=str, ensure_ascii=False)
+        output_language, prompt = _spec_generate_payload(view)
+        system = _spec_generate_system(WorkflowNode.CLAIMS, output_language)
         try:
             response_data = await self._llm.complete_structured(
                 system=system, prompt=prompt, schema=GeneratedClaims
@@ -642,8 +686,8 @@ class SpecService:
             node=WorkflowNode.EXPERIMENT_PLAN,
         )
 
-        system = _spec_generate_system(WorkflowNode.EXPERIMENT_PLAN)
-        prompt = json.dumps(view, default=str, ensure_ascii=False)
+        output_language, prompt = _spec_generate_payload(view)
+        system = _spec_generate_system(WorkflowNode.EXPERIMENT_PLAN, output_language)
         try:
             response_data = await self._llm.complete_structured(
                 system=system,
@@ -677,11 +721,9 @@ class SpecService:
             node=WorkflowNode.FEASIBILITY,
         )
 
-        system = _spec_generate_system(WorkflowNode.FEASIBILITY)
-        payload = dict(view)
-        if plan:
-            payload["experiment_plan"] = plan
-        prompt = json.dumps(payload, default=str, ensure_ascii=False)
+        extra = {"experiment_plan": plan} if plan else None
+        output_language, prompt = _spec_generate_payload(view, extra=extra)
+        system = _spec_generate_system(WorkflowNode.FEASIBILITY, output_language)
         try:
             report = await self._llm.complete_structured(
                 system=system, prompt=prompt, schema=FeasibilityReport
@@ -740,7 +782,8 @@ class SpecService:
             "to compare against the closest prior work named in the Prompt View when available; "
             "use validation to name a baseline, "
             "observable outcome, and rejection condition without made-up target values. "
-            f"Write every field in {output_language}. Do not include Combine or Other."
+            + _spec_language_contract(output_language)
+            + "Do not include Combine or Other."
         )
         prompt = json.dumps(prompt_payload, default=str, ensure_ascii=False)
         last_error: Exception | None = None
