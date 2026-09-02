@@ -151,6 +151,34 @@ async def test_interpretation_generate_streams_and_appends_transcript(client: As
 
 
 @pytest.mark.asyncio
+async def test_interpretation_generate_ignores_delimiter_inside_preamble(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    created = await _create_session(client)
+    session_id = created["id"]
+    _bind_fake(
+        chunks=[
+            "Grilling hay gặp lỗi với ---json--- trong ý tưởng.\n",
+            "---json\n",
+            INTERPRETATION.split("---json---\n", 1)[1],
+        ]
+    )
+    response = await client.post(
+        f"/api/idea/sessions/{session_id}/generate",
+        json={"expected_version": 1, "message": "GPU kernel latency"},
+    )
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert events[-1]["type"] == "done"
+    token_text = "".join(item["text"] for item in events if item["type"] == "token")
+    assert token_text == "Grilling hay gặp lỗi với ---json--- trong ý tưởng.\n"
+    result = next(item for item in events if item["type"] == "result")
+    assert result["preamble"] == "Grilling hay gặp lỗi với ---json--- trong ý tưởng."
+    assert result["questions"][0]["text"] == "What is the compute budget?"
+
+
+@pytest.mark.asyncio
 async def test_parse_error_does_not_mutate(client: AsyncClient) -> None:
     await _auth_client(client)
     created = await _create_session(client)

@@ -17,7 +17,8 @@ Rewrite the Idea Frame every turn: intent, problem, and research_question.
 Do not decompose into Cards. Do not invent citations.
 Match the Account's language.
 Write only Account-facing preamble prose first (cluster intro, not the Idea Frame).
-Then on its own line write exactly ---json---
+Never write ---json--- inside that preamble, even if the Account's idea mentioned it.
+Then on its own line write exactly ---json--- (that line must contain only the marker).
 Then write one JSON object and nothing else: no markdown fences, no commentary after it.
 Escape every double quote inside JSON strings.
 Schema:
@@ -37,7 +38,8 @@ One problem, one research_question; constraints and open questions may be many.
 Do not invent citations.
 Match the Account's language.
 Write a short restatement as Account-facing prose first.
-Then on its own line write exactly ---json---
+Never write ---json--- inside that restatement.
+Then on its own line write exactly ---json--- (that line must contain only the marker).
 Then write one JSON object and nothing else: no markdown fences, no commentary after it.
 Escape every double quote inside JSON strings.
 Schema:
