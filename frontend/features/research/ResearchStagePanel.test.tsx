@@ -193,7 +193,7 @@ describe("ResearchStagePanel", () => {
     expect(screen.getByRole("columnheader", { name: "What was done?" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Method or feedback" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Remaining limitation" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Source" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Source" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "ResearchLoop" })).toHaveAttribute(
       "href",
       "https://doi.org/10.1000/research",
@@ -202,10 +202,9 @@ describe("ResearchStagePanel", () => {
     expect(screen.getByText("Evaluated a research loop.")).toBeInTheDocument();
     expect(screen.getByText("Textual feedback")).toBeInTheDocument();
     expect(screen.getByText("Used one benchmark.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: `Open source: ${citation.title}` })).toHaveAttribute(
-      "href",
-      "https://doi.org/10.1000/research",
-    );
+    expect(
+      screen.queryByRole("link", { name: `Open source: ${citation.title}` }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Relevance" })).not.toBeInTheDocument();
     expect(screen.getAllByText("Evidence · Source excerpt")).toHaveLength(3);
   });
