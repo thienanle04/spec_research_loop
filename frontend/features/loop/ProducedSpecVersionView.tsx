@@ -1,6 +1,8 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Download } from "lucide-react";
 import { frameHasContent } from "@/features/idea/turns";
 import { CardKind, WorkflowNode, type SpecVersionResponse } from "@/lib/api/generated/model";
 
@@ -406,15 +408,38 @@ export function ProducedSpecVersionView({
   return (
     <section aria-label="Produced Spec Version">
       <Card>
-        <CardHeader>
-          <CardTitle className="font-serif text-navy">Produced Spec Version</CardTitle>
-          <CardDescription>
-            {produced
-              ? stale
-                ? "Stale. This Produced Spec Version is not the Valid Spec Version."
-                : "This Produced Spec Version is the Valid Spec Version."
-              : "No Produced Spec Version"}
-          </CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between">
+          <div className="space-y-1">
+            <CardTitle className="font-serif text-navy">Produced Spec Version</CardTitle>
+            <CardDescription>
+              {produced
+                ? stale
+                  ? "Stale. This Produced Spec Version is not the Valid Spec Version."
+                  : "This Produced Spec Version is the Valid Spec Version."
+                : "No Produced Spec Version"}
+            </CardDescription>
+          </div>
+          {produced && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-0"
+              onClick={() => {
+                const blob = new Blob([JSON.stringify(produced.document, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `spec_draft_${sessionId}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              }}
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Export JSON
+            </Button>
+          )}
         </CardHeader>
         <CardContent>
           {produced ? (

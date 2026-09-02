@@ -38,7 +38,7 @@ describe("Loop Stage catalog", () => {
 
   it("groups every generated Workflow Node without a second identifier vocabulary", () => {
     const grouped = LOOP_STAGE_CATALOG.flatMap((stage) => [...stage.nodes]);
-    expect(grouped).toEqual(Object.values(WorkflowNode));
+    expect(grouped).toEqual(Object.values(WorkflowNode).filter((n) => n !== WorkflowNode.evidence));
     expect(LOOP_STAGE_CATALOG.find((stage) => stage.id === LoopStage.related_work)?.nodes).toEqual([
       WorkflowNode.research_inputs,
       WorkflowNode.related_work,

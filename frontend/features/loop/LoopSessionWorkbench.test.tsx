@@ -800,7 +800,7 @@ describe("LoopSessionWorkbench", () => {
       },
       {
         stage: LoopStage.claims_evidence,
-        labels: ["Claims", "Evidence"],
+        labels: ["Claims/Evidence"],
       },
       {
         stage: LoopStage.experiment_planning,
