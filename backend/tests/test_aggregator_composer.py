@@ -180,6 +180,34 @@ def test_plant_handling_options_covers_each_critical_issue_target() -> None:
     assert phrased[0]["prose"] == "Cite a passage that entails the claim."
 
 
+def test_plant_handling_options_overclaimed_targets_contribution_only() -> None:
+    report = compose_from_view(
+        {
+            "judge_runs": [
+                _run("gap_judge", []),
+                _run(
+                    "contribution_judge",
+                    [
+                        {
+                            "finding_kind": "contribution_overclaimed",
+                            "severity": "MAJOR",
+                            "reason": "Contribution is broader than the gap.",
+                            "suggestion": "Narrow the contribution.",
+                        }
+                    ],
+                ),
+                _run("evidence_judge", []),
+                _run("experiment_judge", []),
+                _run("conference_judge", [], CONFERENCE_SCORES),
+            ]
+        }
+    )
+    planted = plant_handling_options(report.issues)
+    assert [(item["finding_kind"], item["target_node"]) for item in planted] == [
+        ("contribution_overclaimed", "contribution"),
+    ]
+
+
 def test_filter_handling_options_drops_other_and_keeps_critical() -> None:
     report = compose_from_view(
         {

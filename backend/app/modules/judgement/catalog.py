@@ -79,10 +79,7 @@ HANDLING_OPTION_CATALOG: dict[FindingKind, tuple[WorkflowNode, ...]] = {
     FindingKind.GAP_ALREADY_ADDRESSED: (WorkflowNode.GAP, WorkflowNode.CONTRIBUTION),
     FindingKind.GAP_UNTESTABLE: (WorkflowNode.GAP, WorkflowNode.EXPERIMENT_PLAN),
     FindingKind.CONTRIBUTION_NOT_NOVEL: (WorkflowNode.CONTRIBUTION,),
-    FindingKind.CONTRIBUTION_OVERCLAIMED: (
-        WorkflowNode.CONTRIBUTION,
-        WorkflowNode.CLAIMS,
-    ),
+    FindingKind.CONTRIBUTION_OVERCLAIMED: (WorkflowNode.CONTRIBUTION,),
     FindingKind.UNSUPPORTED_CITATION: (WorkflowNode.CLAIMS,),
     FindingKind.CLAIM_BROADER_THAN_EXPERIMENT: (
         WorkflowNode.CLAIMS,

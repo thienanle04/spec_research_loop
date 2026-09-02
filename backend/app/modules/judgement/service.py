@@ -905,6 +905,12 @@ def _judge_system(node: WorkflowNode) -> str:
             f" Verifiers may emit {FindingKind.GAP_UNSUPPORTED_BY_SOURCES.value} "
             f"at floor {Severity.CRITICAL.value}; do not drop that Issue."
         )
+    elif node is WorkflowNode.CONTRIBUTION_JUDGE:
+        extra = (
+            f" {FindingKind.CONTRIBUTION_OVERCLAIMED.value} means the contribution "
+            "is broader than the gap, problem, or related work. "
+            "Do not evaluate Claim Cards."
+        )
     elif node is WorkflowNode.EVIDENCE_JUDGE:
         extra = (
             f" Verifiers may emit {FindingKind.UNSUPPORTED_CITATION.value} "

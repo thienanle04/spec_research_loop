@@ -69,6 +69,8 @@ async def test_contribution_judge_system_names_kinds_and_floors() -> None:
         assert kind in system
         assert FINDING_KIND_FLOOR[FindingKind(kind)].value in system
     assert "independen" in system.lower()
+    assert "do not evaluate claim cards" in system.lower()
+    assert "gap" in system.lower()
     assert system != "judge-contribution"
 
 
