@@ -383,6 +383,29 @@ async def test_second_confirm_aggregator_does_not_clone_snapshot_or_reset_buffer
 
 
 @pytest.mark.asyncio
+async def test_confirm_aggregator_snapshot_one_is_filter_not_preconfirm_overlay(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    minted = await _mint_spec_with_paper_sources(client)
+    assert minted["export_scratch_snapshots"] == []
+    projected = minted["export_scratch"]["document"]
+    overlay = "Overlay written before Confirm Aggregator"
+    patched = await _patch_export_scratch(
+        client,
+        minted,
+        _edited_document(projected, problem_body=overlay),
+    )
+    confirmed = await _confirm_aggregator(client, patched)
+    snapshot_one = confirmed["export_scratch_snapshots"][0]["document"]
+    assert snapshot_one == projected
+    assert _sections_by_id({"export_scratch": {"document": snapshot_one}})[
+        "problem_statement"
+    ]["body"] != overlay
+    assert overlay not in json.dumps(snapshot_one)
+
+
+@pytest.mark.asyncio
 async def test_get_session_returns_export_scratch_for_valid_spec_version(
     client: AsyncClient,
 ) -> None:
@@ -1201,6 +1224,30 @@ async def test_pdf_download_uses_patched_buffer_not_snapshot(
     assert OVERLAY_PROBLEM_PDF in body
     if snapshot_problem and snapshot_problem != OVERLAY_PROBLEM_PDF:
         assert snapshot_problem not in body
+
+
+@pytest.mark.asyncio
+async def test_pdf_download_keeps_non_latin1_characters_from_the_same_markdown(
+    client: AsyncClient,
+) -> None:
+    await _auth_client(client)
+    confirmed = await _confirm_aggregator(client, await _prepare_aggregator(client))
+    unicode_body = "λ-calculus — nghiên cứu"
+    patched = await _patch_export_scratch(
+        client,
+        confirmed,
+        _edited_document(
+            confirmed["export_scratch"]["document"],
+            problem_body=unicode_body,
+        ),
+    )
+    markdown = await client.post(MARKDOWN_PATH.format(session_id=patched["id"]))
+    assert markdown.status_code == 200, markdown.text
+    assert unicode_body in markdown.text
+    download = await client.post(PDF_PATH.format(session_id=patched["id"]))
+    assert download.status_code == 200, download.text
+    body = _pdf_payload_text(download.content)
+    assert unicode_body in body
 
 
 @pytest.mark.asyncio

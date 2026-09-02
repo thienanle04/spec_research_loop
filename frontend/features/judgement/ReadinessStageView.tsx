@@ -5,18 +5,32 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
-import { getApiErrorMessage } from "@/lib/api/config";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { ApiError, getApiErrorMessage } from "@/lib/api/config";
+import {
+  downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost,
+  downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost,
+  exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet,
+  exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost,
   getGetSessionApiLoopSessionsSessionIdGetQueryKey,
+  getSessionApiLoopSessionsSessionIdGet,
   patchExportScratchApiLoopSessionsSessionIdExportScratchPatch,
+  restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost,
+  saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost,
 } from "@/lib/api/generated/endpoints";
 import type {
   ExportScratchDiffResponse,
   ExportScratchSection,
   LoopSessionResponse,
 } from "@/lib/api/generated/model";
-import { customFetch } from "@/lib/api/mutator";
 
 import { ConferenceScoreList } from "./ConferenceScoreList";
 import type { ConferenceScores, ReadinessState } from "./types";
@@ -28,6 +42,16 @@ const STATE_LABEL: Record<ReadinessState, string> = {
 };
 
 type ScratchDiff = ExportScratchDiffResponse;
+type ExportKind = "markdown" | "pdf" | "spec_artifact";
+
+function triggerDownload(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 export function ReadinessStageView({
   session,
@@ -43,9 +67,9 @@ export function ReadinessStageView({
   const notice = readiness?.notice ?? "This is not conference acceptance.";
   const scores = (readiness?.scores ?? null) as ConferenceScores | null;
   const [exportError, setExportError] = useState<string | null>(null);
-  const [exportOk, setExportOk] = useState<"markdown" | "pdf" | null>(null);
+  const [exportOk, setExportOk] = useState<ExportKind | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [pendingDownload, setPendingDownload] = useState<"markdown" | "pdf">("markdown");
+  const [pendingDownload, setPendingDownload] = useState<ExportKind>("markdown");
   const [sections, setSections] = useState<ExportScratchSection[]>(
     session.export_scratch?.document.sections ?? [],
   );
@@ -67,40 +91,76 @@ export function ReadinessStageView({
     setSelectedSpecId(session.valid_spec_version_id ?? session.spec_versions?.[0]?.id ?? "");
   }, [session]);
 
+  async function persistOverlayBuffer() {
+    if (!sections.length) {
+      return viewed;
+    }
+    try {
+      const response = await patchExportScratchApiLoopSessionsSessionIdExportScratchPatch(
+        sessionId,
+        {
+          expected_version: expectedVersion,
+          document: { sections },
+          spec_version_id: selectedSpecId || session.export_scratch?.spec_version_id,
+        },
+      );
+      if (response.status !== 200) {
+        throw new Error("Export Scratch overlay was not saved");
+      }
+      const next = response.data;
+      setExpectedVersion(next.version);
+      setViewed(next);
+      setSections(next.export_scratch?.document.sections ?? sections);
+      return next;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        return viewed;
+      }
+      throw error;
+    }
+  }
+
   async function exportScratch(format: "markdown" | "pdf", ack: boolean) {
     setExportError(null);
     setExportOk(null);
     try {
+      const next = await persistOverlayBuffer();
       const specVersionId =
-        selectedSpecId || session.export_scratch?.spec_version_id || "";
-      const query = specVersionId ? `?spec_version_id=${specVersionId}` : "";
-      const response = await customFetch<{
-        status: number;
-        data: string | ArrayBuffer;
-        headers: Headers;
-      }>(
-        `/api/loop/sessions/${sessionId}/export-scratch/${format}${query}`,
-        ack
-          ? { method: "POST", body: JSON.stringify({ critical_export_ack: true }) }
-          : { method: "POST" },
-      );
-      const disposition = response.headers?.get?.("content-disposition") ?? "";
-      const matched = /filename="([^"]+)"/.exec(disposition);
-      const fallbackName = `export-scratch-${specVersionId || "download"}.${format === "pdf" ? "pdf" : "md"}`;
-      const filename = matched?.[1] ?? fallbackName;
-      const blob =
-        format === "pdf"
-          ? new Blob([response.data as BlobPart], { type: "application/pdf" })
-          : new Blob(
-              [typeof response.data === "string" ? response.data : ""],
-              { type: "text/markdown;charset=utf-8" },
-            );
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      link.click();
-      URL.revokeObjectURL(url);
+        selectedSpecId || next.export_scratch?.spec_version_id || session.export_scratch?.spec_version_id;
+      const params = specVersionId ? { spec_version_id: specVersionId } : undefined;
+      const body = ack ? { critical_export_ack: true } : undefined;
+      if (format === "pdf") {
+        const response = await downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost(
+          sessionId,
+          body,
+          params,
+        );
+        const disposition = response.headers?.get?.("content-disposition") ?? "";
+        const matched = /filename="([^"]+)"/.exec(disposition);
+        const filename =
+          matched?.[1] ?? `export-scratch-${specVersionId || "download"}.pdf`;
+        triggerDownload(
+          filename,
+          new Blob([response.data as BlobPart], { type: "application/pdf" }),
+        );
+      } else {
+        const response = await downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost(
+          sessionId,
+          body,
+          params,
+        );
+        const disposition = response.headers?.get?.("content-disposition") ?? "";
+        const matched = /filename="([^"]+)"/.exec(disposition);
+        const filename =
+          matched?.[1] ?? `export-scratch-${specVersionId || "download"}.md`;
+        triggerDownload(
+          filename,
+          new Blob(
+            [typeof response.data === "string" ? response.data : ""],
+            { type: "text/markdown;charset=utf-8" },
+          ),
+        );
+      }
       setConfirmOpen(false);
       setExportOk(format);
     } catch (error) {
@@ -108,15 +168,44 @@ export function ReadinessStageView({
     }
   }
 
-  function onExportClick(format: "markdown" | "pdf") {
+  async function exportSpecArtifact(ack: boolean) {
+    setExportError(null);
+    setExportOk(null);
+    try {
+      const response = await exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPost(
+        sessionId,
+        ack ? { critical_export_ack: true } : undefined,
+      );
+      if (response.status !== 200) {
+        throw new Error("Spec Artifact export failed");
+      }
+      const specId = response.data.spec_version_id;
+      triggerDownload(
+        `spec-artifact-${specId}.json`,
+        new Blob([JSON.stringify(response.data, null, 2)], {
+          type: "application/json",
+        }),
+      );
+      setConfirmOpen(false);
+      setExportOk("spec_artifact");
+    } catch (error) {
+      setExportError(getApiErrorMessage(error));
+    }
+  }
+
+  function onExportClick(kind: ExportKind) {
     setExportError(null);
     setExportOk(null);
     if (state === "blocked") {
-      setPendingDownload(format);
+      setPendingDownload(kind);
       setConfirmOpen(true);
       return;
     }
-    void exportScratch(format, false);
+    if (kind === "spec_artifact") {
+      void exportSpecArtifact(false);
+      return;
+    }
+    void exportScratch(kind, false);
   }
 
   async function loadScratchDiffs(specVersionId: string | undefined) {
@@ -127,14 +216,14 @@ export function ReadinessStageView({
     }
     try {
       const [previous, original] = await Promise.all([
-        customFetch<{ status: number; data: ScratchDiff }>(
-          `/api/loop/sessions/${sessionId}/export-scratch/diff?against=previous&spec_version_id=${specVersionId}`,
-          { method: "GET" },
-        ),
-        customFetch<{ status: number; data: ScratchDiff }>(
-          `/api/loop/sessions/${sessionId}/export-scratch/diff?against=original&spec_version_id=${specVersionId}`,
-          { method: "GET" },
-        ),
+        exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet(sessionId, {
+          against: "previous",
+          spec_version_id: specVersionId,
+        }),
+        exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet(sessionId, {
+          against: "original",
+          spec_version_id: specVersionId,
+        }),
       ]);
       setPreviousDiff(previous.status === 200 ? previous.data : null);
       setOriginalDiff(original.status === 200 ? original.data : null);
@@ -148,14 +237,11 @@ export function ReadinessStageView({
     setScratchError(null);
     setScratchOk(false);
     try {
-      const response = await customFetch<{ status: number; data: LoopSessionResponse }>(
-        `/api/loop/sessions/${sessionId}/export-scratch/snapshots`,
+      const response = await saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost(
+        sessionId,
         {
-          method: "POST",
-          body: JSON.stringify({
-            expected_version: expectedVersion,
-            spec_version_id: selectedSpecId || session.export_scratch?.spec_version_id,
-          }),
+          expected_version: expectedVersion,
+          spec_version_id: selectedSpecId || session.export_scratch?.spec_version_id,
         },
       );
       if (response.status === 200) {
@@ -177,12 +263,10 @@ export function ReadinessStageView({
   async function restoreSnapshot(snapshotId: string) {
     setScratchError(null);
     try {
-      const response = await customFetch<{ status: number; data: LoopSessionResponse }>(
-        `/api/loop/sessions/${sessionId}/export-scratch/snapshots/${snapshotId}/restore`,
-        {
-          method: "POST",
-          body: JSON.stringify({ expected_version: expectedVersion }),
-        },
+      const response = await restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost(
+        sessionId,
+        snapshotId,
+        { expected_version: expectedVersion },
       );
       if (response.status === 200) {
         const next = response.data;
@@ -231,10 +315,9 @@ export function ReadinessStageView({
     setSelectedSpecId(specVersionId);
     setScratchError(null);
     try {
-      const response = await customFetch<{ status: number; data: LoopSessionResponse }>(
-        `/api/loop/sessions/${sessionId}?spec_version_id=${specVersionId}`,
-        { method: "GET" },
-      );
+      const response = await getSessionApiLoopSessionsSessionIdGet(sessionId, {
+        spec_version_id: specVersionId,
+      });
       if (response.status === 200) {
         const next = response.data;
         setViewed(next);
@@ -399,7 +482,7 @@ export function ReadinessStageView({
           {state === "ready" || state === "blocked" ? (
             <div className="flex flex-wrap gap-2">
               <Button type="button" className="justify-self-start" onClick={() => onExportClick("markdown")}>
-                Export Spec
+                Export Scratch markdown
               </Button>
               <Button
                 type="button"
@@ -409,6 +492,14 @@ export function ReadinessStageView({
               >
                 Download PDF
               </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="justify-self-start"
+                onClick={() => onExportClick("spec_artifact")}
+              >
+                Spec Artifact JSON
+              </Button>
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
@@ -417,18 +508,23 @@ export function ReadinessStageView({
           )}
           {state === "blocked" ? (
             <p className="text-sm text-muted-foreground">
-              CRITICAL Judge Issues fail Readiness. Export Scratch markdown and PDF download
-              require a Critical Export Confirmation.
+              CRITICAL Judge Issues fail Readiness. Spec Artifact JSON and Export Scratch
+              markdown and PDF download require a Critical Export Confirmation.
             </p>
           ) : null}
           {exportOk === "markdown" ? (
-            <p role="status" aria-label="Export Spec" className="text-sm text-muted-foreground">
+            <p role="status" aria-label="Export Scratch markdown" className="text-sm text-muted-foreground">
               Export Scratch markdown downloaded.
             </p>
           ) : null}
           {exportOk === "pdf" ? (
             <p role="status" aria-label="Download PDF" className="text-sm text-muted-foreground">
               Export Scratch PDF downloaded.
+            </p>
+          ) : null}
+          {exportOk === "spec_artifact" ? (
+            <p role="status" aria-label="Spec Artifact JSON" className="text-sm text-muted-foreground">
+              Spec Artifact JSON downloaded.
             </p>
           ) : null}
           {exportError ? (
@@ -438,32 +534,34 @@ export function ReadinessStageView({
           ) : null}
         </CardContent>
       </Card>
-      {confirmOpen ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="critical-export-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-        >
-          <div className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-lg">
-            <h2 id="critical-export-title" className="font-serif text-lg text-navy">
-              Critical Export Confirmation
-            </h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Readiness stays blocked. This records a Critical Export Confirmation and downloads
-              the current Export Scratch as {pendingDownload === "pdf" ? "PDF" : "markdown"}.
-            </p>
-            <div className="mt-4 grid gap-2">
-              <Button type="button" onClick={() => void exportScratch(pendingDownload, true)}>
-                Confirm export
-              </Button>
-              <Button type="button" variant="ghost" onClick={() => setConfirmOpen(false)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-serif text-navy">Critical Export Confirmation</DialogTitle>
+            <DialogDescription>
+              Readiness stays blocked. This records a Critical Export Confirmation
+              {pendingDownload === "spec_artifact"
+                ? " and downloads Spec Artifact JSON of the Valid Spec Version."
+                : ` and downloads the current Export Scratch as ${pendingDownload === "pdf" ? "PDF" : "markdown"}.`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="grid gap-2 sm:flex sm:flex-col">
+            <Button
+              type="button"
+              onClick={() =>
+                pendingDownload === "spec_artifact"
+                  ? void exportSpecArtifact(true)
+                  : void exportScratch(pendingDownload, true)
+              }
+            >
+              Confirm export
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

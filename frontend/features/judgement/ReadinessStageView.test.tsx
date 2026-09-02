@@ -108,15 +108,37 @@ function session(state: "not_evaluated" | "blocked" | "ready"): LoopSessionRespo
 describe("ReadinessStageView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.customFetch.mockResolvedValue({
-      status: 200,
-      data: "## 1. Problem Statement\n",
-      headers: {
-        get: (name: string) =>
-          name === "content-disposition"
-            ? 'attachment; filename="export-scratch-spec-1.md"'
-            : null,
-      },
+    mocks.customFetch.mockImplementation(async (url: string) => {
+      if (
+        typeof url === "string" &&
+        url.endsWith("/export-scratch")
+      ) {
+        return { status: 200, data: session("ready"), headers: new Headers() };
+      }
+      if (typeof url === "string" && url.includes("spec-artifact")) {
+        return {
+          status: 200,
+          data: { spec_version_id: "spec-1", document: { nodes: {} } },
+          headers: new Headers(),
+        };
+      }
+      const isPdf = typeof url === "string" && url.includes("/pdf");
+      return {
+        status: 200,
+        data: isPdf
+          ? new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer
+          : "## 1. Problem Statement\n",
+        headers: {
+          get: (name: string) =>
+            name === "content-disposition"
+              ? `attachment; filename="export-scratch-spec-1.${isPdf ? "pdf" : "md"}"`
+              : name === "content-type"
+                ? isPdf
+                  ? "application/pdf"
+                  : "text/markdown; charset=utf-8"
+                : null,
+        },
+      };
     });
     vi.stubGlobal(
       "URL",
@@ -135,20 +157,32 @@ describe("ReadinessStageView", () => {
     const user = userEvent.setup();
     renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
     expect(screen.getByText("Ready")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Export Spec" }));
+    await user.click(screen.getByRole("button", { name: "Export Scratch markdown" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => {
       expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+      expect(mocks.customFetch).toHaveBeenCalledWith(
         "/api/loop/sessions/session-1/export-scratch/markdown?spec_version_id=spec-1",
-        {
+        expect.objectContaining({
           method: "POST",
-        },
+        }),
       );
     });
+    const patchIndex = mocks.customFetch.mock.calls.findIndex(
+      (call) => call[0] === "/api/loop/sessions/session-1/export-scratch",
+    );
+    const markdownIndex = mocks.customFetch.mock.calls.findIndex((call) =>
+      String(call[0]).includes("/export-scratch/markdown"),
+    );
+    expect(patchIndex).toBeGreaterThanOrEqual(0);
+    expect(markdownIndex).toBeGreaterThan(patchIndex);
     expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("spec-artifact"))).toBe(
       false,
     );
-    expect(screen.getByRole("status", { name: "Export Spec" })).toHaveTextContent(
+    expect(screen.getByRole("status", { name: "Export Scratch markdown" })).toHaveTextContent(
       "Export Scratch markdown downloaded.",
     );
     expect(screen.getByText("Ready")).toBeInTheDocument();
@@ -160,25 +194,29 @@ describe("ReadinessStageView", () => {
     renderView(<ReadinessStageView session={session("blocked")} sessionId="session-1" />);
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Export Spec" }));
+    await user.click(screen.getByRole("button", { name: "Export Scratch markdown" }));
     expect(mocks.customFetch).not.toHaveBeenCalled();
     const dialog = screen.getByRole("dialog", { name: "Critical Export Confirmation" });
     expect(dialog).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confirm export" }));
     await waitFor(() => {
       expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+      expect(mocks.customFetch).toHaveBeenCalledWith(
         "/api/loop/sessions/session-1/export-scratch/markdown?spec_version_id=spec-1",
-        {
+        expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ critical_export_ack: true }),
-        },
+        }),
       );
     });
     expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("spec-artifact"))).toBe(
       false,
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "Export Spec" })).toHaveTextContent(
+    expect(screen.getByRole("status", { name: "Export Scratch markdown" })).toHaveTextContent(
       "Export Scratch markdown downloaded.",
     );
     expect(screen.getByText("Blocked")).toBeInTheDocument();
@@ -187,29 +225,21 @@ describe("ReadinessStageView", () => {
 
   it("downloads Export Scratch PDF from a distinct control when Readiness is ready", async () => {
     const user = userEvent.setup();
-    mocks.customFetch.mockResolvedValue({
-      status: 200,
-      data: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
-      headers: {
-        get: (name: string) =>
-          name === "content-disposition"
-            ? 'attachment; filename="export-scratch-spec-1.pdf"'
-            : name === "content-type"
-              ? "application/pdf"
-              : null,
-      },
-    });
     renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
-    expect(screen.getByRole("button", { name: "Export Spec" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export Scratch markdown" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download PDF" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Download PDF" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => {
       expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+      expect(mocks.customFetch).toHaveBeenCalledWith(
         "/api/loop/sessions/session-1/export-scratch/pdf?spec_version_id=spec-1",
-        {
+        expect.objectContaining({
           method: "POST",
-        },
+        }),
       );
     });
     expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("markdown"))).toBe(
@@ -225,18 +255,6 @@ describe("ReadinessStageView", () => {
 
   it("asks for Critical Export Confirmation on each blocked PDF download", async () => {
     const user = userEvent.setup();
-    mocks.customFetch.mockResolvedValue({
-      status: 200,
-      data: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
-      headers: {
-        get: (name: string) =>
-          name === "content-disposition"
-            ? 'attachment; filename="export-scratch-spec-1.pdf"'
-            : name === "content-type"
-              ? "application/pdf"
-              : null,
-      },
-    });
     renderView(<ReadinessStageView session={session("blocked")} sessionId="session-1" />);
     await user.click(screen.getByRole("button", { name: "Download PDF" }));
     expect(mocks.customFetch).not.toHaveBeenCalled();
@@ -244,11 +262,15 @@ describe("ReadinessStageView", () => {
     await user.click(screen.getByRole("button", { name: "Confirm export" }));
     await waitFor(() => {
       expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/export-scratch",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+      expect(mocks.customFetch).toHaveBeenCalledWith(
         "/api/loop/sessions/session-1/export-scratch/pdf?spec_version_id=spec-1",
-        {
+        expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ critical_export_ack: true }),
-        },
+        }),
       );
     });
     expect(mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("markdown"))).toBe(
@@ -258,6 +280,47 @@ describe("ReadinessStageView", () => {
     expect(screen.getByRole("status", { name: "Download PDF" })).toHaveTextContent(
       "Export Scratch PDF downloaded.",
     );
+    expect(screen.getByText("Blocked")).toBeInTheDocument();
+  });
+
+  it("exports Spec Artifact JSON with one click when Readiness is ready", async () => {
+    const user = userEvent.setup();
+    renderView(<ReadinessStageView session={session("ready")} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Spec Artifact JSON" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/spec-artifact",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+    expect(
+      mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("export-scratch/markdown")),
+    ).toBe(false);
+    expect(screen.getByRole("status", { name: "Spec Artifact JSON" })).toHaveTextContent(
+      "Spec Artifact JSON downloaded.",
+    );
+  });
+
+  it("asks for Critical Export Confirmation on blocked Spec Artifact JSON", async () => {
+    const user = userEvent.setup();
+    renderView(<ReadinessStageView session={session("blocked")} sessionId="session-1" />);
+    await user.click(screen.getByRole("button", { name: "Spec Artifact JSON" }));
+    expect(
+      mocks.customFetch.mock.calls.some((call) => String(call[0]).includes("spec-artifact")),
+    ).toBe(false);
+    expect(screen.getByRole("dialog", { name: "Critical Export Confirmation" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm export" }));
+    await waitFor(() => {
+      expect(mocks.customFetch).toHaveBeenCalledWith(
+        "/api/loop/sessions/session-1/spec-artifact",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ critical_export_ack: true }),
+        }),
+      );
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByText("Blocked")).toBeInTheDocument();
   });
 

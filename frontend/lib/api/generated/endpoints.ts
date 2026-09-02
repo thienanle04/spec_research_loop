@@ -38,6 +38,10 @@ import type {
   CreateCardRequest,
   CreateSessionRequest,
   DecisionResponse,
+  DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostParams,
+  DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostParams,
+  ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams,
+  ExportScratchDiffResponse,
   GenerateClaimsRequest,
   GenerateClaimsResponse,
   GenerateExperimentRequest,
@@ -69,7 +73,9 @@ import type {
   RegisterRequest,
   RelatedWorkFindingResponse,
   ReplaceCardsRequest,
+  RestoreExportScratchSnapshotRequest,
   RootHealthHealthGet200,
+  SaveExportScratchSnapshotRequest,
   SpecArtifactExportRequest,
   SpecArtifactResponse,
   TokenResponse,
@@ -1143,6 +1149,335 @@ export const usePatchExportScratchApiLoopSessionsSessionIdExportScratchPatch = <
       return useMutation(getPatchExportScratchApiLoopSessionsSessionIdExportScratchPatchMutationOptions(options), queryClient);
     }
 
+export type saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse200 = {
+  data: LoopSessionResponse
+  status: 200
+}
+
+export type saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponseSuccess = (saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse200) & {
+  headers: Headers;
+};
+export type saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponseError = (saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse409 | saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse422) & {
+  headers: Headers;
+};
+
+export type saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse = (saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponseSuccess | saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponseError)
+
+export const getSaveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostUrl = (sessionId: string,) => {
+
+
+
+
+  return `/api/loop/sessions/${sessionId}/export-scratch/snapshots`
+}
+
+/**
+ * @summary Save Export Scratch Snapshot
+ */
+export const saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost = async (sessionId: string,
+    saveExportScratchSnapshotRequest: SaveExportScratchSnapshotRequest, options?: Parameters<typeof customFetch>[1]): Promise<saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse> => {
+
+  return customFetch<saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostResponse>(getSaveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostUrl(sessionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(saveExportScratchSnapshotRequest)
+  }
+);}
+
+
+
+
+
+export const getSaveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost>>, TError,{sessionId: string;data: BodyType<SaveExportScratchSnapshotRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost>>, TError,{sessionId: string;data: BodyType<SaveExportScratchSnapshotRequest>}, TContext> => {
+
+const mutationKey = ['saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost>>, {sessionId: string;data: BodyType<SaveExportScratchSnapshotRequest>}> = (props) => {
+          const {sessionId,data} = props ?? {};
+
+          return  saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost(sessionId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SaveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostMutationResult = NonNullable<Awaited<ReturnType<typeof saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost>>>
+    export type SaveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostMutationBody = BodyType<SaveExportScratchSnapshotRequest>
+    export type SaveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostMutationError = ErrorType<OperationalError | HTTPValidationError>
+
+    /**
+ * @summary Save Export Scratch Snapshot
+ */
+export const useSaveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost>>, TError,{sessionId: string;data: BodyType<SaveExportScratchSnapshotRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof saveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPost>>,
+        TError,
+        {sessionId: string;data: BodyType<SaveExportScratchSnapshotRequest>},
+        TContext
+      > => {
+      return useMutation(getSaveExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsPostMutationOptions(options), queryClient);
+    }
+
+export type restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse200 = {
+  data: LoopSessionResponse
+  status: 200
+}
+
+export type restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponseSuccess = (restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse200) & {
+  headers: Headers;
+};
+export type restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponseError = (restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse409 | restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse422) & {
+  headers: Headers;
+};
+
+export type restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse = (restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponseSuccess | restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponseError)
+
+export const getRestoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostUrl = (sessionId: string,
+    snapshotId: string,) => {
+
+
+
+
+  return `/api/loop/sessions/${sessionId}/export-scratch/snapshots/${snapshotId}/restore`
+}
+
+/**
+ * @summary Restore Export Scratch Snapshot
+ */
+export const restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost = async (sessionId: string,
+    snapshotId: string,
+    restoreExportScratchSnapshotRequest: RestoreExportScratchSnapshotRequest, options?: Parameters<typeof customFetch>[1]): Promise<restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse> => {
+
+  return customFetch<restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostResponse>(getRestoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostUrl(sessionId,snapshotId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(restoreExportScratchSnapshotRequest)
+  }
+);}
+
+
+
+
+
+export const getRestoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost>>, TError,{sessionId: string;snapshotId: string;data: BodyType<RestoreExportScratchSnapshotRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost>>, TError,{sessionId: string;snapshotId: string;data: BodyType<RestoreExportScratchSnapshotRequest>}, TContext> => {
+
+const mutationKey = ['restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost>>, {sessionId: string;snapshotId: string;data: BodyType<RestoreExportScratchSnapshotRequest>}> = (props) => {
+          const {sessionId,snapshotId,data} = props ?? {};
+
+          return  restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost(sessionId,snapshotId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RestoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostMutationResult = NonNullable<Awaited<ReturnType<typeof restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost>>>
+    export type RestoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostMutationBody = BodyType<RestoreExportScratchSnapshotRequest>
+    export type RestoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostMutationError = ErrorType<OperationalError | HTTPValidationError>
+
+    /**
+ * @summary Restore Export Scratch Snapshot
+ */
+export const useRestoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost>>, TError,{sessionId: string;snapshotId: string;data: BodyType<RestoreExportScratchSnapshotRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof restoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePost>>,
+        TError,
+        {sessionId: string;snapshotId: string;data: BodyType<RestoreExportScratchSnapshotRequest>},
+        TContext
+      > => {
+      return useMutation(getRestoreExportScratchSnapshotApiLoopSessionsSessionIdExportScratchSnapshotsSnapshotIdRestorePostMutationOptions(options), queryClient);
+    }
+
+export type exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponse200 = {
+  data: ExportScratchDiffResponse
+  status: 200
+}
+
+export type exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponseSuccess = (exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponse200) & {
+  headers: Headers;
+};
+export type exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponseError = (exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponse422) & {
+  headers: Headers;
+};
+
+export type exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponse = (exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponseSuccess | exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponseError)
+
+export const getExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetUrl = (sessionId: string,
+    params: ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/loop/sessions/${sessionId}/export-scratch/diff?${stringifiedParams}` : `/api/loop/sessions/${sessionId}/export-scratch/diff`
+}
+
+/**
+ * @summary Export Scratch Diff
+ */
+export const exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet = async (sessionId: string,
+    params: ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams, options?: Parameters<typeof customFetch>[1]): Promise<exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponse> => {
+
+  return customFetch<exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetResponse>(getExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetUrl(sessionId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetQueryKey = (sessionId: string,
+    params?: ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams,) => {
+    return [
+    `/api/loop/sessions/${sessionId}/export-scratch/diff`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetQueryOptions = <TData = Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError = ErrorType<HTTPValidationError>>(sessionId: string,
+    params: ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetQueryKey(sessionId,params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>> = ({ signal }) => exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet(sessionId,params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: sessionId !== null && sessionId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetQueryResult = NonNullable<Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>>
+export type ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetQueryError = ErrorType<HTTPValidationError>
+
+
+export function useExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet<TData = Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string,
+    params: ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>,
+          TError,
+          Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet<TData = Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string,
+    params: ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>,
+          TError,
+          Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet<TData = Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string,
+    params: ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Export Scratch Diff
+ */
+
+export function useExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet<TData = Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError = ErrorType<HTTPValidationError>>(
+ sessionId: string,
+    params: ExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof exportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGet>>, TError, TData>>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getExportScratchDiffApiLoopSessionsSessionIdExportScratchDiffGetQueryOptions(sessionId,params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
 export type patchWorkingDraftApiLoopSessionsSessionIdWorkingDraftPatchResponse200 = {
   data: LoopSessionResponse
   status: 200
@@ -2055,6 +2390,216 @@ export const useRecomputePrepareApiLoopSessionsSessionIdRecomputePreparePost = <
         TContext
       > => {
       return useMutation(getRecomputePrepareApiLoopSessionsSessionIdRecomputePreparePostMutationOptions(options), queryClient);
+    }
+
+export type downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse200 = {
+  data: unknown
+  status: 200
+}
+
+export type downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponseSuccess = (downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse200) & {
+  headers: Headers;
+};
+export type downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponseError = (downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse409 | downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse422) & {
+  headers: Headers;
+};
+
+export type downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse = (downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponseSuccess | downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponseError)
+
+export const getDownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostUrl = (sessionId: string,
+    params?: DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/loop/sessions/${sessionId}/export-scratch/markdown?${stringifiedParams}` : `/api/loop/sessions/${sessionId}/export-scratch/markdown`
+}
+
+/**
+ * @summary Download Export Scratch markdown
+ */
+export const downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost = async (sessionId: string,
+    specArtifactExportRequestNull?: SpecArtifactExportRequest | null,
+    params?: DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostParams, options?: Parameters<typeof customFetch>[1]): Promise<downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse> => {
+
+  return customFetch<downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostResponse>(getDownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostUrl(sessionId,params),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(specArtifactExportRequestNull)
+  }
+);}
+
+
+
+
+
+export const getDownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostParams}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostParams}, TContext> => {
+
+const mutationKey = ['downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost>>, {sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostParams}> = (props) => {
+          const {sessionId,data,params} = props ?? {};
+
+          return  downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost(sessionId,data,params,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostMutationResult = NonNullable<Awaited<ReturnType<typeof downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost>>>
+    export type DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostMutationBody = BodyType<SpecArtifactExportRequest | null> | undefined
+    export type DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostMutationError = ErrorType<OperationalError | HTTPValidationError>
+
+    /**
+ * @summary Download Export Scratch markdown
+ */
+export const useDownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostParams}, TContext>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof downloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPost>>,
+        TError,
+        {sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostParams},
+        TContext
+      > => {
+      return useMutation(getDownloadExportScratchMarkdownApiLoopSessionsSessionIdExportScratchMarkdownPostMutationOptions(options), queryClient);
+    }
+
+export type downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse200 = {
+  data: unknown
+  status: 200
+}
+
+export type downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse409 = {
+  data: OperationalError
+  status: 409
+}
+
+export type downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponseSuccess = (downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse200) & {
+  headers: Headers;
+};
+export type downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponseError = (downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse409 | downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse422) & {
+  headers: Headers;
+};
+
+export type downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse = (downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponseSuccess | downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponseError)
+
+export const getDownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostUrl = (sessionId: string,
+    params?: DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/loop/sessions/${sessionId}/export-scratch/pdf?${stringifiedParams}` : `/api/loop/sessions/${sessionId}/export-scratch/pdf`
+}
+
+/**
+ * @summary Download Export Scratch PDF
+ */
+export const downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost = async (sessionId: string,
+    specArtifactExportRequestNull?: SpecArtifactExportRequest | null,
+    params?: DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostParams, options?: Parameters<typeof customFetch>[1]): Promise<downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse> => {
+
+  return customFetch<downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostResponse>(getDownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostUrl(sessionId,params),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(specArtifactExportRequestNull)
+  }
+);}
+
+
+
+
+
+export const getDownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostMutationOptions = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostParams}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostParams}, TContext> => {
+
+const mutationKey = ['downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost>>, {sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostParams}> = (props) => {
+          const {sessionId,data,params} = props ?? {};
+
+          return  downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost(sessionId,data,params,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostMutationResult = NonNullable<Awaited<ReturnType<typeof downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost>>>
+    export type DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostMutationBody = BodyType<SpecArtifactExportRequest | null> | undefined
+    export type DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostMutationError = ErrorType<OperationalError | HTTPValidationError>
+
+    /**
+ * @summary Download Export Scratch PDF
+ */
+export const useDownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost = <TError = ErrorType<OperationalError | HTTPValidationError>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost>>, TError,{sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostParams}, TContext>, request?: SecondParameter<typeof customFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof downloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPost>>,
+        TError,
+        {sessionId: string;data?: BodyType<SpecArtifactExportRequest | null>;params?: DownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostParams},
+        TContext
+      > => {
+      return useMutation(getDownloadExportScratchPdfApiLoopSessionsSessionIdExportScratchPdfPostMutationOptions(options), queryClient);
     }
 
 export type exportSpecArtifactApiLoopSessionsSessionIdSpecArtifactPostResponse200 = {

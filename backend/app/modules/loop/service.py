@@ -1358,7 +1358,7 @@ class LoopService:
             export_scratch_id=scratch.id,
             spec_version_id=spec_id,
             snapshot_n=1,
-            document=copy_paper_document(scratch.document),
+            document=copy_paper_document(project_paper_document(dict(spec.document))),
         )
         session.export_scratch_snapshots.append(snapshot)
         self._db.add(snapshot)
@@ -1605,7 +1605,19 @@ class LoopService:
                     "a Critical Export Confirmation"
                 ),
             )
-        target_spec_id, scratch = self._scratch_for_spec(session, spec_version_id)
+        spec = await self._resolve_viewed_spec(session, spec_version_id)
+        if spec is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Export Scratch not found",
+            )
+        scratch = await self._ensure_export_scratch_buffer(session, spec=spec)
+        if scratch is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Export Scratch not found",
+            )
+        target_spec_id = spec.id
         markdown = render_export_scratch_markdown(
             spec_version_id=target_spec_id,
             document=scratch.document,
