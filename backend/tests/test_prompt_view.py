@@ -6,7 +6,7 @@ from app.modules.loop.catalog import WorkflowNode
 from app.modules.loop.prompt_view import prompt_view
 
 
-def _fat_projection(*, with_plan: bool = False) -> dict:
+def _fat_projection(*, with_plan: bool = False, with_feasibility: bool = False) -> dict:
     projection = {
         "node": WorkflowNode.CLAIMS.value,
         "projected": {},
@@ -59,6 +59,9 @@ def _fat_projection(*, with_plan: bool = False) -> dict:
                             "id": "cite-1",
                             "citation_key": "paper-2024",
                             "title": "Paper",
+                            "year": 2024,
+                            "venue": "ACL",
+                            "verification_status": "verified",
                             "abstract": "Very long abstract " * 40,
                             "metadata": {"provider_ids": {"x": "y"}},
                             "text_object_key": "s3://blob",
@@ -117,6 +120,20 @@ def _fat_projection(*, with_plan: bool = False) -> dict:
             },
             "projected": {},
         }
+    if with_feasibility:
+        projection["upstream"][WorkflowNode.FEASIBILITY.value] = {
+            "card_snapshot": [],
+            "narrative": {
+                "feasibility_report": {
+                    "is_feasible": True,
+                    "conclusion": "Runnable with a single GPU week.",
+                    "required_resources": ["1x A100", "public dataset"],
+                    "potential_bottlenecks": ["GPU queue wait"],
+                    "mitigation_strategies": ["Preemptible spot then checkpoint"],
+                }
+            },
+            "projected": {},
+        }
     return projection
 
 
@@ -153,12 +170,22 @@ def test_prompt_view_keeps_cards_and_gap_drops_grilling_and_citations() -> None:
     kinds = {card["kind"] for card in view["cards"]}
     assert kinds == {"problem", "research_question", "constraint", "gap", "contribution"}
     assert all("id" not in card for card in view["cards"])
+    passages = view["related_work"]
+    assert passages[0]["supporting_passage"] == "y"
+    assert passages[0]["citation_key"] == "paper-2024"
+    assert passages[0]["source"] == {
+        "citation_key": "paper-2024",
+        "title": "Paper",
+        "year": 2024,
+        "venue": "ACL",
+        "verification_status": "verified",
+    }
     blob = str(view)
     assert "long grilling transcript" not in blob
     assert "Very long abstract" not in blob
     assert "text_object_key" not in blob
     assert "idea_interpretation" not in blob
-    assert "related_work" not in blob
+    assert "experiment_plan" not in view
 
 
 def test_contribution_prompt_view_adds_compact_related_work_studies() -> None:
@@ -219,7 +246,7 @@ def test_gap_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_runs() 
     assert view["related_work"]["studies"][0]["limitation"] == (
         "Does not localize unsupported claims."
     )
-    assert view["experiment_plan"]["experiments"][0]["claim"] == "c"
+    assert "experiment_plan" not in view
     kinds = {card["kind"] for card in view["cards"]}
     assert "gap" in kinds
     assert any(card.get("id") == "gap-1" for card in view["cards"])
@@ -297,8 +324,10 @@ def test_contribution_and_experiment_judge_prompt_views_drop_peer_judge_runs() -
         if node is WorkflowNode.CONTRIBUTION_JUDGE:
             assert view["related_work"]["passages"][0]["supporting_passage"] == "y"
             assert view["related_work"]["studies"][0]["what_was_done"] == "x"
+            assert "experiment_plan" not in view
         else:
             assert view["related_work"][0]["supporting_passage"] == "y"
+            assert view["experiment_plan"]["experiments"][0]["claim"] == "c"
 
 
 def test_gap_judge_prompt_view_omits_claim_and_evidence_cards() -> None:
@@ -332,7 +361,7 @@ def test_contribution_judge_prompt_view_omits_claim_and_evidence_cards() -> None
 
 
 def test_conference_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_runs() -> None:
-    projection = _fat_projection(with_plan=True)
+    projection = _fat_projection(with_plan=True, with_feasibility=True)
     projection["valid_spec_version"] = {
         "id": "spec-1",
         "document": {
@@ -437,6 +466,10 @@ def test_conference_judge_prompt_view_includes_spec_slices_and_drops_peer_judge_
     assert view["valid_spec_version"]["id"] == "spec-1"
     assert view["gap_statement"] == "Confirmed gap statement"
     assert view["experiment_plan"]["experiments"][0]["claim"] == "c"
+    assert view["feasibility"]["potential_bottlenecks"] == ["GPU queue wait"]
+    assert view["feasibility"]["mitigation_strategies"] == [
+        "Preemptible spot then checkpoint"
+    ]
     kinds = {card["kind"] for card in view["cards"]}
     assert kinds >= {"gap", "contribution", "claim", "evidence"}
     blob = str(view)
@@ -470,6 +503,12 @@ def test_evidence_judge_prompt_view_includes_claim_citation_passage_triples() ->
         {
             "id": "cite-1",
             "citation_key": "large-language-models-as-optimizers-2023",
+            "title": "Large Language Models as Optimizers",
+            "year": 2023,
+            "venue": "ICLR",
+            "verification_status": "verified",
+            "abstract": "must not appear",
+            "text_object_key": "s3://blob",
         }
     ]
     projection["upstream"][WorkflowNode.RELATED_WORK.value]["projected"]["related_work"] = [
@@ -484,6 +523,10 @@ def test_evidence_judge_prompt_view_includes_claim_citation_passage_triples() ->
     ]
     view = prompt_view(WorkflowNode.EVIDENCE_JUDGE, projection)
     assert view["node"] == "evidence_judge"
+    assert "experiment_plan" not in view
+    assert view["related_work"][0]["source"]["title"] == "Large Language Models as Optimizers"
+    assert view["related_work"][0]["source"]["year"] == 2023
+    assert view["related_work"][0]["source"]["venue"] == "ICLR"
     assert view["claim_citation_passages"] == [
         {
             "claim_id": "claim-1",
@@ -493,8 +536,18 @@ def test_evidence_judge_prompt_view_includes_claim_citation_passage_triples() ->
                 "An optimizer model proposes prompts and receives task scores as "
                 "feedback over multiple optimization rounds."
             ),
+            "source": {
+                "citation_key": "large-language-models-as-optimizers-2023",
+                "title": "Large Language Models as Optimizers",
+                "year": 2023,
+                "venue": "ICLR",
+                "verification_status": "verified",
+            },
         }
     ]
+    blob = str(view)
+    assert "must not appear" not in blob
+    assert "text_object_key" not in blob
 
 
 def test_aggregator_prompt_view_is_the_five_current_judge_runs_only() -> None:
