@@ -100,10 +100,27 @@ class SpecVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SpecVersionListItem(BaseModel):
+    id: UUID
+    created_at: datetime
+    valid: bool
+
+
+class ClarificationReviewResponse(BaseModel):
+    original_idea: str
+    gap: str
+    contribution: str
+    claims: list[str]
+
+
 class ReadinessSummary(BaseModel):
     state: str
     notice: str
     scores: dict[str, int] | None = None
+
+
+class SpecArtifactExportRequest(BaseModel):
+    critical_export_ack: bool = False
 
 
 class SpecArtifactResponse(BaseModel):
@@ -116,6 +133,7 @@ class DecisionResponse(BaseModel):
     kind: str
     node: WorkflowNode | None
     stage_revision_id: UUID | None
+    detail: dict[str, Any] | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -133,6 +151,52 @@ class StageRevisionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExportScratchDocument(BaseModel):
+    markdown: str
+
+
+class ExportScratchResponse(BaseModel):
+    id: UUID
+    spec_version_id: UUID
+    document: ExportScratchDocument
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PatchExportScratchRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    document: ExportScratchDocument
+    spec_version_id: UUID | None = None
+
+
+class SaveExportScratchSnapshotRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    spec_version_id: UUID | None = None
+
+
+class RestoreExportScratchSnapshotRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class ExportScratchDiffResponse(BaseModel):
+    spec_version_id: UUID
+    against: str
+    before: str
+    after: str
+
+
+class ExportScratchSnapshotResponse(BaseModel):
+    id: UUID
+    spec_version_id: UUID
+    snapshot_n: int
+    document: ExportScratchDocument
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class LoopSessionResponse(BaseModel):
     id: UUID
     title: str | None
@@ -141,10 +205,21 @@ class LoopSessionResponse(BaseModel):
     working_draft_narrative: dict[str, Any]
     node_heads: list[NodeHeadResponse]
     cards: list[CardResponse]
-    stage_revisions: list[StageRevisionResponse]
+    stage_revisions: list[StageRevisionResponse] = Field(default_factory=list)
     produced_spec_version: SpecVersionResponse | None
     valid_spec_version_id: UUID | None
-    readiness: ReadinessSummary
+    spec_versions: list[SpecVersionListItem] = Field(default_factory=list)
+    clarification_review: ClarificationReviewResponse | None = None
+    readiness: ReadinessSummary = Field(
+        default_factory=lambda: ReadinessSummary(
+            state="not_evaluated",
+            notice="This is not conference acceptance.",
+        )
+    )
+    export_scratch: ExportScratchResponse | None = None
+    export_scratch_snapshots: list[ExportScratchSnapshotResponse] = Field(
+        default_factory=list
+    )
     created_at: datetime
     updated_at: datetime
 

@@ -326,6 +326,27 @@ describe("Loop Stage actions", () => {
     ).toEqual({ canStart: true, canRecompute: false, editableNodes: [] });
   });
 
+  it("does not start Claims/evidence when Claims is already current", () => {
+    expect(
+      deriveStageActions({
+        stage: LoopStage.claims_evidence,
+        nodeHeads: heads({
+          [WorkflowNode.idea_interpretation]: NodeHeadStatus.current,
+          [WorkflowNode.idea_decomposition]: NodeHeadStatus.current,
+          [WorkflowNode.research_inputs]: NodeHeadStatus.current,
+          [WorkflowNode.related_work]: NodeHeadStatus.current,
+          [WorkflowNode.gap]: NodeHeadStatus.current,
+          [WorkflowNode.contribution]: NodeHeadStatus.current,
+          [WorkflowNode.claims]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toEqual({
+      canStart: false,
+      canRecompute: false,
+      editableNodes: [WorkflowNode.claims],
+    });
+  });
+
   it("does not start Related work when only Gap is empty", () => {
     expect(
       deriveStageActions({
@@ -521,6 +542,27 @@ describe("Confirm signals", () => {
     ).toEqual([LoopStage.grilling, LoopStage.related_work, LoopStage.gap]);
   });
 
+  it("does not treat retired Evidence as a Claims descendant", () => {
+    expect(
+      staleInvalidationStages({
+        node: WorkflowNode.claims,
+        nodeHeads: heads({
+          [WorkflowNode.claims]: NodeHeadStatus.current,
+          [WorkflowNode.evidence]: NodeHeadStatus.current,
+        }),
+      }),
+    ).toEqual([]);
+    const allCurrent = Object.fromEntries(
+      Object.values(WorkflowNode).map((node) => [node, NodeHeadStatus.current]),
+    ) as Partial<Record<WorkflowNode, NodeHeadStatus>>;
+    expect(() =>
+      staleInvalidationStages({
+        node: WorkflowNode.idea_interpretation,
+        nodeHeads: heads(allCurrent),
+      }),
+    ).not.toThrow();
+  });
+
   it("treats nonblank narrative text or a nonblank owned Card as confirmable", () => {
     expect(
       hasConfirmableWorkingDraft({
@@ -639,6 +681,14 @@ describe("Stale re-accept flag", () => {
       specInvalidationInView({
         selectedNode: WorkflowNode.idea_decomposition,
         selectedStage: LoopStage.grilling,
+        viewedNodeStale: false,
+        specVersionStale: true,
+      }),
+    ).toBe(false);
+    expect(
+      specInvalidationInView({
+        selectedNode: WorkflowNode.feasibility,
+        selectedStage: LoopStage.experiment_planning,
         viewedNodeStale: false,
         specVersionStale: true,
       }),

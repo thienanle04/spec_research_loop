@@ -30,6 +30,18 @@ def _gap_card_id(card: dict[str, Any] | None) -> UUID | None:
     return None
 
 
+def _view_related_work_passages(view: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = view.get("related_work")
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        passages = raw.get("passages")
+        items = passages if isinstance(passages, list) else []
+    else:
+        items = []
+    return [item for item in items if isinstance(item, dict)]
+
+
 def _supporting_citation_keys(card: dict[str, Any] | None) -> list[str]:
     if card is None:
         return []
@@ -43,9 +55,7 @@ def gap_unsupported_by_sources(view: dict[str, Any]) -> list[JudgeIssueDraft]:
     card = _gap_card(view)
     cited_keys = set(_supporting_citation_keys(card))
     passage_keys: set[str] = set()
-    for item in view.get("related_work") or []:
-        if not isinstance(item, dict):
-            continue
+    for item in _view_related_work_passages(view):
         passage = item.get("supporting_passage")
         if not isinstance(passage, str) or not passage.strip():
             continue

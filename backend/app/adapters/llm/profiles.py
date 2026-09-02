@@ -23,7 +23,6 @@ DEFAULT_NODE_PROFILE_MAP: dict[str, str] = {
     WorkflowNode.GAP.value: "research",
     WorkflowNode.CONTRIBUTION.value: "structured",
     WorkflowNode.CLAIMS.value: "structured",
-    WorkflowNode.EVIDENCE.value: "structured",
     WorkflowNode.EXPERIMENT_PLAN.value: "structured",
     WorkflowNode.FEASIBILITY.value: "structured",
     WorkflowNode.GAP_JUDGE.value: "judge",

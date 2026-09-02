@@ -71,6 +71,7 @@ function AccountTextView({
   turn,
   editing,
   locked,
+  readOnly,
   dirty,
   onEdit,
   onCancel,
@@ -83,6 +84,7 @@ function AccountTextView({
   turn: IdeaTurn | NoteTurn;
   editing: boolean;
   locked: boolean;
+  readOnly: boolean;
   dirty: boolean;
   onEdit: () => void;
   onCancel: () => void;
@@ -117,21 +119,23 @@ function AccountTextView({
   return (
     <li>
       <p className="mb-1 text-xs font-medium text-muted-foreground">{label}</p>
-      <div className="flex items-start gap-2">
+        <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-3">
           <p className="whitespace-pre-wrap break-words text-sm">{turn.text}</p>
         </div>
-        <Button
-          disabled={locked}
-          size="sm"
-          type="button"
-          variant="outline"
-          className="shrink-0"
-          onClick={onEdit}
-        >
-          <Pencil aria-hidden="true" />
-          Edit
-        </Button>
+        {readOnly ? null : (
+          <Button
+            disabled={locked}
+            size="sm"
+            type="button"
+            variant="outline"
+            className="shrink-0"
+            onClick={onEdit}
+          >
+            <Pencil aria-hidden="true" />
+            Edit
+          </Button>
+        )}
       </div>
     </li>
   );
@@ -272,6 +276,7 @@ function AnsweredClusterPairs({
   answers,
   editing,
   locked,
+  readOnly,
   dirty,
   onEdit,
   onCancel,
@@ -283,6 +288,7 @@ function AnsweredClusterPairs({
   answers: AnswersTurn;
   editing: boolean;
   locked: boolean;
+  readOnly: boolean;
   dirty: boolean;
   onEdit: () => void;
   onCancel: () => void;
@@ -351,20 +357,22 @@ function AnsweredClusterPairs({
               <div className="min-w-0 flex-1 rounded-md border bg-muted px-3 py-3">
                 <p className="whitespace-pre-wrap break-words text-sm">{answerLabel(answer)}</p>
               </div>
-              <Button
-                disabled={locked || (editing && editingAnswerIndex !== answerIndex)}
-                size="sm"
-                type="button"
-                variant="outline"
-                className="shrink-0"
-                onClick={() => {
-                  setEditingAnswerIndex(answerIndex);
-                  onEdit();
-                }}
-              >
-                <Pencil aria-hidden="true" />
-                Edit
-              </Button>
+              {readOnly ? null : (
+                <Button
+                  disabled={locked || (editing && editingAnswerIndex !== answerIndex)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => {
+                    setEditingAnswerIndex(answerIndex);
+                    onEdit();
+                  }}
+                >
+                  <Pencil aria-hidden="true" />
+                  Edit
+                </Button>
+              )}
             </div>
           </li>
         );
@@ -383,6 +391,7 @@ export function GrillingTurns({
   generating,
   preview,
   locked,
+  readOnly = false,
   editingIndex,
   draftTurn,
   dirty,
@@ -395,6 +404,7 @@ export function GrillingTurns({
   generating: boolean;
   preview: string;
   locked: boolean;
+  readOnly?: boolean;
   editingIndex: number | null;
   draftTurn: GrillingTurn | null;
   dirty: boolean;
@@ -403,15 +413,19 @@ export function GrillingTurns({
   onSave: (turn?: GrillingTurn) => void;
   onDraftChange: (turn: GrillingTurn) => void;
 }) {
-  const last = turns.at(-1);
-  const hideLastQuestions = last?.role === "model" && last.questions.length > 0 && !generating;
-
   return (
     <ol className="grid gap-3" aria-label="Grilling history">
       {turns.map((turn, index) => {
-        const isLastModel = hideLastQuestions && index === turns.length - 1;
         const current = editingIndex === index && draftTurn ? draftTurn : turn;
         const editLocked = locked || (editingIndex !== null && editingIndex !== index);
+
+        if (
+          current.role === "model" &&
+          !isAnsweredModel(turns, index) &&
+          current.questions.length > 0
+        ) {
+          return null;
+        }
 
         if (current.role === "model" && isAnsweredModel(turns, index)) {
           const preamble = current.preamble.trim();
@@ -437,6 +451,7 @@ export function GrillingTurns({
               fieldLabel="Research idea"
               label="Research idea"
               locked={editLocked}
+              readOnly={readOnly}
               turn={current}
               onCancel={onCancel}
               onChange={(text) => onDraftChange({ ...current, text })}
@@ -455,6 +470,7 @@ export function GrillingTurns({
               fieldLabel="Account note"
               label="Account note"
               locked={editLocked}
+              readOnly={readOnly}
               turn={current}
               onCancel={onCancel}
               onChange={(text) => onDraftChange({ ...current, text })}
@@ -476,6 +492,7 @@ export function GrillingTurns({
               dirty={editingIndex === index && dirty}
               editing={editingIndex === index}
               locked={editLocked}
+              readOnly={readOnly}
               turnIndex={index}
               onCancel={onCancel}
               onDraftChange={onDraftChange}
@@ -484,38 +501,12 @@ export function GrillingTurns({
             />
           );
         }
-        if (isLastModel) {
-          return (
-            <li key={`model-${index}`}>
-              <p className="text-sm text-muted-foreground">
-                Open cluster — answer every Grilling Question below.
-              </p>
-            </li>
-          );
-        }
         return (
           <HistorySection key={`model-${index}`} surface="border bg-card">
             {current.role === "model" && current.preamble ? (
               <p className="font-serif text-base whitespace-pre-wrap break-words text-navy">
                 {current.preamble}
               </p>
-            ) : null}
-            {current.role === "model" && current.questions.length > 0 ? (
-              <div className="grid gap-4">
-                {current.questions.map((question, questionIndex) => (
-                  <div
-                    key={`${question.text}-${questionIndex}`}
-                    role="group"
-                    className="grid gap-2"
-                  >
-                    <QuestionTitle
-                      question={question}
-                      questionCount={current.questions.length}
-                      questionIndex={questionIndex}
-                    />
-                  </div>
-                ))}
-              </div>
             ) : null}
           </HistorySection>
         );

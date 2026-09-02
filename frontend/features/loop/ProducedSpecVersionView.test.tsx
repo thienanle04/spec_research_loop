@@ -351,7 +351,7 @@ describe("ProducedSpecVersionView", () => {
     expect(spec).not.toHaveTextContent("Hidden narrative text");
   });
 
-  it("shows Idea Frame only for interpretation and hides the turn list on Spec Draft", () => {
+  it("shows problem and research_question for interpretation and hides Intent and the turn list on Spec Draft", () => {
     renderSpec(
       <ProducedSpecVersionView
         produced={produced({
@@ -386,12 +386,42 @@ describe("ProducedSpecVersionView", () => {
     const spec = screen.getByRole("region", { name: "Produced Spec Version" });
 
     expect(spec).toHaveTextContent("Idea interpretation");
-    expect(spec).toHaveTextContent("Cut kernel launch latency");
+    expect(spec).not.toHaveTextContent("Cut kernel launch latency");
     expect(spec).toHaveTextContent("GPU launches are slow");
     expect(spec).toHaveTextContent("Can we fuse launches?");
     expect(spec).not.toHaveTextContent("Secret idea text");
     expect(spec).not.toHaveTextContent("Hidden preamble");
     expect(spec).not.toHaveTextContent("Hidden question?");
+  });
+
+  it("does not render an Export Scratch editor on Spec Draft", () => {
+    renderSpec(
+      <ProducedSpecVersionView
+        produced={produced({
+          document: {
+            nodes: {
+              idea_interpretation: {
+                narrative: {
+                  frame: {
+                    intent: "Cut kernel launch latency",
+                    problem: "GPU launches are slow",
+                    research_question: "Can we fuse launches?",
+                  },
+                  turns: [],
+                },
+                card_snapshot: [],
+              },
+            },
+          },
+        })}
+        validSpecVersionId="spec-valid"
+        sessionId="session-1"
+      />,
+    );
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+    expect(spec).toHaveTextContent("Idea interpretation");
+    expect(screen.queryByRole("navigation", { name: "Export Scratch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
   it("omits interpretation from Spec Draft when the Idea Frame is blank", () => {
@@ -429,6 +459,99 @@ describe("ProducedSpecVersionView", () => {
     expect(spec).toHaveTextContent("Visible contribution");
     expect(spec).not.toHaveTextContent("Only turns");
     expect(spec).not.toHaveTextContent("Idea interpretation");
+    expect(within(spec).queryByRole("region", { name: "Grilling in Produced Spec Version" })).not.toBeInTheDocument();
+  });
+
+  it("omits problem and research_question Cards from decomposition on Spec Draft", () => {
+    renderSpec(
+      <ProducedSpecVersionView
+        produced={produced({
+          document: {
+            nodes: {
+              idea_decomposition: {
+                narrative: {},
+                card_snapshot: [
+                  {
+                    id: "p1",
+                    kind: CardKind.problem,
+                    body: { text: "Hidden problem card" },
+                  },
+                  {
+                    id: "rq1",
+                    kind: CardKind.research_question,
+                    body: { text: "Hidden research question card" },
+                  },
+                  {
+                    id: "c1",
+                    kind: CardKind.constraint,
+                    body: { text: "Must fit in SRAM" },
+                  },
+                  {
+                    id: "o1",
+                    kind: CardKind.open_question,
+                    body: { text: "Does tiling help?" },
+                  },
+                ],
+              },
+            },
+          },
+        })}
+        validSpecVersionId="spec-valid"
+        sessionId="session-1"
+      />,
+    );
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+
+    expect(spec).toHaveTextContent("Idea decomposition");
+    expect(spec).toHaveTextContent("Must fit in SRAM");
+    expect(spec).toHaveTextContent("Does tiling help?");
+    expect(spec).not.toHaveTextContent("Hidden problem card");
+    expect(spec).not.toHaveTextContent("Hidden research question card");
+  });
+
+  it("omits decomposition from Spec Draft when only problem and research_question Cards exist", () => {
+    renderSpec(
+      <ProducedSpecVersionView
+        produced={produced({
+          document: {
+            nodes: {
+              idea_decomposition: {
+                narrative: {},
+                card_snapshot: [
+                  {
+                    id: "p1",
+                    kind: CardKind.problem,
+                    body: { text: "Hidden problem card" },
+                  },
+                  {
+                    id: "rq1",
+                    kind: CardKind.research_question,
+                    body: { text: "Hidden research question card" },
+                  },
+                ],
+              },
+              contribution: {
+                narrative: {},
+                card_snapshot: [
+                  {
+                    id: "card-1",
+                    kind: CardKind.contribution,
+                    body: { text: "Visible contribution" },
+                  },
+                ],
+              },
+            },
+          },
+        })}
+        validSpecVersionId="spec-valid"
+        sessionId="session-1"
+      />,
+    );
+    const spec = screen.getByRole("region", { name: "Produced Spec Version" });
+
+    expect(spec).toHaveTextContent("Visible contribution");
+    expect(spec).not.toHaveTextContent("Idea decomposition");
+    expect(spec).not.toHaveTextContent("Hidden problem card");
     expect(within(spec).queryByRole("region", { name: "Grilling in Produced Spec Version" })).not.toBeInTheDocument();
   });
 

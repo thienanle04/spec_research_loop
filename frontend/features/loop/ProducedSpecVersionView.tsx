@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Download } from "lucide-react";
-import { frameHasContent } from "@/features/idea/turns";
+import { specDraftIdeaFrameVisible } from "@/features/idea/turns";
 import { CardKind, WorkflowNode, type SpecVersionResponse } from "@/lib/api/generated/model";
 
 import { LOOP_STAGE_CATALOG } from "./catalog";
@@ -21,7 +21,7 @@ function isGrillingNarrative(narrative: Record<string, unknown>): boolean {
   return Array.isArray(narrative.turns) || isRecord(narrative.frame);
 }
 
-/** Spec Draft hides grilling turn lists; blank Idea Frames omit the whole node section. */
+/** Spec Draft hides grilling turns and Intent; blank problem/RQ omit interpretation. */
 function includeOnSpecDraft(node: WorkflowNode, payload: unknown): boolean {
   if (SPEC_DRAFT_HIDDEN_NODES.has(node)) {
     return false;
@@ -29,8 +29,17 @@ function includeOnSpecDraft(node: WorkflowNode, payload: unknown): boolean {
   if (!isRecord(payload)) {
     return true;
   }
+  if (node === WorkflowNode.idea_decomposition) {
+    const cards = Array.isArray(payload.card_snapshot) ? payload.card_snapshot : [];
+    return cards.some((card) => {
+      if (!isRecord(card) || typeof card.kind !== "string") {
+        return false;
+      }
+      return card.kind !== CardKind.problem && card.kind !== CardKind.research_question;
+    });
+  }
   const narrative = isRecord(payload.narrative) ? payload.narrative : null;
-  if (narrative && isGrillingNarrative(narrative) && !frameHasContent(narrative)) {
+  if (narrative && isGrillingNarrative(narrative) && !specDraftIdeaFrameVisible(narrative)) {
     return false;
   }
   return true;
@@ -348,6 +357,11 @@ function SpecDraftNode({
       sessionId={sessionId}
       showLeftovers={false}
       showTurns={false}
+      hiddenCardKinds={
+        node === WorkflowNode.idea_decomposition
+          ? [CardKind.problem, CardKind.research_question]
+          : undefined
+      }
     />
   );
 }

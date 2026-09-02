@@ -19,6 +19,10 @@ export async function customFetch<T>(url: string, options: RequestInit): Promise
   const contentType = response.headers.get("content-type") ?? "";
   if (response.status !== 204 && contentType.includes("application/json")) {
     data = await response.json();
+  } else if (response.status !== 204 && contentType.includes("application/pdf")) {
+    data = await response.arrayBuffer();
+  } else if (response.status !== 204) {
+    data = await response.text();
   }
 
   if (response.status === 401) {

@@ -8,6 +8,7 @@ import {
   descendants,
   ownedCardKinds,
   stageForWorkflowNode,
+  stageWorkNodes,
   upstreamOfStage,
 } from "./catalog";
 
@@ -45,7 +46,7 @@ export function deriveStageActions({
   stage: LoopStage;
   nodeHeads: NodeHeadResponse[];
 }): StageActions {
-  const nodes = catalogStage(stage).nodes;
+  const nodes = stageWorkNodes(stage);
   if (nodes.length === 0 || incompleteUpstreamNodes({ stage, nodeHeads }).length > 0) {
     return { canStart: false, canRecompute: false, editableNodes: [] };
   }
@@ -89,7 +90,7 @@ export function shouldAutoPrepare({
   if (wdStatus !== NodeHeadStatus.current) {
     return false;
   }
-  const stageNodes = catalogStage(stage).nodes as readonly WorkflowNode[];
+  const stageNodes = stageWorkNodes(stage);
   return !stageNodes.includes(workingDraftNode);
 }
 
@@ -105,7 +106,7 @@ export function deriveStageSignals({
   readinessState?: "not_evaluated" | "blocked" | "ready";
 }): StageSignals {
   const statusByNode = new Map(nodeHeads.map((head) => [head.node, head.status]));
-  const nodes = catalogStage(stage).nodes;
+  const nodes = stageWorkNodes(stage);
   const editing = stageForWorkflowNode(workingDraftNode) === stage;
   const incompleteUpstream = incompleteUpstreamNodes({ stage, nodeHeads });
   const available = incompleteUpstream.length === 0;
@@ -230,6 +231,25 @@ export function hasConfirmableWorkingDraft(
   if (fieldText(session.working_draft_narrative)) {
     return true;
   }
-  const owned = new Set(ownedCardKinds(session.working_draft_node));
-  return session.cards.some((card) => owned.has(card.kind) && fieldText(card.body));
+  const owned = ownedCardKinds(session.working_draft_node);
+  if (session.working_draft_node === WorkflowNode.claims) {
+    return owned.every((kind) =>
+      session.cards.some((card) => card.kind === kind && cardBodyNonblank(card.body)),
+    );
+  }
+  return session.cards.some((card) => owned.includes(card.kind) && cardBodyNonblank(card.body));
+}
+
+function cardBodyNonblank(body: unknown): boolean {
+  if (fieldText(body)) {
+    return true;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return false;
+  }
+  const record = body as Record<string, unknown>;
+  return ["statement", "claim", "evidence"].some((key) => {
+    const value = record[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
 }

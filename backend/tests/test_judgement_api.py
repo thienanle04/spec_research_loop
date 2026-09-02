@@ -117,27 +117,36 @@ async def _mint_valid_spec(
     for stage, node in (
         ("contribution", "contribution"),
         ("claims_evidence", "claims"),
-        ("claims_evidence", "evidence"),
         ("experiment_planning", "experiment_plan"),
         ("experiment_planning", "feasibility"),
     ):
         prepared = await _prepare(client, session_id, stage, expected_version)
-        if node == "claims" and claim_statement is not None:
-            assert citation_keys, "fixture Related Work must yield a Citation"
+        if node == "claims":
+            statement = claim_statement or "Tiling reduces DRAM traffic."
+            claim_body: dict = {"statement": statement}
+            if claim_statement is not None:
+                assert citation_keys, "fixture Related Work must yield a Citation"
+                claim_body["supporting_citation_keys"] = [citation_keys[0]]
             claim = await client.post(
                 f"/api/loop/sessions/{session_id}/cards",
                 json={
                     "kind": "claim",
-                    "body": {
-                        "statement": claim_statement,
-                        "supporting_citation_keys": [citation_keys[0]],
-                    },
+                    "body": claim_body,
                     "expected_version": prepared["version"],
                 },
             )
             assert claim.status_code == 201, claim.text
+            evidence = await client.post(
+                f"/api/loop/sessions/{session_id}/cards",
+                json={
+                    "kind": "evidence",
+                    "body": {"text": "Held-out measurement of the claim."},
+                    "expected_version": claim.json()["version"],
+                },
+            )
+            assert evidence.status_code == 201, evidence.text
             confirmed = await _confirm(
-                client, session_id, node, claim.json()["version"]
+                client, session_id, node, evidence.json()["version"]
             )
         else:
             confirmed = await _confirm(client, session_id, node, prepared["version"])
@@ -1271,7 +1280,6 @@ async def test_conference_judge_generate_payload_excludes_peer_judge_runs(
     assert "gap" in nodes
     assert "contribution" in nodes
     assert "claims" in nodes
-    assert "evidence" in nodes
     assert "experiment_plan" in nodes
     assert view["gap_statement"]
 
@@ -1636,11 +1644,19 @@ async def test_readiness_states_and_export_gate(client: AsyncClient) -> None:
     )
     assert ready.json()["state"] == "ready"
     assert ready.json()["scores"] == CONFERENCE_SCORES
+    ready_decisions_before = await client.get(
+        f"/api/loop/sessions/{session['id']}/decisions"
+    )
     allowed = await client.post(
         f"/api/loop/sessions/{session['id']}/spec-artifact"
     )
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()["spec_version_id"] == confirmed["valid_spec_version_id"]
+    ready_decisions_after = await client.get(
+        f"/api/loop/sessions/{session['id']}/decisions"
+    )
+    assert ready_decisions_after.json() == ready_decisions_before.json()
+    assert all(row["kind"] != "export_ack" for row in ready_decisions_after.json())
 
     evidence = await _prepare_evidence_judge(
         client, claim_statement=UNSUPPORTED_CLAIM
@@ -1669,7 +1685,70 @@ async def test_readiness_states_and_export_gate(client: AsyncClient) -> None:
         f"/api/loop/sessions/{blocked_draft['id']}/spec-artifact"
     )
     assert denied.status_code == 409
-    assert denied.json()["code"] == "critical_issues_block_export"
+    assert denied.json()["code"] == "critical_export_confirmation_required"
+
+    before_issues = await client.get(
+        f"/api/judgement/sessions/{blocked_draft['id']}/nodes/aggregator"
+    )
+    before_session = await client.get(f"/api/loop/sessions/{blocked_draft['id']}")
+    before_decisions = await client.get(
+        f"/api/loop/sessions/{blocked_draft['id']}/decisions"
+    )
+    valid_id = blocked["valid_spec_version_id"]
+    valid_document = blocked["produced_spec_version"]["document"]
+    asserted = await client.post(
+        f"/api/loop/sessions/{blocked_draft['id']}/spec-artifact",
+        json={"critical_export_ack": True},
+    )
+    assert asserted.status_code == 200, asserted.text
+    assert asserted.json()["spec_version_id"] == valid_id
+    assert asserted.json()["document"] == valid_document
+    after_decisions = await client.get(
+        f"/api/loop/sessions/{blocked_draft['id']}/decisions"
+    )
+    export_acks = [
+        row
+        for row in after_decisions.json()
+        if row["kind"] == "export_ack"
+    ]
+    assert len(export_acks) == 1
+    assert export_acks[0]["node"] is None
+    assert export_acks[0]["stage_revision_id"] is None
+    assert export_acks[0]["detail"] == {
+        "target": "spec_artifact",
+        "format": "json",
+        "spec_version_id": valid_id,
+    }
+    assert len(after_decisions.json()) == len(before_decisions.json()) + 1
+
+    again = await client.post(
+        f"/api/loop/sessions/{blocked_draft['id']}/spec-artifact"
+    )
+    assert again.status_code == 409
+    assert again.json()["code"] == "critical_export_confirmation_required"
+
+    after_session = await client.get(f"/api/loop/sessions/{blocked_draft['id']}")
+    after_issues = await client.get(
+        f"/api/judgement/sessions/{blocked_draft['id']}/nodes/aggregator"
+    )
+    assert after_session.json()["readiness"]["state"] == "blocked"
+    assert after_session.json()["valid_spec_version_id"] == valid_id
+    assert after_session.json()["produced_spec_version"]["id"] == blocked[
+        "produced_spec_version"
+    ]["id"]
+    assert after_issues.json()["issues"] == before_issues.json()["issues"]
+
+    ready_before = await client.get(
+        f"/api/loop/sessions/{confirmed['id']}/decisions"
+    )
+    ready_again = await client.post(
+        f"/api/loop/sessions/{confirmed['id']}/spec-artifact",
+        json={"critical_export_ack": True},
+    )
+    assert ready_again.status_code == 200, ready_again.text
+    assert ready_again.json()["spec_version_id"] == confirmed["valid_spec_version_id"]
+    ready_after = await client.get(f"/api/loop/sessions/{confirmed['id']}/decisions")
+    assert ready_after.json() == ready_before.json()
 
 
 def _bind_pending_judge_llms(*, aggregator: bool = False) -> dict[str, FakeLlm]:

@@ -7,6 +7,7 @@ import {
   interpretationConfirmable,
   isExhaustedHint,
   parseTurns,
+  specDraftIdeaFrameVisible,
   unansweredCluster,
   withEditedTurn,
 } from "./turns";
@@ -99,6 +100,17 @@ describe("frameHasContent", () => {
       false,
     );
     expect(frameHasContent({ turns: [idea] })).toBe(false);
+  });
+});
+
+describe("specDraftIdeaFrameVisible", () => {
+  it("is true only when problem or research_question is non-blank", () => {
+    expect(
+      specDraftIdeaFrameVisible({ frame: { intent: "x", problem: "", research_question: "" } }),
+    ).toBe(false);
+    expect(
+      specDraftIdeaFrameVisible({ frame: { intent: "", problem: "p", research_question: "" } }),
+    ).toBe(true);
   });
 });
 

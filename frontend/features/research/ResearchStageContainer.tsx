@@ -61,12 +61,20 @@ export function ResearchStageContainer({
   const patchCard = usePatchCardApiLoopSessionsSessionIdCardsCardIdPatch();
   const researchNode = session.working_draft_node;
   const readsEnabled = researchNode === "related_work" || researchNode === "gap";
-  const citationsQuery = useListCitationsApiResearchSessionsSessionIdCitationsGet(sessionId, {
-    query: { enabled: readsEnabled },
-  });
-  const findingsQuery = useListFindingsApiResearchSessionsSessionIdFindingsGet(sessionId, {
-    query: { enabled: readsEnabled },
-  });
+  const citationsQuery = useListCitationsApiResearchSessionsSessionIdCitationsGet(
+    sessionId,
+    undefined,
+    {
+      query: { enabled: readsEnabled },
+    },
+  );
+  const findingsQuery = useListFindingsApiResearchSessionsSessionIdFindingsGet(
+    sessionId,
+    undefined,
+    {
+      query: { enabled: readsEnabled },
+    },
+  );
   const [inputs, setInputs] = useState(() => researchInputsFrom(narrative(session.working_draft_narrative)));
   const [partialCitations, setPartialCitations] = useState<CitationResponse[]>([]);
   const [generatedGapCandidate, setGeneratedGapCandidate] = useState<GapCandidate | null>(null);

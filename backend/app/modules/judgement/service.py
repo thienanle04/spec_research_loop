@@ -17,9 +17,12 @@ from sqlalchemy.orm import attributes
 from app.adapters.llm import get_llm_port
 from app.core.errors import OperationalErrorException
 from app.modules.judgement.catalog import (
+    FINDING_KIND_FLOOR,
     FIVE_JUDGE_NODES,
     GENERATABLE_JUDGE_NODES,
     JUDGE_NODES,
+    FindingKind,
+    Severity,
 )
 from app.modules.judgement.composer import (
     ComposedReport,
@@ -328,7 +331,7 @@ class JudgementService:
         if run.node is WorkflowNode.AGGREGATOR:
             report = compose_from_view(run.view)
             parsed = await llm.complete_structured(
-                system="aggregator",
+                system=_aggregator_system(),
                 prompt=_prompt_payload(run.view),
                 schema=AggregatorLlmResponse,
             )
@@ -747,16 +750,77 @@ def _judge_label(node: WorkflowNode) -> str:
     return node.value.replace("_", " ").title()
 
 
+def _kind_lines(kinds: tuple[FindingKind, ...]) -> str:
+    return "\n".join(
+        f"- {kind.value}: Severity floor {FINDING_KIND_FLOOR[kind].value}"
+        for kind in kinds
+    )
+
+
+def _judge_independence_rules() -> str:
+    return (
+        "Evaluate independently. Do not use another Judge Run. "
+        "Do not invent Finding Kinds; unknown tags are dropped. "
+        "You may raise Severity above the floor, never lower it. "
+        "Do not drop or lower verifier-emitted Issues. "
+        "Do not invent Other as a Finding Kind."
+    )
+
+
 def _judge_system(node: WorkflowNode) -> str:
-    if node is WorkflowNode.EVIDENCE_JUDGE:
-        return "judge-evidence"
-    if node is WorkflowNode.CONTRIBUTION_JUDGE:
-        return "judge-contribution"
-    if node is WorkflowNode.EXPERIMENT_JUDGE:
-        return "judge-experiment"
     if node is WorkflowNode.CONFERENCE_JUDGE:
-        return "judge-conference"
-    return "judge-gap"
+        return (
+            "You are the Conference Judge for a Valid Spec Version. "
+            "Emit criterion scores only for originality, significance, soundness, "
+            "clarity, and reproducibility. Do not emit Judge Issues or Finding Kinds. "
+            "Evaluate independently. Do not use another Judge Run."
+        )
+    catalogs: dict[WorkflowNode, tuple[FindingKind, ...]] = {
+        WorkflowNode.GAP_JUDGE: (
+            FindingKind.GAP_UNSUPPORTED_BY_SOURCES,
+            FindingKind.GAP_ALREADY_ADDRESSED,
+            FindingKind.GAP_UNTESTABLE,
+        ),
+        WorkflowNode.CONTRIBUTION_JUDGE: (
+            FindingKind.CONTRIBUTION_NOT_NOVEL,
+            FindingKind.CONTRIBUTION_OVERCLAIMED,
+        ),
+        WorkflowNode.EVIDENCE_JUDGE: (FindingKind.UNSUPPORTED_CITATION,),
+        WorkflowNode.EXPERIMENT_JUDGE: (
+            FindingKind.CLAIM_BROADER_THAN_EXPERIMENT,
+            FindingKind.EXPERIMENT_INSUFFICIENT_FOR_CLAIM,
+        ),
+    }
+    kinds = catalogs.get(node, catalogs[WorkflowNode.GAP_JUDGE])
+    extra = ""
+    if node is WorkflowNode.GAP_JUDGE:
+        extra = (
+            f" Verifiers may emit {FindingKind.GAP_UNSUPPORTED_BY_SOURCES.value} "
+            f"at floor {Severity.CRITICAL.value}; do not drop that Issue."
+        )
+    elif node is WorkflowNode.EVIDENCE_JUDGE:
+        extra = (
+            f" Verifiers may emit {FindingKind.UNSUPPORTED_CITATION.value} "
+            f"at floor {Severity.CRITICAL.value}; do not drop that Issue."
+        )
+    return (
+        f"You are the {_judge_label(node)} for a Valid Spec Version. "
+        "Emit Judge Issues using only these Finding Kinds:\n"
+        f"{_kind_lines(kinds)}\n"
+        f"{_judge_independence_rules()}"
+        f"{extra}"
+    )
+
+
+def _aggregator_system() -> str:
+    return (
+        "You phrase Handling Options only for the Aggregator Report. "
+        "You are not a sixth Judge. Do not change Severity. "
+        "Do not invent a majority verdict. "
+        "Do not invent Other; Other is an Account-supplied Handling Option. "
+        "Do not drop verifier Issues from the composed report. "
+        "Phrase options for CRITICAL and MAJOR Issues only."
+    )
 
 
 def _verifier_issues(node: WorkflowNode, view: dict[str, Any]) -> list[JudgeIssueDraft]:

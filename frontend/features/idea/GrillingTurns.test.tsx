@@ -76,7 +76,7 @@ describe("GrillingTurns", () => {
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
     // Regression: <legend> sits on the fieldset border and visually leaves the card.
     expect(container.querySelector("legend")).toBeNull();
-    expect(screen.getByText(/Open cluster/)).toBeInTheDocument();
+    expect(screen.queryByText(/Open cluster/)).not.toBeInTheDocument();
     expect(screen.queryByText("Open question?")).not.toBeInTheDocument();
 
     const text = history.textContent ?? "";
@@ -171,5 +171,40 @@ describe("GrillingTurns", () => {
     const history = screen.getByRole("list", { name: "Grilling history" });
     expect(within(history).getByText("Account note")).toBeInTheDocument();
     expect(within(history).getByText("Skip for now")).toBeInTheDocument();
+  });
+
+  it("hides skipped Grilling Question clusters and keeps the Account note", () => {
+    renderTurns([
+      { role: "account", kind: "idea", text: "Speed up GPU kernels" },
+      {
+        role: "model",
+        preamble: "Need the budget.",
+        questions: [{ text: "Training or inference?", options: ["Training", "Inference"] }],
+      },
+      { role: "account", kind: "note", text: "Skip. Focus on tiling." },
+    ]);
+
+    expect(screen.getByText("Skip. Focus on tiling.")).toBeInTheDocument();
+    expect(screen.queryByText("Need the budget.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Training or inference?")).not.toBeInTheDocument();
+  });
+
+  it("hides Edit when read-only", () => {
+    renderTurns(
+      [
+        { role: "account", kind: "idea", text: "Speed up GPU kernels" },
+        {
+          role: "model",
+          preamble: "Clarifying the scope.",
+          questions: [{ text: "What workload?", options: ["Training", "Inference"] }],
+        },
+        { role: "account", kind: "answers", answers: [{ option: "Training" }] },
+      ],
+      { readOnly: true },
+    );
+
+    expect(screen.getByText("What workload?")).toBeInTheDocument();
+    expect(screen.getByText("Training")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
   });
 });

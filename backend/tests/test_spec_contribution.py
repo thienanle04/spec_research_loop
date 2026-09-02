@@ -6,7 +6,10 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.modules.spec.service import SpecService
+from app.modules.loop.catalog import WorkflowNode
+from app.modules.loop.prompt_view import prompt_view
+from app.modules.spec.service import SpecService, _contribution_brief
+from tests.test_prompt_view import _fat_projection
 from tests.test_loop_api import (
     _auth_client,
     _confirm,
@@ -408,6 +411,62 @@ async def test_compacts_related_work_before_direction_generation() -> None:
         "source"
     ]["title"] == "Aggregate Claim Checking"
     assert directions[0].title == "Claim-level evidence routing"
+
+
+@pytest.mark.asyncio
+async def test_prompt_view_path_keeps_compact_related_work_studies() -> None:
+    valid = json.dumps(
+        {
+            "directions": [
+                {
+                    "title": "Claim-level evidence routing",
+                    "mechanism": "Route each unsupported claim to the scholarly passage needed to assess it.",
+                    "gap_link": "This directly addresses the inability to verify results at individual claim level.",
+                    "novelty": "Unlike aggregate checking, the method preserves the failed claim and its evidence link.",
+                    "validation": "Compare with aggregate checking and reject the direction if unsupported claims do not decrease.",
+                }
+            ]
+        }
+    )
+    llm = _ScriptedContributionLlm([valid])
+    service = SpecService(None, llm=llm)  # type: ignore[arg-type]
+
+    await service._propose_directions(
+        {
+            "node": "contribution",
+            "cards": [
+                {"kind": "problem", "text": "Unsupported claims"},
+                {"kind": "gap", "statement": "Existing methods do not verify each claim."},
+            ],
+            "gap_statement": "Existing methods do not verify each claim.",
+            "working_draft": {"narrative": {}, "cards": []},
+            "related_work": {
+                "studies": [
+                    {
+                        "source": {"title": "Aggregate Claim Checking"},
+                        "limitation": "Does not localize unsupported claims.",
+                    }
+                ],
+                "coverage": {"candidate_count": 20},
+            },
+        },
+        "English",
+    )
+
+    brief = json.loads(llm.prompts[0])["contribution_brief"]
+    assert brief["related_work"]["studies"][0]["source"]["title"] == (
+        "Aggregate Claim Checking"
+    )
+    assert "Does not localize unsupported claims." in json.dumps(brief)
+
+
+def test_prompt_view_feeds_compact_studies_into_contribution_brief() -> None:
+    view = prompt_view(WorkflowNode.CONTRIBUTION, _fat_projection())
+    brief = _contribution_brief(view)
+    assert brief["related_work"]["studies"][0]["source"]["title"] == "Paper"
+    assert brief["related_work"]["studies"][0]["limitation"] == (
+        "Does not localize unsupported claims."
+    )
 
 
 @pytest.mark.asyncio

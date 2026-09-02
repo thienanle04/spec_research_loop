@@ -261,3 +261,56 @@ async def test_retrieved_text_is_stored_by_checksum() -> None:
     assert (await storage.get_bytes(key=citation.text_object_key)).decode() == document.text
     assert citation.text_source_kind == "full_text_pdf"
     assert citation.text_char_count == len(document.text)
+
+
+@pytest.mark.asyncio
+async def test_retrieved_text_with_utf16_surrogates_is_stored_as_utf8() -> None:
+    storage = MemoryObjectStorage()
+
+    class SurrogateDocumentSource:
+        async def fetch_text(self, *, record: ScholarlyRecord) -> DocumentText:
+            del record
+            return DocumentText(
+                text="Abstract\n\n" + "\ud800\udc00" + "\n\nLimitations",
+                source_url="https://example.org/paper.pdf",
+                source_kind="full_text_pdf",
+                original_content_type="application/pdf",
+            )
+
+    service = ResearchService(
+        object(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=FakeCitationVerifier(),
+        llm=FakeLlmPort(),
+        document_text_source=SurrogateDocumentSource(),
+        object_storage=storage,
+    )
+    session_id = uuid4()
+    citation = Citation(
+        id=uuid4(),
+        session_id=session_id,
+        citation_key="grounded-2026",
+        title="Grounded Related Work",
+        authors=[],
+        source_metadata={},
+    )
+
+    document, warnings = await service._persist_document_text(
+        session_id=session_id,
+        citation=citation,
+        record=ScholarlyRecord(title=citation.title),
+    )
+
+    assert document is not None
+    assert warnings == []
+    stored = (await storage.get_bytes(key=citation.text_object_key)).decode("utf-8")
+    document.text.encode("utf-8")
+    assert "\ud800" not in stored
+    assert stored == document.text
+
+
+def test_normalize_text_repairs_utf16_surrogates() -> None:
+    normalized = _normalize_text("plain\n\ud800\udc00\nend")
+    normalized.encode("utf-8")
+    assert "\ud800" not in normalized
+    assert "\U00010000" in normalized

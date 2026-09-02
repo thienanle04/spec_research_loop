@@ -77,6 +77,12 @@ class LoopSession(Base):
     )
     decisions: Mapped[list["Decision"]] = relationship(back_populates="session")
     spec_versions: Mapped[list["SpecVersion"]] = relationship(back_populates="session")
+    export_scratches: Mapped[list["ExportScratch"]] = relationship(
+        back_populates="session"
+    )
+    export_scratch_snapshots: Mapped[list["ExportScratchSnapshot"]] = relationship(
+        back_populates="session"
+    )
 
 
 class Card(Base):
@@ -193,6 +199,7 @@ class Decision(Base):
     stage_revision_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
     )
+    detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -222,3 +229,92 @@ class SpecVersion(Base):
     )
 
     session: Mapped[LoopSession] = relationship(back_populates="spec_versions")
+
+
+class ExportScratch(Base):
+    __tablename__ = "loop_export_scratches"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "spec_version_id",
+            name="uq_loop_export_scratches_session_spec_version",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("loop_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    spec_version_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("loop_spec_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    session: Mapped[LoopSession] = relationship(back_populates="export_scratches")
+    snapshots: Mapped[list["ExportScratchSnapshot"]] = relationship(
+        back_populates="export_scratch"
+    )
+
+
+class ExportScratchSnapshot(Base):
+    __tablename__ = "loop_export_scratch_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "export_scratch_id",
+            "snapshot_n",
+            name="uq_loop_export_scratch_snapshots_scratch_n",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("loop_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    export_scratch_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("loop_export_scratches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    spec_version_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("loop_spec_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    snapshot_n: Mapped[int] = mapped_column(Integer, nullable=False)
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    session: Mapped[LoopSession] = relationship(
+        back_populates="export_scratch_snapshots"
+    )
+    export_scratch: Mapped[ExportScratch] = relationship(back_populates="snapshots")

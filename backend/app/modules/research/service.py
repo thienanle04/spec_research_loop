@@ -29,6 +29,7 @@ from app.modules.research.normalization import (
     citation_key,
     normalize_doi,
     normalize_url,
+    utf8_safe_text,
 )
 from app.modules.research.ports import (
     BatchCitationVerifier,
@@ -2787,22 +2788,23 @@ class ResearchService:
                         f"{record.title}: {_llm_failure_summary(exc)}"
                     )
             if document is not None and document.text.strip():
+                source_text = utf8_safe_text(document.text)
                 source_object_key = await self._persist_counter_evidence_text(
                     session_id=session_id,
                     record=record,
-                    source_text=document.text,
+                    source_text=source_text,
                 )
                 return (
                     _CounterEvidenceMaterial(
                         record=record,
-                        source_text=document.text[:24_000],
+                        source_text=source_text[:24_000],
                         source_kind=document.source_kind,
                         source_location=_document_location(document, record),
                         source_object_key=source_object_key,
                     ),
                     warnings,
                 )
-            abstract = (record.abstract or "").strip()
+            abstract = utf8_safe_text((record.abstract or "").strip())
             if abstract:
                 source_object_key = await self._persist_counter_evidence_text(
                     session_id=session_id,
@@ -2862,7 +2864,7 @@ class ResearchService:
     ) -> str | None:
         if session_id is None or self._object_storage is None:
             return None
-        data = source_text.encode("utf-8")
+        data = utf8_safe_text(source_text).encode("utf-8")
         checksum = hashlib.sha256(data).hexdigest()
         result_digest = hashlib.sha256(
             _record_result_key(record).encode("utf-8")
@@ -3535,6 +3537,7 @@ class ResearchService:
         warnings = list(document.warnings)
         if cache_warning:
             warnings.append(cache_warning)
+        document.text = utf8_safe_text(document.text)
         data = document.text.encode("utf-8")
         checksum = hashlib.sha256(data).hexdigest()
         citation.text_source_url = document.source_url
@@ -5342,11 +5345,13 @@ def _merge_verified_counter_record(
 
 
 def _record_result_key(record: ScholarlyRecord) -> str:
-    return str(
-        normalize_doi(record.doi)
-        or record.provider_source_id
-        or normalize_url(record.url)
-        or citation_key(record.title, record.year)
+    return utf8_safe_text(
+        str(
+            normalize_doi(record.doi)
+            or record.provider_source_id
+            or normalize_url(record.url)
+            or citation_key(record.title, record.year)
+        )
     )
 
 

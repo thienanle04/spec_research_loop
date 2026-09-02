@@ -73,7 +73,8 @@ void _allStagesPresent;
 void _noExtraStages;
 
 type CatalogNode = (typeof LOOP_STAGE_CATALOG)[number]["nodes"][number];
-type MissingNode = Exclude<WorkflowNode, CatalogNode>;
+type GroupedOffRailNode = typeof WorkflowNode.evidence;
+type MissingNode = Exclude<WorkflowNode, CatalogNode | GroupedOffRailNode>;
 type ExtraNode = Exclude<CatalogNode, WorkflowNode>;
 const _allNodesPresent: MissingNode extends never ? true : MissingNode = true;
 const _noExtraNodes: ExtraNode extends never ? true : ExtraNode = true;
@@ -101,15 +102,11 @@ const INVALIDATION_CHILDREN: Record<WorkflowNode, readonly WorkflowNode[]> = {
     WorkflowNode.experiment_judge,
   ],
   [WorkflowNode.claims]: [
-    WorkflowNode.evidence,
+    WorkflowNode.experiment_plan,
     WorkflowNode.evidence_judge,
     WorkflowNode.experiment_judge,
   ],
-  [WorkflowNode.evidence]: [
-    WorkflowNode.experiment_plan,
-    WorkflowNode.gap_judge,
-    WorkflowNode.contribution_judge,
-  ],
+  [WorkflowNode.evidence]: [],
   [WorkflowNode.experiment_plan]: [WorkflowNode.feasibility, WorkflowNode.experiment_judge],
   [WorkflowNode.feasibility]: [WorkflowNode.experiment_judge, WorkflowNode.conference_judge],
   [WorkflowNode.gap_judge]: [WorkflowNode.aggregator],
@@ -124,7 +121,6 @@ export const HANDLING_OPTION_TARGETS = [
   WorkflowNode.gap,
   WorkflowNode.contribution,
   WorkflowNode.claims,
-  WorkflowNode.evidence,
   WorkflowNode.experiment_plan,
   WorkflowNode.idea_decomposition,
 ] as const;
@@ -162,6 +158,11 @@ export function stagePathNodes(stage: LoopStage): readonly WorkflowNode[] {
   return catalogStage(stage).nodes;
 }
 
+/** Workflow Nodes in the Loop Stage that still need Confirm. */
+export function stageWorkNodes(stage: LoopStage): readonly WorkflowNode[] {
+  return catalogStage(stage).nodes;
+}
+
 export function catalogStage(id: LoopStage) {
   const stage = LOOP_STAGE_CATALOG.find((entry) => entry.id === id);
   if (!stage) {
@@ -175,6 +176,9 @@ export function isLoopStage(value: string | null): value is LoopStage {
 }
 
 export function stageForWorkflowNode(node: WorkflowNode): LoopStage {
+  if (node === WorkflowNode.evidence) {
+    return LoopStage.claims_evidence;
+  }
   const stage = LOOP_STAGE_CATALOG.find((entry) =>
     (entry.nodes as readonly WorkflowNode[]).includes(node),
   );
@@ -191,8 +195,8 @@ export const CARD_KIND_OWNERS: Record<CardKind, WorkflowNode[]> = {
   [CardKind.open_question]: [WorkflowNode.idea_decomposition],
   [CardKind.gap]: [WorkflowNode.gap],
   [CardKind.contribution]: [WorkflowNode.contribution],
-  [CardKind.claim]: [WorkflowNode.claims, WorkflowNode.evidence],
-  [CardKind.evidence]: [WorkflowNode.evidence],
+  [CardKind.claim]: [WorkflowNode.claims],
+  [CardKind.evidence]: [WorkflowNode.claims],
 };
 
 export const CARD_KIND_LABELS: Record<CardKind, string> = {
@@ -227,6 +231,8 @@ export function isWorkflowNode(value: string | null): value is WorkflowNode {
 export type NavStop = {
   stage: LoopStage;
   node?: WorkflowNode;
+  exportScratch?: boolean;
+  specVersionId?: string;
 };
 
 export function navStops(): NavStop[] {
@@ -243,7 +249,20 @@ export function sessionHref(sessionId: string, stop: NavStop): string {
   if (stop.node) {
     params.set("node", stop.node);
   }
+  if (stop.exportScratch && stop.stage === LoopStage.readiness) {
+    params.set("export_scratch", "1");
+    if (stop.specVersionId) {
+      params.set("spec_version", stop.specVersionId);
+    }
+  }
   return `/sessions/${sessionId}?${params.toString()}`;
+}
+
+export function isExportScratchEditorOpen(
+  stage: LoopStage | null,
+  searchParams: { get: (name: string) => string | null },
+): boolean {
+  return stage === LoopStage.readiness && searchParams.get("export_scratch") === "1";
 }
 
 export function railStop(stage: LoopStage): NavStop {
@@ -260,6 +279,7 @@ export function resolveSelectedNode(
   workingDraftNode: WorkflowNode,
 ): WorkflowNode | undefined {
   const nodes = catalogStage(stage).nodes as readonly WorkflowNode[];
+  const workNodes = stageWorkNodes(stage);
   if (stage === LoopStage.independent_judges) {
     if (nodes.includes(workingDraftNode)) {
       return workingDraftNode;
@@ -269,11 +289,15 @@ export function resolveSelectedNode(
   if (nodes.length === 0) {
     return undefined;
   }
-  if (isWorkflowNode(nodeQuery) && nodes.includes(nodeQuery)) {
-    return nodeQuery;
+  const requested =
+    nodeQuery === WorkflowNode.evidence ? WorkflowNode.claims : nodeQuery;
+  if (isWorkflowNode(requested) && workNodes.includes(requested)) {
+    return requested;
   }
-  if (!nodeQuery && nodes.includes(workingDraftNode)) {
-    return workingDraftNode;
+  const draft =
+    workingDraftNode === WorkflowNode.evidence ? WorkflowNode.claims : workingDraftNode;
+  if (!nodeQuery && workNodes.includes(draft)) {
+    return draft;
   }
   return nodes[0];
 }
@@ -290,11 +314,12 @@ export function adjacentStop(current: NavStop, delta: -1 | 1): NavStop | null {
 }
 
 export function workingDraftStop(node: WorkflowNode): NavStop {
-  const stage = stageForWorkflowNode(node);
+  const active = node === WorkflowNode.evidence ? WorkflowNode.claims : node;
+  const stage = stageForWorkflowNode(active);
   if (stage === LoopStage.independent_judges) {
     return { stage };
   }
-  return { stage, node };
+  return { stage, node: active };
 }
 
 export function ancestors(node: WorkflowNode): Set<WorkflowNode> {
@@ -332,7 +357,7 @@ export function descendants(node: WorkflowNode): Set<WorkflowNode> {
 }
 
 export function upstreamOfStage(stage: LoopStage): Set<WorkflowNode> {
-  const stageNodes = new Set<WorkflowNode>(catalogStage(stage).nodes);
+  const stageNodes = new Set<WorkflowNode>(stageWorkNodes(stage));
   const upstream = new Set<WorkflowNode>();
   for (const node of stageNodes) {
     for (const parent of ancestors(node)) {

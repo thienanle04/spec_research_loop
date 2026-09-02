@@ -11,6 +11,8 @@ from app.modules.judgement.models import (
 from app.modules.loop.models import (
     Card,
     Decision,
+    ExportScratch,
+    ExportScratchSnapshot,
     LoopSession,
     NodeHead,
     SpecVersion,
@@ -26,6 +28,8 @@ __all__ = [
     "Citation",
     "ConferenceScore",
     "Decision",
+    "ExportScratch",
+    "ExportScratchSnapshot",
     "HandlingOption",
     "JudgeIssue",
     "LoopSession",

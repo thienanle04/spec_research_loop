@@ -153,13 +153,17 @@ describe("ClaimsStageContainer", () => {
       },
     );
     mocks.replaceCards.mockImplementation(
-      async ({ data }: { data: { expected_version: number; bodies: Record<string, unknown>[] } }) => ({
+      async ({
+        data,
+      }: {
+        data: { expected_version: number; kind: CardKind; bodies: Record<string, unknown>[] };
+      }) => ({
         status: 200,
         data: {
           version: data.expected_version + 1,
           cards: data.bodies.map((body, index) => ({
-            id: `replaced-${index}`,
-            kind: CardKind.claim,
+            id: `replaced-${data.kind}-${index}`,
+            kind: data.kind,
             body,
             created_at: "2026-08-21T00:00:00Z",
             updated_at: "2026-08-21T00:00:00Z",
@@ -222,8 +226,8 @@ describe("ClaimsStageContainer", () => {
       "Old stale claim about memory bandwidth",
     );
     expect(mocks.createCard).not.toHaveBeenCalled();
-    expect(mocks.replaceCards).toHaveBeenCalledTimes(1);
-    expect(mocks.replaceCards).toHaveBeenCalledWith({
+    expect(mocks.replaceCards).toHaveBeenCalledTimes(2);
+    expect(mocks.replaceCards).toHaveBeenNthCalledWith(1, {
       sessionId: session.id,
       data: {
         kind: CardKind.claim,
@@ -235,6 +239,17 @@ describe("ClaimsStageContainer", () => {
           expect.objectContaining({
             metadata: expect.objectContaining({ claim: "New claim B after regenerate" }),
           }),
+        ],
+      },
+    });
+    expect(mocks.replaceCards).toHaveBeenNthCalledWith(2, {
+      sessionId: session.id,
+      data: {
+        kind: CardKind.evidence,
+        expected_version: 11,
+        bodies: [
+          expect.objectContaining({ text: "New evidence A" }),
+          expect.objectContaining({ text: "New evidence B" }),
         ],
       },
     });
@@ -283,8 +298,8 @@ describe("ClaimsStageContainer", () => {
       ]);
     });
     expect(mocks.createCard).not.toHaveBeenCalled();
-    expect(mocks.replaceCards).toHaveBeenCalledTimes(1);
-    expect(mocks.replaceCards).toHaveBeenCalledWith({
+    expect(mocks.replaceCards).toHaveBeenCalledTimes(2);
+    expect(mocks.replaceCards).toHaveBeenNthCalledWith(1, {
       sessionId: session.id,
       data: {
         kind: CardKind.claim,

@@ -5,9 +5,15 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CardResponse } from './cardResponse';
+import type { ClarificationReviewResponse } from './clarificationReviewResponse';
+import type { ExportScratchResponse } from './exportScratchResponse';
+import type { ExportScratchSnapshotResponse } from './exportScratchSnapshotResponse';
 import type { LoopSessionResponseWorkingDraftNarrative } from './loopSessionResponseWorkingDraftNarrative';
 import type { NodeHeadResponse } from './nodeHeadResponse';
+import type { ReadinessSummary } from './readinessSummary';
+import type { SpecVersionListItem } from './specVersionListItem';
 import type { SpecVersionResponse } from './specVersionResponse';
+import type { StageRevisionResponse } from './stageRevisionResponse';
 import type { WorkflowNode } from './workflowNode';
 
 export interface LoopSessionResponse {
@@ -18,19 +24,14 @@ export interface LoopSessionResponse {
   working_draft_narrative: LoopSessionResponseWorkingDraftNarrative;
   node_heads: NodeHeadResponse[];
   cards: CardResponse[];
+  stage_revisions?: StageRevisionResponse[];
   produced_spec_version: SpecVersionResponse | null;
   valid_spec_version_id: string | null;
-  readiness?: {
-    state: 'not_evaluated' | 'blocked' | 'ready';
-    notice: string;
-    scores?: {
-      originality: number;
-      significance: number;
-      soundness: number;
-      clarity: number;
-      reproducibility: number;
-    } | null;
-  };
+  spec_versions?: SpecVersionListItem[];
+  clarification_review?: ClarificationReviewResponse | null;
+  readiness?: ReadinessSummary;
+  export_scratch?: ExportScratchResponse | null;
+  export_scratch_snapshots?: ExportScratchSnapshotResponse[];
   created_at: string;
   updated_at: string;
 }

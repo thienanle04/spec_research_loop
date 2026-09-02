@@ -50,6 +50,65 @@ def system_prompt(node: WorkflowNode) -> str:
     return _DECOMPOSITION_SYSTEM
 
 
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _slim_cards(raw: Any) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for item in _list(raw):
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        body = item.get("body")
+        if not isinstance(kind, str) or not isinstance(body, dict):
+            continue
+        text = body.get("text") or body.get("statement") or body.get(kind)
+        if isinstance(text, str) and text.strip():
+            cards.append({"kind": kind, "text": text.strip()})
+    return cards
+
+
+def _slim_working_draft(working: Any) -> dict[str, Any]:
+    draft = _dict(working)
+    narrative = _dict(draft.get("narrative"))
+    return {
+        "node": draft.get("node"),
+        "narrative": {
+            "turns": _list(narrative.get("turns")),
+            "frame": _dict(narrative.get("frame")),
+            "questions": _list(narrative.get("questions")),
+            "exhausted": narrative.get("exhausted"),
+        },
+        "cards": _slim_cards(draft.get("card_snapshot")),
+    }
+
+
+def _confirmed_frame(context: dict[str, Any]) -> dict[str, Any]:
+    upstream = _dict(context.get("upstream"))
+    interpretation = _dict(upstream.get(WorkflowNode.IDEA_INTERPRETATION.value))
+    narrative = _dict(interpretation.get("narrative"))
+    frame = narrative.get("frame")
+    return frame if isinstance(frame, dict) else {}
+
+
+def _grilling_prompt_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Grilling-only slice. Full Context Projection overflows a 64k vendor window (ADR 0035)."""
+    upstream = _dict(context.get("upstream"))
+    interpretation = _dict(upstream.get(WorkflowNode.IDEA_INTERPRETATION.value))
+    decomposition = _dict(upstream.get(WorkflowNode.IDEA_DECOMPOSITION.value))
+    return {
+        "working_draft": _slim_working_draft(context.get("working_draft")),
+        "confirmed_idea_frame": _confirmed_frame(context),
+        "interpretation_cards": _slim_cards(interpretation.get("card_snapshot")),
+        "decomposition_cards": _slim_cards(decomposition.get("card_snapshot")),
+    }
+
+
 def user_prompt(
     *,
     context: dict[str, Any],
@@ -57,9 +116,12 @@ def user_prompt(
     answers: list[dict[str, str]] | None = None,
     note: str | None = None,
 ) -> str:
-    payload: dict[str, Any] = {"context": context, "message": message}
+    payload: dict[str, Any] = {
+        "context": _grilling_prompt_context(context),
+        "message": message,
+    }
     if answers is not None:
         payload["answers"] = answers
     if note is not None:
         payload["note"] = note
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json.dumps(payload, ensure_ascii=False)

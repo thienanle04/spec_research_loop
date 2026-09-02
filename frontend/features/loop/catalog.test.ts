@@ -15,6 +15,8 @@ import {
   resolveSelectedStage,
   sessionHref,
   stageForWorkflowNode,
+  stageWorkNodes,
+  isExportScratchEditorOpen,
   upstreamOfStage,
   workingDraftStop,
 } from "./catalog";
@@ -50,6 +52,9 @@ describe("Loop Stage catalog", () => {
     ]);
     expect(LOOP_STAGE_CATALOG.find((stage) => stage.id === LoopStage.spec_draft)?.nodes).toEqual([]);
     expect(LOOP_STAGE_CATALOG.find((stage) => stage.id === LoopStage.readiness)?.nodes).toEqual([]);
+    expect(stageWorkNodes(LoopStage.claims_evidence)).toEqual([
+      WorkflowNode.claims,
+    ]);
   });
 
   it("maps a Working Draft Workflow Node to its Loop Stage", () => {
@@ -58,6 +63,7 @@ describe("Loop Stage catalog", () => {
     expect(stageForWorkflowNode(WorkflowNode.gap)).toBe(LoopStage.gap);
     expect(stageForWorkflowNode(WorkflowNode.contribution)).toBe(LoopStage.contribution);
     expect(stageForWorkflowNode(WorkflowNode.aggregator)).toBe(LoopStage.independent_judges);
+    expect(stageForWorkflowNode(WorkflowNode.evidence)).toBe(LoopStage.claims_evidence);
   });
 
   it("treats the five Judges as Independent judges Node Heads, not Aggregator", () => {
@@ -83,6 +89,12 @@ describe("Loop Stage catalog", () => {
     );
   });
 
+  it("treats Export Scratch editor query as Readiness, not a Loop Stage", () => {
+    const params = new URLSearchParams("export_scratch=1&spec_version=spec-1");
+    expect(isExportScratchEditorOpen(LoopStage.readiness, params)).toBe(true);
+    expect(isExportScratchEditorOpen(LoopStage.spec_draft, params)).toBe(false);
+  });
+
   it("resolves viewed Workflow Node from the query and falls back inside the Loop Stage", () => {
     expect(resolveSelectedNode(LoopStage.grilling, null, WorkflowNode.idea_decomposition)).toBe(
       WorkflowNode.idea_decomposition,
@@ -97,6 +109,12 @@ describe("Loop Stage catalog", () => {
       WorkflowNode.research_inputs,
     );
     expect(resolveSelectedNode(LoopStage.spec_draft, WorkflowNode.gap, WorkflowNode.feasibility)).toBeUndefined();
+    expect(
+      resolveSelectedNode(LoopStage.claims_evidence, WorkflowNode.evidence, WorkflowNode.claims),
+    ).toBe(WorkflowNode.claims);
+    expect(resolveSelectedNode(LoopStage.claims_evidence, null, WorkflowNode.evidence)).toBe(
+      WorkflowNode.claims,
+    );
     expect(
       resolveSelectedNode(
         LoopStage.independent_judges,
@@ -134,6 +152,15 @@ describe("Loop Stage catalog", () => {
     );
     expect(sessionHref("session-1", { stage: LoopStage.readiness })).toBe(
       `/sessions/session-1?stage=${LoopStage.readiness}`,
+    );
+    expect(
+      sessionHref("session-1", {
+        stage: LoopStage.readiness,
+        exportScratch: true,
+        specVersionId: "spec-1",
+      }),
+    ).toBe(
+      `/sessions/session-1?stage=${LoopStage.readiness}&export_scratch=1&spec_version=spec-1`,
     );
   });
 
@@ -173,7 +200,11 @@ describe("Loop Stage catalog", () => {
 
   it("walks current descendants from the invalidation catalog", () => {
     expect(descendants(WorkflowNode.idea_interpretation)).toEqual(
-      new Set(Object.values(WorkflowNode).filter((node) => node !== WorkflowNode.idea_interpretation)),
+      new Set(
+        Object.values(WorkflowNode).filter(
+          (node) => node !== WorkflowNode.idea_interpretation && node !== WorkflowNode.evidence,
+        ),
+      ),
     );
     expect(descendants(WorkflowNode.aggregator)).toEqual(new Set());
   });
@@ -188,8 +219,8 @@ describe("Loop Stage catalog", () => {
     ]);
     expect(ownedCardKinds(WorkflowNode.gap)).toEqual([CardKind.gap]);
     expect(ownedCardKinds(WorkflowNode.contribution)).toEqual([CardKind.contribution]);
-    expect(ownedCardKinds(WorkflowNode.claims)).toEqual([CardKind.claim]);
-    expect(ownedCardKinds(WorkflowNode.evidence)).toEqual([CardKind.claim, CardKind.evidence]);
+    expect(ownedCardKinds(WorkflowNode.claims)).toEqual([CardKind.claim, CardKind.evidence]);
+    expect(ownedCardKinds(WorkflowNode.evidence)).toEqual([]);
     expect(ownedCardKinds(WorkflowNode.experiment_plan)).toEqual([]);
   });
 });

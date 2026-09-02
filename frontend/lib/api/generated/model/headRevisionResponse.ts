@@ -4,10 +4,10 @@
  * SpecResearch Loop
  * OpenAPI spec version: 0.1.0
  */
+import type { HeadRevisionResponseCardSnapshotItem } from './headRevisionResponseCardSnapshotItem';
+import type { HeadRevisionResponseNarrative } from './headRevisionResponseNarrative';
 
 export interface HeadRevisionResponse {
   narrative: HeadRevisionResponseNarrative;
-  card_snapshot: unknown[];
+  card_snapshot: HeadRevisionResponseCardSnapshotItem[];
 }
-
-export type HeadRevisionResponseNarrative = { [key: string]: unknown };

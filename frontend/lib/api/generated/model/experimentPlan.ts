@@ -4,11 +4,8 @@
  * SpecResearch Loop
  * OpenAPI spec version: 0.1.0
  */
+import type { ExperimentItem } from './experimentItem';
 
 export interface ExperimentPlan {
-  baselines: string[];
-  metrics: string[];
-  evaluation_protocol: string;
-  ablation_study: string[];
-  generalization: string[];
+  experiments: ExperimentItem[];
 }

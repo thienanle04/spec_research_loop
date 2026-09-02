@@ -12,7 +12,11 @@ from app.adapters.storage import MemoryObjectStorage
 from app.core.config import get_settings
 from app.modules.research.adapters.fake_llm import FakeLlmPort
 from app.modules.research.adapters.fake_source import FakeScholarlySourcePort
-from app.modules.research.normalization import normalize_doi, normalize_url
+from app.modules.research.normalization import (
+    normalize_doi,
+    normalize_url,
+    utf8_safe_text,
+)
 from app.modules.research.ports import (
     DocumentText,
     ScholarlyProviderError,
@@ -72,6 +76,18 @@ def test_normalize_doi_and_url() -> None:
         normalize_url("Example.COM/work/?utm_source=test&view=full#section")
         == "https://example.com/work?view=full"
     )
+
+
+def test_utf8_safe_text_repairs_surrogate_pairs_and_lone_surrogates() -> None:
+    assert utf8_safe_text("plain ascii") == "plain ascii"
+    repaired_pair = utf8_safe_text("\ud800\udc00")
+    repaired_pair.encode("utf-8")
+    assert repaired_pair == "\U00010000"
+    repaired_lone = utf8_safe_text("ok\ud800end")
+    repaired_lone.encode("utf-8")
+    assert "\ud800" not in repaired_lone
+    with pytest.raises(UnicodeEncodeError, match="surrogates not allowed"):
+        "\ud800".encode("utf-8")
 
 
 def test_related_work_keeps_only_one_article_per_research_work() -> None:
@@ -4014,6 +4030,85 @@ async def test_counter_evidence_source_text_is_persisted_to_object_storage() -> 
     assert object_key is not None
     assert object_key.startswith(f"research/{session_id}/gap/counter-evidence/")
     assert (await storage.get_bytes(key=object_key)).decode() == record.abstract
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_persists_source_text_that_contains_utf16_surrogates() -> None:
+    """Gap generate must not crash when fetched PDF/HTML text contains lone surrogates."""
+    storage = MemoryObjectStorage()
+    surrogate_pair = "\ud800\udc00"
+    source_text = ("plain " * 2914) + surrogate_pair + " tail"
+
+    class SurrogateDocumentTextSource:
+        async def fetch_text(self, *, record: ScholarlyRecord) -> DocumentText:
+            del record
+            return DocumentText(
+                text=source_text,
+                source_kind="full_text_pdf",
+            )
+
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        document_text_source=SurrogateDocumentTextSource(),
+        object_storage=storage,
+    )
+    record = ScholarlyRecord(
+        title="Counter source",
+        abstract="This source evaluates an existing competing method.",
+        provider="fixture",
+        provider_source_id="counter-surrogate",
+    )
+
+    materials, warnings = await service._counter_evidence_materials(
+        [record],
+        session_id=uuid4(),
+    )
+
+    assert warnings == []
+    assert len(materials) == 1
+    object_key = materials[0].source_object_key
+    assert object_key is not None
+    stored = await storage.get_bytes(key=object_key)
+    decoded = stored.decode("utf-8")
+    materials[0].source_text.encode("utf-8")
+    assert "\ud800" not in decoded
+    assert "\udc00" not in decoded
+    assert materials[0].source_kind == "full_text_pdf"
+
+
+@pytest.mark.asyncio
+async def test_counter_evidence_persists_when_result_key_contains_utf16_surrogates() -> None:
+    """Gap generate must not crash when a provider id still contains lone surrogates."""
+    storage = MemoryObjectStorage()
+    service = ResearchService(
+        _UnusedDb(),  # type: ignore[arg-type]
+        source=FakeScholarlySourcePort(),
+        verifier=_UnusedVerifier(),  # type: ignore[arg-type]
+        llm=FakeLlmPort(),
+        object_storage=storage,
+    )
+    record = ScholarlyRecord(
+        title="Counter source",
+        abstract="This source evaluates an existing competing method.",
+        provider="fixture",
+        provider_source_id="id\ud800bad",
+    )
+
+    materials, warnings = await service._counter_evidence_materials(
+        [record],
+        session_id=uuid4(),
+    )
+
+    assert warnings == []
+    assert len(materials) == 1
+    object_key = materials[0].source_object_key
+    assert object_key is not None
+    stored = await storage.get_bytes(key=object_key)
+    stored.decode("utf-8")
+    object_key.encode("utf-8")
 
 
 @pytest.mark.asyncio

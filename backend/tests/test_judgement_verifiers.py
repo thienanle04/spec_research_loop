@@ -2,7 +2,10 @@
 
 from uuid import UUID
 
-from app.modules.judgement.verifiers import unsupported_citation
+from app.modules.judgement.verifiers import (
+    gap_unsupported_by_sources,
+    unsupported_citation,
+)
 
 UNSUPPORTED_CLAIM = (
     "The literature has not measured whether brass instruments improve "
@@ -83,3 +86,49 @@ def test_unsupported_citation_silent_when_passage_entails_claim() -> None:
         }
     )
     assert issues == []
+
+
+def test_gap_unsupported_by_sources_reads_passages_from_related_work_dict() -> None:
+    gap_id = UUID("22222222-2222-2222-2222-222222222222")
+    silent = gap_unsupported_by_sources(
+        {
+            "gap_statement": "No cited method does X.",
+            "cards": [
+                {
+                    "id": str(gap_id),
+                    "kind": "gap",
+                    "statement": "No cited method does X.",
+                    "supporting_citation_keys": ["paper-2024"],
+                }
+            ],
+            "related_work": {
+                "studies": [{"limitation": "Does not do X."}],
+                "passages": [
+                    {
+                        "citation_key": "paper-2024",
+                        "supporting_passage": "The method never does X.",
+                    }
+                ],
+            },
+        }
+    )
+    assert silent == []
+    issues = gap_unsupported_by_sources(
+        {
+            "gap_statement": "No cited method does X.",
+            "cards": [
+                {
+                    "id": str(gap_id),
+                    "kind": "gap",
+                    "statement": "No cited method does X.",
+                    "supporting_citation_keys": ["paper-2024"],
+                }
+            ],
+            "related_work": {
+                "studies": [{"limitation": "Does not do X."}],
+                "passages": [],
+            },
+        }
+    )
+    assert len(issues) == 1
+    assert issues[0].finding_kind == "gap_unsupported_by_sources"

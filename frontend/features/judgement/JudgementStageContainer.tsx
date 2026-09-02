@@ -9,6 +9,7 @@ import { getApiErrorMessage } from "@/lib/api/config";
 import { getGetSessionApiLoopSessionsSessionIdGetQueryKey } from "@/lib/api/generated/endpoints";
 import { WorkflowNode, NodeHeadStatus, type LoopSessionResponse } from "@/lib/api/generated/model";
 import { customFetch } from "@/lib/api/mutator";
+import { cn } from "@/lib/utils";
 
 import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
@@ -39,14 +40,30 @@ function judgeRunQueryKey(sessionId: string, node: string, revisionId?: string |
   return ["/api/judgement/run", sessionId, node, revisionId ?? "working"] as const;
 }
 
+type CompactHeadStatus = "evaluating" | "none" | "done" | "stale";
+
 function compactHeadStatusLabel(
   displayStatus: "running" | "current" | NodeHeadStatus | string,
-): "evaluating" | "none" | "done" | "stale" {
+): CompactHeadStatus {
   if (displayStatus === "running") return "evaluating";
   if (displayStatus === NodeHeadStatus.empty) return "none";
   if (displayStatus === NodeHeadStatus.current || displayStatus === "current") return "done";
   return "stale";
 }
+
+const HEAD_STATUS_LABEL: Record<CompactHeadStatus, string> = {
+  evaluating: "Evaluating",
+  none: "None",
+  done: "Done",
+  stale: "Stale",
+};
+
+const HEAD_STATUS_CLASS: Record<CompactHeadStatus, string> = {
+  evaluating: "bg-sky-100 text-sky-800 dark:bg-sky-950/70 dark:text-sky-200",
+  none: "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
+  done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-200",
+  stale: "bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-200",
+};
 
 export function JudgementStageContainer({
   sessionId,
@@ -321,8 +338,20 @@ export function JudgementStageContainer({
                 aria-label={WORKFLOW_NODE_LABELS[judge]}
                 className="flex h-full flex-col gap-2 rounded-md border border-border bg-card px-3 py-2"
               >
-                <p className="text-sm text-navy">{JUDGE_HEAD_PURPOSE[judge]}</p>
-                <p className="text-xs uppercase tracking-wide text-muted-foreground">{statusLabel}</p>
+                <div className="flex flex-col gap-1">
+                  <p className="font-serif text-sm font-semibold leading-tight text-navy">
+                    {WORKFLOW_NODE_LABELS[judge]}
+                  </p>
+                  <p className="text-xs leading-snug text-muted-foreground">{JUDGE_HEAD_PURPOSE[judge]}</p>
+                  <p
+                    className={cn(
+                      "inline-flex w-fit rounded-md px-2 py-0.5 text-xs font-semibold tracking-wide",
+                      HEAD_STATUS_CLASS[statusLabel],
+                    )}
+                  >
+                    {HEAD_STATUS_LABEL[statusLabel]}
+                  </p>
+                </div>
               </li>
             );
           })}

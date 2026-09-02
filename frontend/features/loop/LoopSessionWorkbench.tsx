@@ -45,12 +45,14 @@ import {
   ancestors,
   catalogStage,
   isIndependentJudgeNode,
+  isExportScratchEditorOpen,
   railStop,
   resolveSelectedNode,
   resolveSelectedStage,
   sessionHref,
   stageForWorkflowNode,
   stagePathNodes,
+  stageWorkNodes,
   workingDraftStop,
   type NavStop,
 } from "./catalog";
@@ -139,7 +141,7 @@ function continueTargetAfterConfirm(
   confirmedNode: WorkflowNode,
 ): ContinueTarget | null {
   const currentStage = stageForWorkflowNode(confirmedNode);
-  const currentStageNodes = catalogStage(currentStage).nodes as readonly WorkflowNode[];
+  const currentStageNodes = stageWorkNodes(currentStage);
   const confirmedIndex = currentStageNodes.indexOf(confirmedNode);
   const nextNode = currentStageNodes[confirmedIndex + 1];
   const nextNodeHead = next.node_heads.find((head) => head.node === nextNode);
@@ -271,6 +273,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     session && selectedStage
       ? resolveSelectedNode(selectedStage, searchParams.get("node"), session.working_draft_node)
       : undefined;
+  const exportScratchOpen = isExportScratchEditorOpen(selectedStage, searchParams);
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   function expectedVersion(): number {
@@ -323,15 +326,28 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
       selectedStage === LoopStage.independent_judges
         ? { stage: selectedStage }
         : { stage: selectedStage, node: selectedNode };
+    const exportScratchOpen = isExportScratchEditorOpen(selectedStage, searchParams);
     const stageMatches = searchParams.get("stage") === selectedStage;
     const nodeMatches = canonicalStop.node
       ? searchParams.get("node") === canonicalStop.node
       : !searchParams.get("node");
     if (stageMatches && nodeMatches) return;
-    router.replace(sessionHref(sessionId, canonicalStop), {
-      scroll: false,
-    });
+    router.replace(
+      sessionHref(sessionId, {
+        ...canonicalStop,
+        exportScratch: exportScratchOpen,
+        specVersionId: exportScratchOpen
+          ? (searchParams.get("spec_version") ?? undefined)
+          : undefined,
+      }),
+      { scroll: false },
+    );
   }, [router, searchParams, selectedNode, selectedStage, session, sessionId]);
+
+  useEffect(() => {
+    if (selectedStage !== LoopStage.spec_draft) return;
+    window.scrollTo(0, 0);
+  }, [selectedStage]);
 
   useEffect(() => {
     if (!session || !selectedStage) return;
@@ -465,7 +481,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
     ? session.node_heads.find((head) => head.node === selectedNode)
     : undefined;
   const workingDraftHead = session.node_heads.find((head) => head.node === workingDraftNode);
-  const viewedNodeStale = viewedHead?.status === NodeHeadStatus.stale;
+  const viewedNodeStale = needsStaleReaccept(viewedHead);
   const specVersionStale =
     session.produced_spec_version != null &&
     session.valid_spec_version_id !== session.produced_spec_version.id;
@@ -619,7 +635,12 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-4 pb-12">
+    <div
+      className={cn(
+        "mx-auto flex flex-col gap-4 pb-12",
+        exportScratchOpen ? "max-w-none px-4" : "max-w-7xl",
+      )}
+    >
       <header
         aria-label="Loop Session"
         className="flex flex-wrap items-center gap-3 border-b border-border pb-3"
@@ -634,7 +655,13 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           <LoopSessionTitleEditor sessionId={sessionId} />
         </div>
       </header>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)] lg:items-start">
+      <div
+        className={cn(
+          "grid grid-cols-1 gap-4",
+          !exportScratchOpen && "lg:grid-cols-[minmax(13rem,16rem)_minmax(0,1fr)] lg:items-start",
+        )}
+      >
+        {exportScratchOpen ? null : (
         <aside className="grid gap-4 lg:sticky lg:top-6">
           <nav aria-label="Loop Stages" className="rounded-md border bg-card shadow-sm">
             <ol className="flex gap-2 overflow-x-auto p-2 lg:flex-col lg:overflow-visible">
@@ -643,7 +670,11 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
                   stage: stage.id,
                   nodeHeads: session.node_heads,
                   workingDraftNode: session.working_draft_node,
-                  readinessState: session.readiness?.state,
+                  readinessState: session.readiness?.state as
+                    | "not_evaluated"
+                    | "blocked"
+                    | "ready"
+                    | undefined,
                 });
                 const Icon = LOOP_STAGE_ICONS[stage.id];
                 const active = stage.id === selectedStage;
@@ -671,8 +702,10 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
             </ol>
           </nav>
         </aside>
+        )}
 
-      <div className="grid min-w-0 grid-cols-1 gap-4">
+      <div className={cn("grid min-w-0 grid-cols-1 gap-4", exportScratchOpen && "min-h-0")}>
+        {exportScratchOpen ? null : (
         <StagePathNav
           emptyTabLabel={
             selectedStage === LoopStage.spec_draft ? selected.name : undefined
@@ -684,7 +717,8 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
           next={nextStop}
           onBrowse={browseTo}
         />
-        {showInvalidationBanner ? (
+        )}
+        {exportScratchOpen || !showInvalidationBanner ? null : (
           <div role="status" className="rounded-md border border-pending bg-card p-3">
             <div className="grid gap-1 text-sm text-pending">
               {showNodeInvalidationLine && nodeBannerSubject ? (
@@ -700,7 +734,7 @@ function LoopSessionWorkbenchView({ sessionId }: { sessionId: string }) {
               ) : null}
             </div>
           </div>
-        ) : null}
+        )}
         {transitionError ? (
           <div role="alert" className="rounded-md border border-pending bg-card p-3">
             <p className="text-sm">{transitionMessage(transitionError)}</p>
