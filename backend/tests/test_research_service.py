@@ -1838,6 +1838,14 @@ async def test_gap_generation_privately_analyzes_and_synthesizes_all_related_wor
     assert {item["claim_id"] for item in claim_assessments} == {"c1", "c2"}
     assert all(item["supporting_citation_keys"] for item in claim_assessments)
     assert all(item["supporting_evidence"] for item in claim_assessments)
+    confirmation_calls = [
+        call
+        for call in llm.calls
+        if "research-gap-claim-support-confirmation" in call["system"]
+    ]
+    assert len(confirmation_calls) == 1
+    assert '"claim_id": "c1"' in confirmation_calls[0]["prompt"]
+    assert '"claim_id": "c2"' in confirmation_calls[0]["prompt"]
     assert all(result["grounding_status"] == "grounded" for result in counter_results)
     assert all(result["support_status"] == "supported" for result in counter_results)
     assert '"claim_assessments"' in synthesis_prompt

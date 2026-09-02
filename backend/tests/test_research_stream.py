@@ -498,6 +498,12 @@ async def test_gap_stream_strict_mode_does_not_promote_abstract_only_support(
     )
     assert response.status_code == 200, response.text
     events = _events(response.text)
+    progress_messages = [
+        event["message"] for event in events if event["type"] == "progress"
+    ]
+    assert "Checking whether Related Work limitations are source-supported" in (
+        progress_messages
+    )
     patch = next(event for event in events if event["type"] == "draft_patch")
     candidate = patch["narrative"]["candidate"]
     assert candidate["statement"]
