@@ -1506,7 +1506,7 @@ async def test_permissive_mode_accepts_grounded_abstract_analysis(
 
 
 @pytest.mark.asyncio
-async def test_analysis_normalizes_fit_webui_field_aliases() -> None:
+async def test_analysis_normalizes_finding_and_feedback_aliases() -> None:
     source_passage = "The method uses an aggregate task score to optimize prompts."
     proposed_passage = "The method uses an aggregate score to optimize prompts."
     llm = FakeLlmPort(

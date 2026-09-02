@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     research_source_provider: str = "fake"
     research_provider_timeout_seconds: float = 15.0
     research_candidate_limit: int = 50
+    research_search_query_limit: int = 4
     research_counter_query_limit: int = 8
     research_graph_seed_count: int = 5
     research_rerank_enabled: bool = True
