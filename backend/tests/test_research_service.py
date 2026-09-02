@@ -1490,7 +1490,7 @@ async def test_permissive_mode_accepts_grounded_abstract_analysis(
 
 
 @pytest.mark.asyncio
-async def test_analysis_normalizes_fit_webui_field_aliases() -> None:
+async def test_analysis_normalizes_finding_and_feedback_aliases() -> None:
     source_passage = "The method uses an aggregate task score to optimize prompts."
     proposed_passage = "The method uses an aggregate score to optimize prompts."
     llm = FakeLlmPort(
@@ -4230,8 +4230,8 @@ class _RecordingVerifier:
 class _QuotaLlm:
     async def complete(self, **_kwargs: Any) -> str:
         raise LlmProviderError(
-            "FIT WebUI quota or rate limit was reached",
-            provider="fit_webui",
+            "LLM rate limit or quota was reached; retry later",
+            provider="langchain",
             status_code=429,
             code="insufficient_quota",
         )
@@ -4247,8 +4247,8 @@ class _GapSynthesisTimeoutLlm(FakeLlmPort):
     ) -> str:
         if "research-gap-synthesis" in system:
             raise LlmProviderError(
-                "FIT WebUI request timed out; retry later",
-                provider="fit_webui",
+                "LLM request timed out; retry later",
+                provider="langchain",
                 code="timeout",
             )
         return await super().complete(system=system, prompt=prompt, model=model)

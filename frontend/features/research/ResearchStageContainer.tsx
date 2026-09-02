@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { getApiErrorMessage } from "@/lib/api/config";
@@ -45,11 +45,13 @@ export function ResearchStageContainer({
   session,
   onRunningChange,
   onConfirmabilityChange,
+  generateRequestId = 0,
 }: {
   sessionId: string;
   session: LoopSessionResponse;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  generateRequestId?: number;
 }) {
   const queryClient = useQueryClient();
   const { queue, status } = useLoopSessionSave();
@@ -70,6 +72,7 @@ export function ResearchStageContainer({
   const [generatedGapCandidate, setGeneratedGapCandidate] = useState<GapCandidate | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [pinningCitationId, setPinningCitationId] = useState<string | null>(null);
+  const seenGenerateRequestIdRef = useRef(generateRequestId);
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   useEffect(() => {
@@ -216,6 +219,15 @@ export function ResearchStageContainer({
       setSaveError(getApiErrorMessage(error));
     }
   }
+
+  useEffect(() => {
+    const previous = seenGenerateRequestIdRef.current;
+    seenGenerateRequestIdRef.current = generateRequestId;
+    // Only an in-mount bump requests generate; remount with a leftover id must not replay.
+    if (generateRequestId < 1 || generateRequestId <= previous) return;
+    void generate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
+  }, [generateRequestId]);
 
   async function selectGap(candidate: GapCandidate) {
     setSaveError(null);

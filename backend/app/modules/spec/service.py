@@ -25,7 +25,30 @@ from app.modules.spec.schemas import (
     GenerateClaimsResponse,
     GenerateExperimentResponse,
 )
-from app.ports.llm import LlmPort
+from app.ports.llm import LlmCompleteError, LlmPort, LlmProviderError
+
+
+def _raise_llm_operational(exc: Exception) -> None:
+    if isinstance(exc, LlmProviderError):
+        status_code = exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE
+        if status_code == 429:
+            raise OperationalErrorException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                code="llm_rate_limited",
+                detail=str(exc),
+            ) from exc
+        raise OperationalErrorException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="llm_provider_error",
+            detail=str(exc),
+        ) from exc
+    if isinstance(exc, LlmCompleteError):
+        raise OperationalErrorException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="llm_complete_error",
+            detail=str(exc),
+        ) from exc
+    raise exc
 
 
 class _GeneratedDirection(BaseModel):
@@ -71,15 +94,10 @@ _VIETNAMESE_ASCII_WORDS = frozenset(
 )
 
 
-def _confirmed_gap_statement(context: dict[str, Any]) -> str:
-    gap_context = context.get("upstream", {}).get(WorkflowNode.GAP.value, {})
-    for item in gap_context.get("card_snapshot", []):
-        if item.get("kind") != "gap":
-            continue
-        body = item.get("body", {})
-        statement = body.get("statement") or body.get("text")
-        if isinstance(statement, str) and statement.strip():
-            return statement.strip()
+def _confirmed_gap_statement(view: dict[str, Any]) -> str:
+    statement = view.get("gap_statement")
+    if isinstance(statement, str) and statement.strip():
+        return statement.strip()
     return ""
 
 
@@ -427,6 +445,15 @@ class SpecService:
                 detail="Loop Session was changed by another request",
                 current_version=session.version,
             )
+        await self._db.execute(
+            update(NodeHead)
+            .where(
+                NodeHead.session_id == session_id,
+                NodeHead.node == session.working_draft_node,
+            )
+            .values(generated_since_prepare=True)
+            .execution_options(synchronize_session=False)
+        )
         await self._db.commit()
         return row.version
 
@@ -441,17 +468,17 @@ class SpecService:
             session_id, account_id, expected_version, WorkflowNode.CONTRIBUTION
         )
 
-        context = await LoopService(self._db).project_context(
+        view = await LoopService(self._db).project_prompt_view(
             session_id=session_id,
             account_id=account_id,
             node=WorkflowNode.CONTRIBUTION,
         )
         output_language = (
             "Vietnamese"
-            if _is_vietnamese(_confirmed_gap_statement(context))
+            if _is_vietnamese(_confirmed_gap_statement(view))
             else "English"
         )
-        proposed = await self._propose_directions(context, output_language)
+        proposed = await self._propose_directions(view, output_language)
         directions = [
             ContributionDirection(
                 id=f"direction-{chr(97 + index)}",
@@ -515,7 +542,7 @@ class SpecService:
         session = await self._ensure_node_ready(
             session_id, account_id, expected_version, WorkflowNode.CLAIMS
         )
-        context = await LoopService(self._db).project_context(
+        view = await LoopService(self._db).project_prompt_view(
             session_id=session_id,
             account_id=account_id,
             node=WorkflowNode.CLAIMS,
@@ -523,15 +550,18 @@ class SpecService:
 
         system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
         prompt = f"""
-        Dựa vào context của dự án:
-        {json.dumps(context, default=str, ensure_ascii=False)}
+        Dựa vào Prompt View của dự án:
+        {json.dumps(view, default=str, ensure_ascii=False)}
         
         Hãy sinh ra các luận điểm (Claims) chứng minh cho các đóng góp (Contribution) đã chọn.
         Mỗi Claim đi kèm Baseline, Metric cần đo, Bằng chứng kỳ vọng (evidence), và Điều kiện bác bỏ (rejection_condition).
         """
-        response_data = await self._llm.complete_structured(
-            system=system, prompt=prompt, schema=GenerateClaimsResponse
-        )
+        try:
+            response_data = await self._llm.complete_structured(
+                system=system, prompt=prompt, schema=GenerateClaimsResponse
+            )
+        except (LlmCompleteError, LlmProviderError) as exc:
+            _raise_llm_operational(exc)
 
         narrative = {
             "cards": [card.model_dump(mode="json") for card in response_data.cards]
@@ -551,7 +581,7 @@ class SpecService:
         session = await self._ensure_node_ready(
             session_id, account_id, expected_version, WorkflowNode.EXPERIMENT_PLAN
         )
-        context = await LoopService(self._db).project_context(
+        view = await LoopService(self._db).project_prompt_view(
             session_id=session_id,
             account_id=account_id,
             node=WorkflowNode.EXPERIMENT_PLAN,
@@ -559,20 +589,24 @@ class SpecService:
 
         system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
         prompt = f"""
-        Dựa vào context sau của dự án (đặc biệt là các Claim đã chọn):
-        {json.dumps(context, default=str, ensure_ascii=False)}
-        
-        Hãy lên kế hoạch thí nghiệm chi tiết. VỚI MỖI CLAIM, hãy tạo một thí nghiệm bao gồm:
-        1. claim: Nội dung của claim
-        2. action: Làm gì - bao nhiêu lần/mẫu/thời gian
-        3. objective: Mục tiêu của thí nghiệm này
-        4. significance: Ý nghĩa của thí nghiệm đối với claim
+        Dựa vào Prompt View sau của dự án (đặc biệt là các Claim đã chọn):
+        {json.dumps(view, default=str, ensure_ascii=False)}
+
+        Hãy lên kế hoạch thí nghiệm. Với MỖI claim, tạo đúng một thí nghiệm với 4 trường chuỗi ngắn (2–4 câu mỗi trường):
+        1. claim: một câu tóm tắt claim. Không copy baseline, metric, evidence, hay rejection_condition vào trường này.
+        2. action: làm gì, bao nhiêu mẫu/lần/thời gian
+        3. objective: mục tiêu đo của thí nghiệm
+        4. significance: ý nghĩa của thí nghiệm đối với claim
+        Trả về JSON đầy đủ cho mọi claim; không cắt giữa chừng.
         """
-        response_data = await self._llm.complete_structured(
-            system=system,
-            prompt=prompt,
-            schema=ExperimentPlan
-        )
+        try:
+            response_data = await self._llm.complete_structured(
+                system=system,
+                prompt=prompt,
+                schema=ExperimentPlan
+            )
+        except (LlmCompleteError, LlmProviderError) as exc:
+            _raise_llm_operational(exc)
         
         narrative = {
             "plan": response_data.model_dump(mode="json")
@@ -591,7 +625,7 @@ class SpecService:
         session = await self._ensure_node_ready(
             session_id, account_id, expected_version, WorkflowNode.FEASIBILITY
         )
-        context = await LoopService(self._db).project_context(
+        view = await LoopService(self._db).project_prompt_view(
             session_id=session_id,
             account_id=account_id,
             node=WorkflowNode.FEASIBILITY,
@@ -600,12 +634,13 @@ class SpecService:
         system = (
             "Bạn là một AI đánh giá tài nguyên và tính khả thi cho Đặc tả Nghiên cứu."
         )
+        plan_payload = plan if plan else view.get("experiment_plan", {})
         prompt = f"""
         Kế hoạch thử nghiệm: 
-        {json.dumps(plan) if plan else "Dựa vào context experiment plan trong dữ liệu: " + json.dumps(context.get("experiment_plan", {}))}
+        {json.dumps(plan_payload, default=str, ensure_ascii=False)}
         
-        Context hiện tại của dự án:
-        {json.dumps(context, default=str, ensure_ascii=False)}
+        Prompt View hiện tại của dự án:
+        {json.dumps(view, default=str, ensure_ascii=False)}
         
         Hãy đánh giá tính khả thi (Feasibility) của kế hoạch thử nghiệm này. Trả về các thông tin sau:
         - is_feasible: Kết luận chung có khả thi không
@@ -614,9 +649,12 @@ class SpecService:
         - potential_bottlenecks: Danh sách các nút thắt hoặc vấn đề tiềm ẩn có thể xảy ra
         - mitigation_strategies: Danh sách các phương án giải quyết/giảm thiểu rủi ro
         """
-        report = await self._llm.complete_structured(
-            system=system, prompt=prompt, schema=FeasibilityReport
-        )
+        try:
+            report = await self._llm.complete_structured(
+                system=system, prompt=prompt, schema=FeasibilityReport
+            )
+        except (LlmCompleteError, LlmProviderError) as exc:
+            _raise_llm_operational(exc)
 
         narrative = {"feasibility_report": report.model_dump(mode="json")}
         new_version = await self._update_narrative(
@@ -625,16 +663,31 @@ class SpecService:
         return CheckFeasibilityResponse(version=new_version, report=report)
 
     async def _propose_directions(
-        self, context: dict[str, Any], output_language: str
+        self, view: dict[str, Any], output_language: str
     ) -> list[_GeneratedDirection]:
-        gap_statement = _confirmed_gap_statement(context)
-        brief = _contribution_brief(context)
+        if isinstance(view.get("upstream"), dict):
+            brief = _contribution_brief(view)
+            gap_statement = str(
+                _dict_value(brief.get("confirmed_gap")).get("statement") or ""
+            ).strip()
+            prompt_payload = {
+                "required_output_language": output_language,
+                "confirmed_gap_statement": gap_statement,
+                "contribution_brief": brief,
+            }
+        else:
+            gap_statement = _confirmed_gap_statement(view)
+            prompt_payload = {
+                "required_output_language": output_language,
+                "confirmed_gap_statement": gap_statement,
+                "prompt_view": view,
+            }
         system = (
             "spec-contribution-directions: propose one to three genuinely distinct, "
-            "research-ready Contribution directions grounded only in the confirmed Idea, "
-            "Related Work, and Gap in the supplied Contribution Brief. A direction is not a "
+            "research-ready Contribution directions grounded only in the confirmed Cards "
+            "and Gap in the supplied Prompt View. A direction is not a "
             "theme or category: it must state what artifact or mechanism would be introduced, "
-            "which exact limitation it changes, why that differs from the closest Related Work, "
+            "which exact limitation it changes, why that differs from the closest prior work, "
             "and how the difference could be falsified. Titles must name the proposed mechanism "
             "or artifact; never use generic titles such as 'Focus on ...' or 'Tập trung vào ...'. "
             "Do not invent datasets, numeric gains, citations, or capabilities absent from the "
@@ -648,19 +701,12 @@ class SpecService:
             "one sentence and no more than 220 characters each. Compact fields instead of "
             "dropping a grounded direction. "
             "Use gap_link to explicitly connect the mechanism to the confirmed Gap; use novelty "
-            "to compare against the closest named Related Work; use validation to name a baseline, "
+            "to compare against the closest prior work named in the Prompt View when available; "
+            "use validation to name a baseline, "
             "observable outcome, and rejection condition without made-up target values. "
             f"Write every field in {output_language}. Do not include Combine or Other."
         )
-        prompt = json.dumps(
-            {
-                "required_output_language": output_language,
-                "confirmed_gap_statement": gap_statement,
-                "contribution_brief": brief,
-            },
-            default=str,
-            ensure_ascii=False,
-        )
+        prompt = json.dumps(prompt_payload, default=str, ensure_ascii=False)
         last_error: Exception | None = None
         previous_output = ""
         for attempt in range(2):

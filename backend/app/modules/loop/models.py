@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -159,6 +160,9 @@ class NodeHead(Base):
         PGUUID(as_uuid=True),
         ForeignKey("loop_stage_revisions.id"),
         nullable=True,
+    )
+    generated_since_prepare: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
 
     session: Mapped[LoopSession] = relationship(back_populates="node_heads")

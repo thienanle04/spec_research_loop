@@ -109,6 +109,12 @@ export function frameComplete(narrative: Record<string, unknown> | undefined): b
   );
 }
 
+/** Any Idea Frame field present (Spec Draft may still show a partial frame). */
+export function frameHasContent(narrative: Record<string, unknown> | undefined): boolean {
+  const frame = parseFrame(narrative);
+  return Boolean(frame.intent.trim() || frame.problem.trim() || frame.research_question.trim());
+}
+
 export function parseTurns(narrative: Record<string, unknown> | undefined): GrillingTurn[] {
   if (!narrative || !Array.isArray(narrative.turns)) return [];
   return narrative.turns.map(parseTurn).filter((item): item is GrillingTurn => item !== null);

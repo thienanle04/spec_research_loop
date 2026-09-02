@@ -15,6 +15,7 @@ from sqlalchemy.orm import attributes, selectinload
 from app.core.errors import OperationalErrorException
 from app.modules.loop.catalog import (
     CARD_KIND_OWNERS,
+    HANDLING_OPTION_TARGETS,
     LOOP_STAGE_NODES,
     WORKFLOW_NODES,
     CardKind,
@@ -41,14 +42,18 @@ from app.modules.loop.models import (
     SpecVersion,
     StageRevision,
 )
+from app.modules.loop.prompt_view import prompt_view
 from app.modules.loop.schemas import (
     CardBatchMutationResponse,
     CardMutationResponse,
     CardResponse,
     DecisionResponse,
+    HeadRevisionResponse,
     LoopSessionResponse,
     LoopSessionSummary,
     NodeHeadResponse,
+    ReadinessSummary,
+    SpecArtifactResponse,
     SpecVersionResponse,
     StageRevisionResponse,
 )
@@ -72,6 +77,41 @@ def _card_snapshot(cards: list[Card]) -> list[dict[str, Any]]:
         {"body": card.body, "id": str(card.id), "kind": card.kind} for card in cards
     ]
     return sorted(items, key=lambda item: item["id"])
+
+
+def _head_revision(
+    head: NodeHead, revisions: dict[UUID, StageRevision]
+) -> HeadRevisionResponse | None:
+    if head.stage_revision_id is None:
+        return None
+    revision = revisions.get(head.stage_revision_id)
+    if revision is None:
+        return None
+    return HeadRevisionResponse(
+        narrative=dict(revision.narrative),
+        card_snapshot=list(revision.card_snapshot),
+    )
+
+
+def _card_ids_for_option(
+    issues: list[dict[str, Any]], option: dict[str, Any]
+) -> list[str]:
+    finding_kind = option.get("finding_kind")
+    source_node = option.get("source_node")
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in issues:
+        if not isinstance(item, dict):
+            continue
+        if item.get("finding_kind") != finding_kind:
+            continue
+        if item.get("source_node") != source_node:
+            continue
+        card_id = item.get("target_card_id")
+        if isinstance(card_id, str) and card_id and card_id not in seen:
+            seen.add(card_id)
+            ids.append(card_id)
+    return ids
 
 
 class LoopService:
@@ -118,45 +158,38 @@ class LoopService:
         session = await self._load_session(session_id, account_id)
         return await self._to_response(session)
 
+    async def get_readiness(
+        self, *, session_id: UUID, account_id: UUID
+    ) -> ReadinessSummary:
+        session = await self._load_session(session_id, account_id)
+        return await self._readiness(session)
+
     async def patch_title(
         self,
         *,
         session_id: UUID,
         account_id: UUID,
         title: str | None,
-        expected_version: int,
     ) -> LoopSessionResponse:
-        session = await self._load_session(session_id, account_id)
         updated = await self._db.execute(
             update(LoopSession)
             .where(
                 LoopSession.id == session_id,
                 LoopSession.account_id == account_id,
-                LoopSession.version == expected_version,
             )
             .values(
                 title=title,
-                version=LoopSession.version + 1,
                 updated_at=func.now(),
             )
-            .returning(LoopSession.version, LoopSession.updated_at)
+            .returning(LoopSession.id)
             .execution_options(synchronize_session=False)
         )
-        updated_row = updated.one_or_none()
-        if updated_row is None:
-            await self._db.refresh(session, attribute_names=["version"])
-            raise OperationalErrorException(
-                status_code=status.HTTP_409_CONFLICT,
-                code="version_conflict",
-                detail="Loop Session was changed by another request",
-                current_version=session.version,
+        if updated.one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Loop Session not found"
             )
-        attributes.set_committed_value(session, "title", title)
-        attributes.set_committed_value(session, "version", updated_row.version)
-        attributes.set_committed_value(session, "updated_at", updated_row.updated_at)
-        response = await self._to_response(session)
         await self._db.commit()
-        return response
+        return await self.get_session(session_id=session_id, account_id=account_id)
 
     async def patch_working_draft(
         self,
@@ -206,7 +239,11 @@ class LoopService:
                 next_narrative = dict(saved_narrative)
             elif revision_id is not None:
                 revision = next(
-                    (item for item in session.stage_revisions if item.id == revision_id),
+                    (
+                        item
+                        for item in session.stage_revisions
+                        if item.id == revision_id
+                    ),
                     None,
                 )
                 if revision is not None:
@@ -385,6 +422,202 @@ class LoopService:
         ordered = sorted(session.decisions, key=lambda row: row.created_at)
         return [DecisionResponse.model_validate(row) for row in ordered]
 
+    async def pick_handling_option(
+        self,
+        *,
+        session_id: UUID,
+        account_id: UUID,
+        expected_version: int,
+        handling_option_id: UUID | None,
+        prose: str | None,
+        target_node: WorkflowNode | None,
+    ) -> LoopSessionResponse:
+        session = await self._load_session(session_id, account_id)
+        if session.working_draft_node != WorkflowNode.AGGREGATOR.value:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="invalid_working_draft_target",
+                detail="PICK requires the Working Draft Aggregator",
+            )
+        if session.version != expected_version:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="version_conflict",
+                detail="Loop Session was changed by another request",
+                current_version=session.version,
+            )
+        heads = {head.node_enum(): head for head in session.node_heads}
+        report = await self._current_aggregator_report(session)
+        if handling_option_id is not None:
+            option = next(
+                (
+                    item
+                    for item in report["options"]
+                    if item.get("id") == str(handling_option_id)
+                ),
+                None,
+            )
+            if option is None:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="handling_option_not_found",
+                    detail="Handling Option is not on the current Aggregator Report",
+                )
+            target = WorkflowNode(str(option["target_node"]))
+            patch_prose = str(option.get("prose") or "")
+            card_ids = _card_ids_for_option(report["issues"], option)
+        else:
+            other_prose = (prose or "").strip()
+            if not other_prose or target_node is None:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="handling_option_not_found",
+                    detail="Other requires Account prose and a target Workflow Node",
+                )
+            if target_node.value not in HANDLING_OPTION_TARGETS:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="invalid_working_draft_target",
+                    detail="Other target must be a Handling Option Workflow Node",
+                )
+            if not report["issues"] and not report["options"]:
+                aggregator = heads.get(WorkflowNode.AGGREGATOR)
+                if (
+                    aggregator is None
+                    or aggregator.status_enum() is not NodeHeadStatus.CURRENT
+                ):
+                    raise OperationalErrorException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        code="handling_option_not_found",
+                        detail="PICK requires a current Aggregator Report",
+                    )
+            target = target_node
+            patch_prose = other_prose
+            card_ids = []
+
+        for ancestor in ancestors(target):
+            if heads[ancestor].status_enum() != NodeHeadStatus.CURRENT:
+                raise OperationalErrorException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    code="upstream_not_current",
+                    detail="Upstream Node Heads must be current",
+                )
+        if heads[target].status_enum() != NodeHeadStatus.CURRENT:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="invalid_working_draft_target",
+                detail="PICK can only reopen a current Workflow Node",
+            )
+
+        next_narrative = self._narrative_for_current_node(session, heads, target)
+        next_narrative["suggested_patch"] = patch_prose
+        next_narrative["target_card_ids"] = card_ids
+        saved_narratives = dict(session.working_draft_narratives)
+        saved_narratives[session.working_draft_node] = dict(
+            session.working_draft_narrative
+        )
+        saved_narratives[target.value] = next_narrative
+        updated = await self._db.execute(
+            update(LoopSession)
+            .where(
+                LoopSession.id == session_id,
+                LoopSession.account_id == account_id,
+                LoopSession.version == expected_version,
+            )
+            .values(
+                working_draft_node=target.value,
+                working_draft_narrative=next_narrative,
+                working_draft_narratives=saved_narratives,
+                version=LoopSession.version + 1,
+                updated_at=func.now(),
+            )
+            .returning(LoopSession.version, LoopSession.updated_at)
+            .execution_options(synchronize_session=False)
+        )
+        updated_row = updated.one_or_none()
+        if updated_row is None:
+            await self._db.refresh(session, attribute_names=["version"])
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="version_conflict",
+                detail="Loop Session was changed by another request",
+                current_version=session.version,
+            )
+        attributes.set_committed_value(session, "working_draft_node", target.value)
+        attributes.set_committed_value(
+            session, "working_draft_narrative", next_narrative
+        )
+        attributes.set_committed_value(
+            session, "working_draft_narratives", saved_narratives
+        )
+        attributes.set_committed_value(session, "version", updated_row.version)
+        attributes.set_committed_value(session, "updated_at", updated_row.updated_at)
+        self._db.add(
+            Decision(
+                session_id=session.id,
+                kind=DecisionKind.PICK.value,
+                node=target.value,
+                stage_revision_id=heads[target].stage_revision_id,
+            )
+        )
+        response = await self._to_response(session)
+        await self._db.commit()
+        return response
+
+    async def _current_aggregator_report(
+        self, session: LoopSession
+    ) -> dict[str, list[dict[str, Any]]]:
+        port = self._ports[WorkflowNode.AGGREGATOR.value]
+        projected = await port.project(
+            session_id=session.id,
+            node=WorkflowNode.AGGREGATOR.value,
+            revision_id=None,
+        )
+        options = projected.get("handling_options")
+        issues = projected.get("issues")
+        if not isinstance(options, list):
+            options = []
+        if not isinstance(issues, list):
+            issues = []
+        if options or issues:
+            return {"options": options, "issues": issues}
+        heads = {head.node_enum(): head for head in session.node_heads}
+        aggregator = heads.get(WorkflowNode.AGGREGATOR)
+        if aggregator is None or aggregator.stage_revision_id is None:
+            return {"options": [], "issues": []}
+        frozen = await port.project(
+            session_id=session.id,
+            node=WorkflowNode.AGGREGATOR.value,
+            revision_id=aggregator.stage_revision_id,
+        )
+        frozen_options = frozen.get("handling_options")
+        frozen_issues = frozen.get("issues")
+        return {
+            "options": frozen_options if isinstance(frozen_options, list) else [],
+            "issues": frozen_issues if isinstance(frozen_issues, list) else [],
+        }
+
+    def _narrative_for_current_node(
+        self,
+        session: LoopSession,
+        heads: dict[WorkflowNode, NodeHead],
+        node: WorkflowNode,
+    ) -> dict[str, Any]:
+        saved_narratives = dict(session.working_draft_narratives)
+        saved_narrative = saved_narratives.get(node.value)
+        if isinstance(saved_narrative, dict):
+            return dict(saved_narrative)
+        revision_id = heads[node].stage_revision_id
+        if revision_id is None:
+            return {}
+        revision = next(
+            (item for item in session.stage_revisions if item.id == revision_id),
+            None,
+        )
+        if revision is None:
+            return {}
+        return dict(revision.narrative)
+
     async def confirm(
         self,
         *,
@@ -392,6 +625,7 @@ class LoopService:
         account_id: UUID,
         node: WorkflowNode,
         expected_version: int,
+        stale_reaccept: bool = False,
     ) -> LoopSessionResponse:
         session = await self._load_session(session_id, account_id)
         if session.working_draft_node != node.value:
@@ -415,6 +649,20 @@ class LoopService:
                 code="version_conflict",
                 detail="Loop Session was changed by another request",
                 current_version=session.version,
+            )
+        head = heads[node]
+        if (
+            head.status_enum() is NodeHeadStatus.STALE
+            and not head.generated_since_prepare
+            and not stale_reaccept
+        ):
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="stale_reaccept_required",
+                detail=(
+                    "Confirming a Stale Workflow Node without a post-prepare "
+                    "generate requires stale_reaccept"
+                ),
             )
         if node is WorkflowNode.IDEA_INTERPRETATION and not interpretation_confirmable(
             dict(session.working_draft_narrative)
@@ -440,7 +688,6 @@ class LoopService:
         typed_data = await port.fingerprint(session_id=session.id, node=node.value)
         digest = _freeze_hash(narrative, snapshot, typed_data)
 
-        head = heads[node]
         if head.stage_revision_id is not None:
             current_rev = next(
                 (
@@ -453,6 +700,7 @@ class LoopService:
             if current_rev is not None and current_rev.freeze_hash == digest:
                 if head.status_enum() is NodeHeadStatus.STALE:
                     head.status = NodeHeadStatus.CURRENT.value
+                head.generated_since_prepare = False
                 await self._db.commit()
                 return await self.get_session(
                     session_id=session_id, account_id=account_id
@@ -480,13 +728,16 @@ class LoopService:
 
         head.status = NodeHeadStatus.CURRENT.value
         head.stage_revision_id = revision.id
+        head.generated_since_prepare = False
 
         if next_n > 1:
             for child in descendants(node):
                 child_head = heads[child]
                 if child_head.stage_revision_id is not None:
                     child_head.status = NodeHeadStatus.STALE.value
-            session.valid_spec_version_id = None
+                    child_head.generated_since_prepare = False
+            if node not in LOOP_STAGE_NODES[LoopStage.INDEPENDENT_JUDGES]:
+                session.valid_spec_version_id = None
 
         self._db.add(
             Decision(
@@ -571,6 +822,7 @@ class LoopService:
             head = heads[node]
             if head.status_enum() not in (NodeHeadStatus.STALE, NodeHeadStatus.EMPTY):
                 continue
+            head.generated_since_prepare = False
             from_revision_id = head.stage_revision_id
             if (
                 from_revision_id is not None
@@ -593,9 +845,7 @@ class LoopService:
                 )
             elif node.value in saved_narratives:
                 if landing is node:
-                    session.working_draft_narrative = dict(
-                        saved_narratives[node.value]
-                    )
+                    session.working_draft_narrative = dict(saved_narratives[node.value])
             else:
                 saved_narratives[node.value] = {}
                 if landing is node:
@@ -636,8 +886,18 @@ class LoopService:
             and session.working_draft_node == WorkflowNode.IDEA_DECOMPOSITION.value
         ):
             self._upsert_decomposition_cards(session, card_texts)
+        self.mark_generated_since_prepare(
+            session, WorkflowNode(session.working_draft_node)
+        )
         await self._db.commit()
         return await self.get_session(session_id=session_id, account_id=account_id)
+
+    @staticmethod
+    def mark_generated_since_prepare(session: LoopSession, node: WorkflowNode) -> None:
+        for head in session.node_heads:
+            if head.node_enum() is node:
+                head.generated_since_prepare = True
+                return
 
     def _upsert_decomposition_cards(
         self,
@@ -700,10 +960,20 @@ class LoopService:
             revision_id=None,
         )
         working_cards = [
-            card
-            for card in session.cards
-            if card.kind_enum() in set(owned_kinds(node))
+            card for card in session.cards if card.kind_enum() in set(owned_kinds(node))
         ]
+        valid_spec = None
+        if session.valid_spec_version_id is not None:
+            spec = next(
+                (
+                    item
+                    for item in session.spec_versions
+                    if item.id == session.valid_spec_version_id
+                ),
+                None,
+            )
+            if spec is not None:
+                valid_spec = {"id": str(spec.id), "document": spec.document}
         return {
             "node": node.value,
             "projected": projected,
@@ -713,7 +983,16 @@ class LoopService:
                 "narrative": session.working_draft_narrative,
                 "node": session.working_draft_node,
             },
+            "valid_spec_version": valid_spec,
         }
+
+    async def project_prompt_view(
+        self, *, session_id: UUID, account_id: UUID, node: WorkflowNode
+    ) -> dict[str, Any]:
+        projection = await self.project_context(
+            session_id=session_id, account_id=account_id, node=node
+        )
+        return prompt_view(node, projection)
 
     def _assert_card_owner(self, session: LoopSession, kind: CardKind) -> None:
         owners = CARD_KIND_OWNERS[kind]
@@ -800,6 +1079,7 @@ class LoopService:
         heads = sorted(
             session.node_heads, key=lambda head: WORKFLOW_NODES.index(head.node_enum())
         )
+        revisions = {rev.id: rev for rev in session.stage_revisions}
         return LoopSessionResponse(
             id=session.id,
             title=session.title,
@@ -811,15 +1091,21 @@ class LoopService:
                     node=head.node_enum(),
                     status=head.status_enum(),
                     stage_revision_id=head.stage_revision_id,
+                    generated_since_prepare=head.generated_since_prepare,
+                    head_revision=_head_revision(head, revisions),
                 )
                 for head in heads
             ],
             cards=[CardResponse.model_validate(card) for card in session.cards],
-            stage_revisions=[StageRevisionResponse.model_validate(rev) for rev in session.stage_revisions],
+            stage_revisions=[
+                StageRevisionResponse.model_validate(rev)
+                for rev in session.stage_revisions
+            ],
             produced_spec_version=SpecVersionResponse.model_validate(produced)
             if produced
             else None,
             valid_spec_version_id=session.valid_spec_version_id,
+            readiness=await self._readiness(session),
             created_at=session.created_at,
             updated_at=session.updated_at,
         )
@@ -840,14 +1126,14 @@ class LoopService:
                 rev = revisions[head.stage_revision_id]
                 narrative = dict(rev.narrative)
                 if node is WorkflowNode.GAP and any(
-                    card.get("kind") == CardKind.GAP.value
-                    for card in rev.card_snapshot
+                    card.get("kind") == CardKind.GAP.value for card in rev.card_snapshot
                 ):
                     # The generated candidate is copied into the confirmed Gap Card.
                     # Keep it in the Stage Revision for history, but avoid storing the
                     # same logical Gap twice in the assembled Spec Version document.
                     narrative.pop("candidate", None)
                 node_document = {
+                    "stage_revision_id": str(rev.id),
                     "card_snapshot": rev.card_snapshot,
                     "narrative": narrative,
                 }
@@ -860,3 +1146,76 @@ class LoopService:
                     node_document["projection"] = projection
                 nodes[node.value] = node_document
         return {"nodes": nodes}
+
+    async def export_spec_artifact(
+        self, *, session_id: UUID, account_id: UUID
+    ) -> SpecArtifactResponse:
+        session = await self._load_session(session_id, account_id)
+        readiness = await self._readiness(session)
+        if readiness.state == "not_evaluated":
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="readiness_not_evaluated",
+                detail="Spec Artifact export requires a current Aggregator Report",
+            )
+        if readiness.state == "blocked":
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="critical_issues_block_export",
+                detail=(
+                    "CRITICAL Judge Issues on the current Aggregator Report "
+                    "block Spec Artifact export"
+                ),
+            )
+        if session.valid_spec_version_id is None:
+            raise OperationalErrorException(
+                status_code=status.HTTP_409_CONFLICT,
+                code="valid_spec_version_required",
+                detail="Spec Artifact export requires a Valid Spec Version",
+            )
+        spec = next(
+            (
+                item
+                for item in session.spec_versions
+                if item.id == session.valid_spec_version_id
+            ),
+            None,
+        )
+        if spec is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Spec Version not found"
+            )
+        return SpecArtifactResponse(spec_version_id=spec.id, document=spec.document)
+
+    async def _readiness(self, session: LoopSession) -> ReadinessSummary:
+        notice = "This is not conference acceptance."
+        heads = {head.node_enum(): head for head in session.node_heads}
+        aggregator = heads.get(WorkflowNode.AGGREGATOR)
+        if (
+            aggregator is None
+            or aggregator.status_enum() is not NodeHeadStatus.CURRENT
+            or aggregator.stage_revision_id is None
+        ):
+            return ReadinessSummary(state="not_evaluated", notice=notice)
+        projected = await self._ports[WorkflowNode.AGGREGATOR.value].project(
+            session_id=session.id,
+            node=WorkflowNode.AGGREGATOR.value,
+            revision_id=aggregator.stage_revision_id,
+        )
+        issues = projected.get("issues")
+        if not isinstance(issues, list):
+            issues = []
+        state = (
+            "blocked"
+            if any(
+                isinstance(item, dict) and item.get("severity") == "CRITICAL"
+                for item in issues
+            )
+            else "ready"
+        )
+        scores = projected.get("scores")
+        return ReadinessSummary(
+            state=state,
+            notice=notice,
+            scores=scores if isinstance(scores, dict) else None,
+        )

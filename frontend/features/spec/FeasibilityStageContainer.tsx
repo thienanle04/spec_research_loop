@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,9 +9,12 @@ import {
 } from "@/lib/api/generated/endpoints";
 import {
   type LoopSessionResponse,
+  WorkflowNode,
 } from "@/lib/api/generated/model";
+import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
-import { Beaker, CheckCircle2, ChevronRight, AlertTriangle } from "lucide-react";
+import { withGeneratedSincePrepare } from "../loop/stage-signals";
+import { CheckCircle2, ChevronRight, AlertTriangle } from "lucide-react";
 
 type ExperimentItem = {
   claim: string;
@@ -82,11 +85,13 @@ export function FeasibilityStageContainer({
   session,
   onRunningChange,
   onConfirmabilityChange,
+  generateRequestId = 0,
 }: {
   sessionId: string;
   session: LoopSessionResponse;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  generateRequestId?: number;
 }) {
   const queryClient = useQueryClient();
   const checkFeasibility = useCheckFeasibilityApiSpecSessionsSessionIdFeasibilityCheckPost();
@@ -95,6 +100,7 @@ export function FeasibilityStageContainer({
   const sessionKey = getGetSessionApiLoopSessionsSessionIdGetQueryKey(sessionId);
 
   const [error, setError] = useState<string | null>(null);
+  const seenGenerateRequestIdRef = useRef(generateRequestId);
 
   const narrative = session.working_draft_narrative as any;
   const expHead = session.node_heads?.find(h => h.node === "experiment_plan");
@@ -139,15 +145,25 @@ export function FeasibilityStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not check feasibility");
-      updateSession((current) => ({
-        ...current,
-        version: response.data.version,
-        working_draft_narrative: { ...current.working_draft_narrative as object, feasibility_report: response.data.report },
-      }));
+      updateSession((current) =>
+        withGeneratedSincePrepare({
+          ...current,
+          version: response.data.version,
+          working_draft_narrative: { ...current.working_draft_narrative as object, feasibility_report: response.data.report },
+        }),
+      );
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }
   }
+
+  useEffect(() => {
+    const previous = seenGenerateRequestIdRef.current;
+    seenGenerateRequestIdRef.current = generateRequestId;
+    if (generateRequestId < 1 || generateRequestId <= previous) return;
+    void runFeasibilityCheck();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
+  }, [generateRequestId]);
 
   return (
     <Card>
@@ -155,10 +171,10 @@ export function FeasibilityStageContainer({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <Beaker className="w-5 h-5 text-indigo-600" /> Feasibility Assessment
+              {WORKFLOW_NODE_LABELS[WorkflowNode.feasibility]}
             </CardTitle>
             <CardDescription>
-              Check the feasibility of your experiment plan.
+              Verify whether the experiment plan is feasible.
             </CardDescription>
           </div>
           <div className="flex gap-2">

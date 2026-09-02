@@ -9,8 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.adapters.llm import (
-    LangChainChatAdapter,
     bind_llm_ports,
+    build_llm_ports,
     configure_llm_trace_logger,
     traced_ports,
 )
@@ -21,8 +21,9 @@ from app.db.session import dispose_engine
 from app.modules.idea.api import router as idea_router
 from app.modules.identity.api import router as identity_router
 from app.modules.judgement.api import router as judgement_router
+from app.modules.judgement.stage_port import JudgementStagePort
 from app.modules.loop.api import router as loop_router
-from app.modules.loop.catalog import WORKFLOW_NODES, WorkflowNode
+from app.modules.loop.catalog import LOOP_STAGE_NODES, LoopStage, WorkflowNode
 from app.modules.loop.deps import (
     bind_stage_port_factories,
     default_stage_port_factories,
@@ -76,10 +77,11 @@ def create_app() -> FastAPI:
         WorkflowNode.GAP,
     ):
         stage_port_factories[node.value] = research_stage_port
+    for node in LOOP_STAGE_NODES[LoopStage.INDEPENDENT_JUDGES]:
+        stage_port_factories[node.value] = JudgementStagePort
     bind_stage_port_factories(stage_port_factories)
 
-    llm = LangChainChatAdapter()
-    ports = {node.value: llm for node in WORKFLOW_NODES}
+    ports = build_llm_ports(settings)
     if settings.llm_trace:
         configure_llm_trace_logger()
         ports = traced_ports(ports)

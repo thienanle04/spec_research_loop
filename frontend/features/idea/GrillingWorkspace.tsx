@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { LoaderCircle, MessageSquare, Send } from "lucide-react";
+import { Send } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -127,7 +127,7 @@ export function GrillingWorkspace({
             <CardHeader>
               <CardTitle className="font-serif text-navy">Idea Frame</CardTitle>
               <CardDescription>
-                Model restatement of the research idea. Confirm freezes this with the transcript.
+                Model restatement of the research idea. Confirm freezes this with the turn list.
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
@@ -158,10 +158,7 @@ export function GrillingWorkspace({
       {showTurns ? (
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 font-serif text-navy">
-              <MessageSquare aria-hidden="true" className="size-4" />
-              Transcript
-            </CardTitle>
+            <CardTitle className="font-serif text-navy">History</CardTitle>
             <CardDescription>
               Account replies, Account notes, and Grilling Questions. Confirm freezes this turn list.
             </CardDescription>
@@ -210,16 +207,11 @@ export function GrillingWorkspace({
           />
         </>
       ) : null}
-      {!interpretation && generating ? (
-        <p role="status" aria-busy="true" className="flex items-center gap-2 text-sm text-in-progress">
-          <LoaderCircle aria-hidden="true" className="size-4 animate-spin" />
-          Generating Cards…
-        </p>
-      ) : null}
-      {!interpretation && showGenerateCards && !generating ? (
+      {!interpretation && showGenerateCards ? (
         <IdeaGeneratePanel
           error={error}
           generating={generating}
+          hasCards={session.cards.length > 0}
           mode="cards"
           saveBlocked={saveBlocked}
           onGenerate={() => onGenerate({})}

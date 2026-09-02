@@ -1,0 +1,9 @@
+# Spec Draft structured display via shared StageRevisionBody and revision pointers
+
+Spec Draft (and Node Head browse, via the shared `StageRevisionBody`) renders Produced Spec Version / Stage Revision content as hybrid read-only UI instead of raw JSON. The Spec Version document gains per-node `stage_revision_id` pointers at mint so Related work (and other StagePort-backed views) can load frozen citations/findings; `GET` citations and findings accept optional `stage_revision_id` (omit = working set). Older Spec Versions without pointers omit the matrix and prompt a re-mint. Contribution, claims, and evidence show confirmed cards only; generate leftovers stay in a dev-only collapsible. Independent judges stay out of scope. For idea interpretation, Spec Draft shows the Idea Frame only (`showTurns={false}`); the turn list stays in the Stage Revision / Spec Version payload and remains visible on Node Head browse. A grilling node with a blank Idea Frame is omitted from the Spec Draft section list.
+
+**Status:** accepted
+
+**Considered options:** embed citations/findings blobs into the Spec Version document (rejected—conflicts with ADR 0011); Spec-Draft-only renderer fork (rejected—same payload as Node Head); use current/working-set rows when Produced is Stale (rejected—wrong snapshot); always extract presentational components before shipping (deferred—prefer `readOnly` first, extract when containers are too action-heavy); hide grilling turns on Node Head as well (rejected—audit needs the turn list); drop turns from the Spec Version document (rejected—Confirm still freezes the turn list; UI-only omit is enough).
+
+**Why:** Accounts need a readable Spec Draft without turning module attachments into Spec Version JSONB. Pointers plus revision-scoped list APIs keep hybrid persistence and make Stale Produced Spec display faithful. Spec Draft is a Research Spec reading surface, so interpretation contributes the Idea Frame, not the grilling turn history.

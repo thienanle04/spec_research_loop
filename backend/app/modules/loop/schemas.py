@@ -15,7 +15,6 @@ class CreateSessionRequest(BaseModel):
 
 class PatchSessionRequest(BaseModel):
     title: str | None = Field(default=None, max_length=200)
-    expected_version: int = Field(ge=1)
 
 
 class WorkingDraftPatchRequest(BaseModel):
@@ -27,6 +26,14 @@ class WorkingDraftPatchRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     node: WorkflowNode
     expected_version: int = Field(ge=1)
+    stale_reaccept: bool = False
+
+
+class HandlingOptionPickRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    handling_option_id: UUID | None = None
+    prose: str | None = None
+    target_node: WorkflowNode | None = None
 
 
 class PrepareRequest(BaseModel):
@@ -51,10 +58,17 @@ class ReplaceCardsRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class HeadRevisionResponse(BaseModel):
+    narrative: dict[str, Any]
+    card_snapshot: list[dict[str, Any]]
+
+
 class NodeHeadResponse(BaseModel):
     node: WorkflowNode
     status: NodeHeadStatus
     stage_revision_id: UUID | None
+    generated_since_prepare: bool = False
+    head_revision: HeadRevisionResponse | None = None
 
     model_config = {"from_attributes": True}
 
@@ -84,6 +98,17 @@ class SpecVersionResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ReadinessSummary(BaseModel):
+    state: str
+    notice: str
+    scores: dict[str, int] | None = None
+
+
+class SpecArtifactResponse(BaseModel):
+    spec_version_id: UUID
+    document: dict[str, Any]
 
 
 class DecisionResponse(BaseModel):
@@ -119,6 +144,7 @@ class LoopSessionResponse(BaseModel):
     stage_revisions: list[StageRevisionResponse]
     produced_spec_version: SpecVersionResponse | None
     valid_spec_version_id: UUID | None
+    readiness: ReadinessSummary
     created_at: datetime
     updated_at: datetime
 

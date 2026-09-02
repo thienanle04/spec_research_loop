@@ -2,10 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError } from "@/lib/api/config";
-
 import { LoopSessionTitleEditor } from "./LoopSessionTitleEditor";
-import { LoopSessionSaveProvider } from "./loop-session-save";
 
 const getHook = vi.fn();
 const patchHook = vi.fn();
@@ -35,13 +32,39 @@ describe("LoopSessionTitleEditor", () => {
     patchHook.mockReset();
   });
 
-  it("preserves local and server titles and retries only after explicit conflict resolution", async () => {
-    const refetch = vi.fn().mockResolvedValue({
+  it("patches the title without expected_version and shows Saved", async () => {
+    getHook.mockReturnValue({
       data: {
         status: 200,
-        data: { id: "one", title: "Server title", version: 2 },
+        data: { id: "one", title: "Original", version: 1, updated_at: "t0" },
       },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
     });
+    const mutateAsync = vi.fn().mockResolvedValue({
+      status: 200,
+      data: { id: "one", title: "My title", version: 1, updated_at: "t1" },
+    });
+    patchHook.mockReturnValue({ mutateAsync, error: null });
+
+    render(<LoopSessionTitleEditor sessionId="one" />);
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const input = screen.getByRole("textbox", { name: "Loop Session title" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "My title");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+    expect(mutateAsync.mock.calls[0][0]).toEqual({
+      sessionId: "one",
+      data: { title: "My title" },
+    });
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(setQueryData).toHaveBeenCalled();
+  });
+
+  it("keeps the editor open and shows Save failed when the patch fails", async () => {
     getHook.mockReturnValue({
       data: {
         status: 200,
@@ -49,97 +72,23 @@ describe("LoopSessionTitleEditor", () => {
       },
       isLoading: false,
       isError: false,
-      refetch,
+      refetch: vi.fn(),
     });
-    const mutateAsync = vi
-      .fn()
-      .mockRejectedValueOnce(
-        new ApiError(409, "changed", {
-          code: "version_conflict",
-          detail: "changed",
-          current_version: 2,
-        }),
-      )
-      .mockResolvedValueOnce({
-        status: 200,
-        data: { id: "one", title: "My title", version: 3 },
-      });
-    patchHook.mockReturnValue({ mutateAsync });
+    patchHook.mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(new Error("offline")),
+      error: new Error("offline"),
+    });
 
-    render(
-      <LoopSessionSaveProvider>
-        <LoopSessionTitleEditor sessionId="one" />
-      </LoopSessionSaveProvider>,
-    );
+    render(<LoopSessionTitleEditor sessionId="one" />);
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
     const input = screen.getByRole("textbox", { name: "Loop Session title" });
     await userEvent.clear(input);
     await userEvent.type(input, "My title");
-    await userEvent.click(screen.getByRole("button", { name: "Save title" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(await screen.findByText("My title", { selector: "dd" })).toBeInTheDocument();
-    expect(screen.getByText("Server title", { selector: "dd" })).toBeInTheDocument();
-    expect(mutateAsync).toHaveBeenCalledTimes(1);
-
-    await userEvent.click(screen.getByRole("button", { name: "Keep my title" }));
-
-    expect(mutateAsync).toHaveBeenCalledTimes(2);
-    expect(mutateAsync.mock.calls[1][0].data.expected_version).toBe(2);
-    expect(await screen.findByText("Saved")).toBeInTheDocument();
-  });
-
-  it("keeps the local title while retrying a failed conflict refresh", async () => {
-    let refetchFailed = false;
-    const refetch = vi
-      .fn()
-      .mockImplementationOnce(async () => {
-        refetchFailed = true;
-        throw new Error("offline");
-      })
-      .mockResolvedValueOnce({
-        data: {
-          status: 200,
-          data: { id: "one", title: "Server title", version: 2 },
-        },
-      });
-    getHook.mockImplementation(() => ({
-      data: {
-        status: 200,
-        data: { id: "one", title: "Original", version: 1 },
-      },
-      isLoading: false,
-      isError: refetchFailed,
-      refetch,
-    }));
-    patchHook.mockReturnValue({
-      mutateAsync: vi.fn().mockRejectedValue(
-        new ApiError(409, "changed", {
-          code: "version_conflict",
-          detail: "changed",
-          current_version: 2,
-        }),
-      ),
-    });
-
-    render(
-      <LoopSessionSaveProvider>
-        <LoopSessionTitleEditor sessionId="one" />
-      </LoopSessionSaveProvider>,
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const input = screen.getByRole("textbox", { name: "Loop Session title" });
-    await userEvent.clear(input);
-    await userEvent.type(input, "My local title");
-    await userEvent.click(screen.getByRole("button", { name: "Save title" }));
-
-    expect(await screen.findByText("My local title", { selector: "dd" })).toBeInTheDocument();
-    expect(screen.getByText("Could not load the current server title.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Keep my title" })).toBeDisabled();
-
-    await userEvent.click(screen.getByRole("button", { name: "Retry loading server title" }));
-
-    expect(await screen.findByText("Server title", { selector: "dd" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Keep my title" })).toBeEnabled();
+    expect(await screen.findByText("Save failed")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Loop Session title" })).toHaveValue("My title");
+    expect(screen.queryByText("Title conflict")).not.toBeInTheDocument();
   });
 
   it("shows the saved title until Edit or the title is clicked", async () => {
@@ -152,18 +101,11 @@ describe("LoopSessionTitleEditor", () => {
       isError: false,
       refetch: vi.fn(),
     });
-    patchHook.mockReturnValue({ mutateAsync: vi.fn() });
+    patchHook.mockReturnValue({ mutateAsync: vi.fn(), error: null });
 
-    render(
-      <LoopSessionSaveProvider>
-        <LoopSessionTitleEditor sessionId="one" />
-      </LoopSessionSaveProvider>,
-    );
+    render(<LoopSessionTitleEditor sessionId="one" />);
 
     expect(screen.queryByRole("textbox", { name: "Loop Session title" })).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Rename this Loop Session without overwriting newer changes"),
-    ).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Original" }));
     expect(screen.getByRole("textbox", { name: "Loop Session title" })).toHaveValue("Original");
@@ -179,13 +121,9 @@ describe("LoopSessionTitleEditor", () => {
       isError: false,
       refetch: vi.fn(),
     });
-    patchHook.mockReturnValue({ mutateAsync: vi.fn() });
+    patchHook.mockReturnValue({ mutateAsync: vi.fn(), error: null });
 
-    render(
-      <LoopSessionSaveProvider>
-        <LoopSessionTitleEditor sessionId="one" />
-      </LoopSessionSaveProvider>,
-    );
+    render(<LoopSessionTitleEditor sessionId="one" />);
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
     const input = screen.getByRole("textbox", { name: "Loop Session title" });
     await userEvent.clear(input);
@@ -197,63 +135,14 @@ describe("LoopSessionTitleEditor", () => {
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
 
-  it("hides Cancel while resolving a title conflict", async () => {
-    const refetch = vi.fn().mockResolvedValue({
-      data: {
-        status: 200,
-        data: { id: "one", title: "Server title", version: 2 },
-      },
-    });
-    getHook.mockReturnValue({
-      data: {
-        status: 200,
-        data: { id: "one", title: "Original", version: 1 },
-      },
-      isLoading: false,
-      isError: false,
-      refetch,
-    });
-    patchHook.mockReturnValue({
-      mutateAsync: vi.fn().mockRejectedValue(
-        new ApiError(409, "changed", {
-          code: "version_conflict",
-          detail: "changed",
-          current_version: 2,
-        }),
-      ),
-    });
-
-    render(
-      <LoopSessionSaveProvider>
-        <LoopSessionTitleEditor sessionId="one" />
-      </LoopSessionSaveProvider>,
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const input = screen.getByRole("textbox", { name: "Loop Session title" });
-    await userEvent.clear(input);
-    await userEvent.type(input, "My title");
-    await userEvent.click(screen.getByRole("button", { name: "Save title" }));
-
-    expect(await screen.findByText("Title conflict")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
-  });
-
   it("shows loading and failure states", () => {
     getHook.mockReturnValueOnce({ isLoading: true, isError: false });
-    patchHook.mockReturnValue({ mutateAsync: vi.fn() });
-    const { rerender } = render(
-      <LoopSessionSaveProvider>
-        <LoopSessionTitleEditor sessionId="one" />
-      </LoopSessionSaveProvider>,
-    );
+    patchHook.mockReturnValue({ mutateAsync: vi.fn(), error: null });
+    const { rerender } = render(<LoopSessionTitleEditor sessionId="one" />);
     expect(screen.getByText("Loading Loop Session…")).toBeInTheDocument();
 
     getHook.mockReturnValueOnce({ isLoading: false, isError: true, refetch: vi.fn() });
-    rerender(
-      <LoopSessionSaveProvider>
-        <LoopSessionTitleEditor sessionId="one" />
-      </LoopSessionSaveProvider>,
-    );
+    rerender(<LoopSessionTitleEditor sessionId="one" />);
     expect(screen.getByRole("alert")).toHaveTextContent("could not load");
   });
 });

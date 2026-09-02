@@ -1,44 +1,37 @@
 "use client";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { CardKind, type SpecVersionResponse, WorkflowNode } from "@/lib/api/generated/model";
+import { frameHasContent } from "@/features/idea/turns";
+import { CardKind, WorkflowNode, type SpecVersionResponse } from "@/lib/api/generated/model";
 
-import { CARD_KIND_LABELS, LOOP_STAGE_CATALOG, WORKFLOW_NODE_LABELS } from "./catalog";
+import { LOOP_STAGE_CATALOG } from "./catalog";
+import { StageRevisionBody } from "./StageRevisionBody";
+import { RelatedWorkRevisionView } from "./stage-revision-viewers";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function unknownFields(value: Record<string, unknown>, knownKeys: readonly string[]): Record<string, unknown> | null {
-  const rest: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (!knownKeys.includes(key)) {
-      rest[key] = entry;
-    }
-  }
-  return Object.keys(rest).length > 0 ? rest : null;
+/** Workflow Nodes omitted from Spec Draft read UI (still in the Spec Version document). */
+const SPEC_DRAFT_HIDDEN_NODES = new Set<WorkflowNode>([WorkflowNode.research_inputs]);
+
+function isGrillingNarrative(narrative: Record<string, unknown>): boolean {
+  return Array.isArray(narrative.turns) || isRecord(narrative.frame);
 }
 
-function JsonFallback({ value }: { value: unknown }) {
-  return (
-    <pre className="max-w-full overflow-x-auto rounded-md bg-muted/60 p-3 text-xs">
-      {JSON.stringify(value, null, 2)}
-    </pre>
-  );
-}
-
-function fieldText(value: unknown): string | null {
-  if (!isRecord(value) || typeof value.text !== "string") {
-    return null;
+/** Spec Draft hides grilling turn lists; blank Idea Frames omit the whole node section. */
+function includeOnSpecDraft(node: WorkflowNode, payload: unknown): boolean {
+  if (SPEC_DRAFT_HIDDEN_NODES.has(node)) {
+    return false;
   }
-  return value.text;
-}
-
-function cardKindLabel(kind: unknown): string {
-  if (typeof kind === "string" && Object.values(CardKind).includes(kind as CardKind)) {
-    return CARD_KIND_LABELS[kind as CardKind];
+  if (!isRecord(payload)) {
+    return true;
   }
-  return typeof kind === "string" ? kind : "Card";
+  const narrative = isRecord(payload.narrative) ? payload.narrative : null;
+  if (narrative && isGrillingNarrative(narrative) && !frameHasContent(narrative)) {
+    return false;
+  }
+  return true;
 }
 
 function nonEmptyText(value: unknown): string | null {
@@ -315,103 +308,86 @@ function GapSpecNode({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
-function SpecNode({ node, payload }: { node: WorkflowNode; payload: unknown }) {
-  if (!isRecord(payload)) {
-    return (
-      <div className="grid min-w-0 grid-cols-1 gap-2">
-        <p className="text-sm font-medium">{WORKFLOW_NODE_LABELS[node]}</p>
-        <JsonFallback value={payload} />
-      </div>
-    );
-  }
+function relatedWorkHasFrozenComparison(payload: Record<string, unknown>): boolean {
+  const narrative = isRecord(payload.narrative) ? payload.narrative : {};
+  const projection = isRecord(payload.projection) ? payload.projection : null;
+  const findings = Array.isArray(projection?.related_work) ? projection.related_work : [];
+  const analyzedCount =
+    numberValue(narrative.analyzed_result_count) ??
+    numberValue(narrative.citation_count) ??
+    (Array.isArray(projection?.citations) ? projection.citations.length : 0);
+  return findings.length > 0 || analyzedCount > 0;
+}
 
-  if (node === WorkflowNode.related_work) {
-    return <RelatedWorkSpecNode payload={payload} />;
+function SpecDraftNode({
+  node,
+  payload,
+  sessionId,
+}: {
+  node: WorkflowNode;
+  payload: unknown;
+  sessionId: string;
+}) {
+  if (node === WorkflowNode.related_work && isRecord(payload)) {
+    if (relatedWorkHasFrozenComparison(payload)) {
+      return <RelatedWorkSpecNode payload={payload} />;
+    }
+    const revisionId =
+      typeof payload.stage_revision_id === "string" ? payload.stage_revision_id : null;
+    return <RelatedWorkRevisionView sessionId={sessionId} stageRevisionId={revisionId} />;
   }
-
-  if (node === WorkflowNode.gap) {
+  if (node === WorkflowNode.gap && isRecord(payload)) {
     return <GapSpecNode payload={payload} />;
   }
-
-  const narrative = isRecord(payload.narrative) ? payload.narrative : null;
-  const narrativeText = narrative ? fieldText(narrative) : null;
-  const cards = Array.isArray(payload.card_snapshot) ? payload.card_snapshot : null;
-  const unknownNarrative = narrative
-    ? unknownFields(narrative, ["text"])
-    : null;
-  const unknownNode = unknownFields(payload, ["narrative", "card_snapshot", "projection"]);
-
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-2">
-      <p className="text-sm font-medium">{WORKFLOW_NODE_LABELS[node]}</p>
-      {narrativeText ? <p className="text-sm whitespace-pre-wrap">{narrativeText}</p> : null}
-      {unknownNarrative ? <JsonFallback value={unknownNarrative} /> : null}
-      {narrative === null && payload.narrative !== undefined ? (
-        <JsonFallback value={payload.narrative} />
-      ) : null}
-      {cards
-        ? cards.map((card, index) => {
-            if (!isRecord(card)) {
-              return <JsonFallback key={index} value={card} />;
-            }
-            const body = isRecord(card.body) ? card.body : null;
-            const text = body ? fieldText(body) : null;
-            const unknownBody = body ? unknownFields(body, ["text"]) : null;
-            const unknownCard = unknownFields(card, ["id", "kind", "body"]);
-            return (
-              <div key={typeof card.id === "string" ? card.id : index} className="min-w-0 rounded-md border bg-muted/40 px-3 py-2">
-                <p className="text-sm font-medium">{cardKindLabel(card.kind)}</p>
-                {text ? <p className="text-sm whitespace-pre-wrap">{text}</p> : null}
-                {unknownBody ? <JsonFallback value={unknownBody} /> : null}
-                {body === null && card.body !== undefined ? <JsonFallback value={card.body} /> : null}
-                {unknownCard ? <JsonFallback value={unknownCard} /> : null}
-              </div>
-            );
-          })
-        : payload.card_snapshot !== undefined
-          ? <JsonFallback value={payload.card_snapshot} />
-          : null}
-      {unknownNode ? <JsonFallback value={unknownNode} /> : null}
-    </div>
+    <StageRevisionBody
+      node={node}
+      payload={payload}
+      sessionId={sessionId}
+      showLeftovers={false}
+      showTurns={false}
+    />
   );
 }
 
-function SpecDocument({ document }: { document: Record<string, unknown> }) {
+function SpecDocument({
+  document,
+  sessionId,
+}: {
+  document: Record<string, unknown>;
+  sessionId: string;
+}) {
   const nodes = isRecord(document.nodes) ? document.nodes : null;
-  const unknownRoot = unknownFields(document, ["nodes"]);
-  const catalogNodes = new Set<string>(
-    LOOP_STAGE_CATALOG.flatMap((stage) => [...stage.nodes]),
-  );
-  const extraNodes = nodes
-    ? Object.fromEntries(Object.entries(nodes).filter(([key]) => !catalogNodes.has(key)))
-    : null;
+
+  if (!nodes) {
+    return null;
+  }
 
   return (
     <div className="grid min-w-0 grid-cols-1 gap-4">
-      {nodes ? (
-        <>
-          {LOOP_STAGE_CATALOG.filter((stage) => stage.nodes.length > 0).map((stage) => {
-            const present = stage.nodes.filter((node) => nodes[node] !== undefined);
-            if (present.length === 0) {
-              return null;
-            }
-            return (
-              <section key={stage.id} className="min-w-0" aria-label={`${stage.name} in Produced Spec Version`}>
-                <h3 className="font-serif text-navy">{stage.name}</h3>
-                <div className="mt-2 grid min-w-0 grid-cols-1 gap-3">
-                  {present.map((node) => (
-                    <SpecNode key={node} node={node} payload={nodes[node]} />
-                  ))}
-                </div>
-              </section>
-            );
-          })}
-          {extraNodes && Object.keys(extraNodes).length > 0 ? <JsonFallback value={extraNodes} /> : null}
-          {unknownRoot ? <JsonFallback value={unknownRoot} /> : null}
-        </>
-      ) : (
-        <JsonFallback value={document} />
-      )}
+      {LOOP_STAGE_CATALOG.filter((stage) => stage.nodes.length > 0).map((stage) => {
+        const present = stage.nodes.filter(
+          (node) => nodes[node] !== undefined && includeOnSpecDraft(node, nodes[node]),
+        );
+        if (present.length === 0) {
+          return null;
+        }
+        return (
+          <section key={stage.id} className="min-w-0" aria-label={`${stage.name} in Produced Spec Version`}>
+            <h3 className="font-serif text-navy">{stage.name}</h3>
+            <div className="mt-2 grid min-w-0 grid-cols-1 gap-3">
+              {present.map((node) => (
+                <SpecDraftNode
+                  key={node}
+                  node={node}
+                  payload={nodes[node]}
+                  sessionId={sessionId}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -419,9 +395,11 @@ function SpecDocument({ document }: { document: Record<string, unknown> }) {
 export function ProducedSpecVersionView({
   produced,
   validSpecVersionId,
+  sessionId,
 }: {
   produced: SpecVersionResponse | null;
   validSpecVersionId: string | null;
+  sessionId: string;
 }) {
   const stale = Boolean(produced && produced.id !== validSpecVersionId);
 
@@ -442,7 +420,7 @@ export function ProducedSpecVersionView({
           {produced ? (
             <div className="grid min-w-0 grid-cols-1 gap-4">
               {stale ? <p className="text-sm font-medium text-pending">Stale</p> : null}
-              <SpecDocument document={produced.document} />
+              <SpecDocument document={produced.document} sessionId={sessionId} />
             </div>
           ) : null}
         </CardContent>

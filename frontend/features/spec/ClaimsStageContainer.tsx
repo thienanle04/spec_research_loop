@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,20 +13,25 @@ import {
   CardKind,
   type ClaimEvidenceCard,
   type LoopSessionResponse,
+  WorkflowNode,
 } from "@/lib/api/generated/model";
+import { WORKFLOW_NODE_LABELS } from "../loop/catalog";
 import { useLoopSessionSave } from "../loop/loop-session-save";
-import { MessageSquareQuote, CheckCircle2, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
+import { withGeneratedSincePrepare } from "../loop/stage-signals";
+import { CheckCircle2, AlertTriangle, Edit, Plus, Trash2, Save, X } from "lucide-react";
 
 export function ClaimsStageContainer({
   sessionId,
   session,
   onRunningChange,
   onConfirmabilityChange,
+  generateRequestId = 0,
 }: {
   sessionId: string;
   session: LoopSessionResponse;
   onRunningChange?: (running: boolean) => void;
   onConfirmabilityChange?: (confirmable: boolean) => void;
+  generateRequestId?: number;
 }) {
   const queryClient = useQueryClient();
   const generateClaims = useGenerateClaimsApiSpecSessionsSessionIdClaimsGeneratePost();
@@ -38,6 +43,7 @@ export function ClaimsStageContainer({
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editCards, setEditCards] = useState<ClaimEvidenceCard[]>([]);
+  const seenGenerateRequestIdRef = useRef(generateRequestId);
 
   const narrative = session.working_draft_narrative as any;
   const generatedCards = (narrative?.cards || []) as ClaimEvidenceCard[];
@@ -80,15 +86,25 @@ export function ClaimsStageContainer({
         })
       );
       if (response.status !== 200) throw new Error("Could not generate claims");
-      updateSession((current) => ({
-        ...current,
-        version: response.data.version,
-        working_draft_narrative: { ...current.working_draft_narrative as object, cards: response.data.cards, saved: false },
-      }));
+      updateSession((current) =>
+        withGeneratedSincePrepare({
+          ...current,
+          version: response.data.version,
+          working_draft_narrative: { ...current.working_draft_narrative as object, cards: response.data.cards, saved: false },
+        }),
+      );
     } catch (caught) {
       setError(getApiErrorMessage(caught));
     }
   }
+
+  useEffect(() => {
+    const previous = seenGenerateRequestIdRef.current;
+    seenGenerateRequestIdRef.current = generateRequestId;
+    if (generateRequestId < 1 || generateRequestId <= previous) return;
+    void loadClaims();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- external stale-dialog trigger only
+  }, [generateRequestId]);
 
   async function saveSelection() {
     if (generatedCards.length === 0) return;
@@ -160,10 +176,10 @@ export function ClaimsStageContainer({
         <div className="flex items-center justify-between">
           <div className="space-y-1">
             <CardTitle className="text-xl font-serif text-navy flex items-center gap-2">
-              <MessageSquareQuote className="w-5 h-5 text-indigo-600" /> Claims Generation
+              {WORKFLOW_NODE_LABELS[WorkflowNode.claims]}
             </CardTitle>
             <CardDescription>
-              Generate and review the core claims for your spec.
+              Generate claims and expected evidence to support your contribution.
             </CardDescription>
           </div>
           <Button

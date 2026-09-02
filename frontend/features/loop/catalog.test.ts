@@ -4,12 +4,18 @@ import { CardKind, LoopStage, WorkflowNode } from "@/lib/api/generated/model";
 
 import {
   LOOP_STAGE_CATALOG,
+  adjacentStop,
   ancestors,
   descendants,
+  navStops,
   ownedCardKinds,
+  railStop,
+  resolveSelectedNode,
   resolveSelectedStage,
+  sessionHref,
   stageForWorkflowNode,
   upstreamOfStage,
+  workingDraftStop,
 } from "./catalog";
 
 describe("Loop Stage catalog", () => {
@@ -66,6 +72,51 @@ describe("Loop Stage catalog", () => {
     );
     expect(resolveSelectedStage(LoopStage.spec_draft, WorkflowNode.feasibility)).toBe(
       LoopStage.spec_draft,
+    );
+  });
+
+  it("resolves viewed Workflow Node from the query and falls back inside the Loop Stage", () => {
+    expect(resolveSelectedNode(LoopStage.grilling, null, WorkflowNode.idea_decomposition)).toBe(
+      WorkflowNode.idea_decomposition,
+    );
+    expect(
+      resolveSelectedNode(LoopStage.grilling, WorkflowNode.idea_decomposition, WorkflowNode.idea_interpretation),
+    ).toBe(WorkflowNode.idea_decomposition);
+    expect(
+      resolveSelectedNode(LoopStage.grilling, WorkflowNode.gap, WorkflowNode.idea_decomposition),
+    ).toBe(WorkflowNode.idea_interpretation);
+    expect(resolveSelectedNode(LoopStage.related_work, "not-a-node", WorkflowNode.idea_interpretation)).toBe(
+      WorkflowNode.research_inputs,
+    );
+    expect(resolveSelectedNode(LoopStage.spec_draft, WorkflowNode.gap, WorkflowNode.feasibility)).toBeUndefined();
+  });
+
+  it("walks Back and Next across Workflow Nodes and nodeless Loop Stages", () => {
+    const stops = navStops();
+    expect(stops[0]).toEqual({ stage: LoopStage.grilling, node: WorkflowNode.idea_interpretation });
+    expect(stops.at(-1)).toEqual({ stage: LoopStage.readiness });
+    expect(adjacentStop({ stage: LoopStage.grilling, node: WorkflowNode.idea_interpretation }, -1)).toBeNull();
+    expect(adjacentStop({ stage: LoopStage.experiment_planning, node: WorkflowNode.feasibility }, 1)).toEqual({
+      stage: LoopStage.spec_draft,
+    });
+    expect(adjacentStop({ stage: LoopStage.spec_draft }, 1)).toEqual({
+      stage: LoopStage.independent_judges,
+      node: WorkflowNode.gap_judge,
+    });
+    expect(adjacentStop({ stage: LoopStage.readiness }, 1)).toBeNull();
+  });
+
+  it("builds session hrefs with node omitted on Spec Draft and Readiness", () => {
+    expect(railStop(LoopStage.related_work)).toEqual({
+      stage: LoopStage.related_work,
+      node: WorkflowNode.research_inputs,
+    });
+    expect(railStop(LoopStage.spec_draft)).toEqual({ stage: LoopStage.spec_draft });
+    expect(sessionHref("session-1", workingDraftStop(WorkflowNode.claims))).toBe(
+      `/sessions/session-1?stage=${LoopStage.claims_evidence}&node=${WorkflowNode.claims}`,
+    );
+    expect(sessionHref("session-1", { stage: LoopStage.readiness })).toBe(
+      `/sessions/session-1?stage=${LoopStage.readiness}`,
     );
   });
 

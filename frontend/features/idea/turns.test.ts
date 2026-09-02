@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   clustersAnswered,
   frameComplete,
+  frameHasContent,
   interpretationConfirmable,
   isExhaustedHint,
   parseTurns,
@@ -86,6 +87,18 @@ describe("interpretationConfirmable", () => {
     expect(frameComplete({ frame: { ...frame, intent: "" } })).toBe(false);
     expect(interpretationConfirmable({ frame, turns: [idea, cluster] })).toBe(true);
     expect(interpretationConfirmable({ turns: [idea] })).toBe(false);
+  });
+});
+
+describe("frameHasContent", () => {
+  it("is true when any Idea Frame field is non-blank", () => {
+    expect(frameHasContent({ frame: { intent: "x", problem: "", research_question: "" } })).toBe(
+      true,
+    );
+    expect(frameHasContent({ frame: { intent: "", problem: "", research_question: "" } })).toBe(
+      false,
+    );
+    expect(frameHasContent({ turns: [idea] })).toBe(false);
   });
 });
 

@@ -34,7 +34,7 @@ from app.modules.loop.interpretation_turns import (
 )
 from app.modules.loop.schemas import LoopSessionResponse
 from app.modules.loop.service import LoopService
-from app.ports.llm import LlmCompleteError
+from app.ports.llm import LlmCompleteError, LlmProviderError
 
 _GRILLING = {WorkflowNode.IDEA_INTERPRETATION, WorkflowNode.IDEA_DECOMPOSITION}
 
@@ -128,7 +128,7 @@ class IdeaService:
                 )
             mode = "decomposition"
             normalized_answers: list[dict[str, str]] | None = None
-            note_text = note.strip() if (note or "").strip() else None
+            note_text = (note or "").strip() or None
             if node is WorkflowNode.IDEA_INTERPRETATION:
                 turns = turns_of(dict(session.working_draft_narrative))
                 cluster = unanswered_cluster(turns)
@@ -215,7 +215,7 @@ class IdeaService:
             return GenerateRun(
                 session=session,
                 context=context,
-                message=(message.strip() if (message or "").strip() else None),
+                message=((message or "").strip() or None),
                 answers=normalized_answers,
                 note=note_text,
                 mode=mode,
@@ -281,6 +281,10 @@ class IdeaService:
             )
         except LlmCompleteError as exc:
             yield _sse({"type": "error", "code": "llm_complete_error", "detail": str(exc)})
+            return
+        except LlmProviderError as exc:
+            code = "llm_rate_limited" if exc.status_code == 429 else "llm_provider_error"
+            yield _sse({"type": "error", "code": code, "detail": str(exc)})
             return
         except TrailerParseError as exc:
             yield _sse({"type": "error", "code": "generate_parse_error", "detail": str(exc)})

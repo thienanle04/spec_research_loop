@@ -138,6 +138,14 @@ _EDGES: dict[WorkflowNode, tuple[WorkflowNode, ...]] = {
     WorkflowNode.AGGREGATOR: (),
 }
 
+FIVE_JUDGE_NODES: tuple[WorkflowNode, ...] = (
+    WorkflowNode.GAP_JUDGE,
+    WorkflowNode.CONTRIBUTION_JUDGE,
+    WorkflowNode.EVIDENCE_JUDGE,
+    WorkflowNode.EXPERIMENT_JUDGE,
+    WorkflowNode.CONFERENCE_JUDGE,
+)
+
 CARD_KIND_OWNERS: dict[CardKind, tuple[WorkflowNode, ...]] = {
     CardKind.PROBLEM: (WorkflowNode.IDEA_DECOMPOSITION,),
     CardKind.RESEARCH_QUESTION: (WorkflowNode.IDEA_DECOMPOSITION,),
@@ -157,6 +165,18 @@ for _kind, _owners in CARD_KIND_OWNERS.items():
 
 def owned_kinds(node: WorkflowNode) -> tuple[CardKind, ...]:
     return _OWNER_KINDS.get(node, ())
+
+
+HANDLING_OPTION_TARGETS: frozenset[str] = frozenset(
+    {
+        WorkflowNode.GAP.value,
+        WorkflowNode.CONTRIBUTION.value,
+        WorkflowNode.CLAIMS.value,
+        WorkflowNode.EVIDENCE.value,
+        WorkflowNode.EXPERIMENT_PLAN.value,
+        WorkflowNode.IDEA_DECOMPOSITION.value,
+    }
+)
 
 
 def descendants(node: WorkflowNode) -> frozenset[WorkflowNode]:
