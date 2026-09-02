@@ -687,14 +687,29 @@ class SpecService:
     async def _propose_directions(
         self, view: dict[str, Any], output_language: str
     ) -> list[_GeneratedDirection]:
-        gap_statement = _confirmed_gap_statement(view)
-        brief = _contribution_brief(view)
+        if isinstance(view.get("upstream"), dict):
+            brief = _contribution_brief(view)
+            gap_statement = str(
+                _dict_value(brief.get("confirmed_gap")).get("statement") or ""
+            ).strip()
+            prompt_payload = {
+                "required_output_language": output_language,
+                "confirmed_gap_statement": gap_statement,
+                "contribution_brief": brief,
+            }
+        else:
+            gap_statement = _confirmed_gap_statement(view)
+            prompt_payload = {
+                "required_output_language": output_language,
+                "confirmed_gap_statement": gap_statement,
+                "prompt_view": view,
+            }
         system = (
             "spec-contribution-directions: propose one to three genuinely distinct, "
-            "research-ready Contribution directions grounded only in the confirmed Idea, "
-            "Related Work, and Gap in the supplied Contribution Brief. A direction is not a "
+            "research-ready Contribution directions grounded only in the confirmed Cards "
+            "and Gap in the supplied Prompt View. A direction is not a "
             "theme or category: it must state what artifact or mechanism would be introduced, "
-            "which exact limitation it changes, why that differs from the closest Related Work, "
+            "which exact limitation it changes, why that differs from the closest prior work, "
             "and how the difference could be falsified. Titles must name the proposed mechanism "
             "or artifact; never use generic titles such as 'Focus on ...' or 'Tập trung vào ...'. "
             "Do not invent datasets, numeric gains, citations, or capabilities absent from the "
@@ -708,19 +723,12 @@ class SpecService:
             "one sentence and no more than 220 characters each. Compact fields instead of "
             "dropping a grounded direction. "
             "Use gap_link to explicitly connect the mechanism to the confirmed Gap; use novelty "
-            "to compare against the closest named Related Work; use validation to name a baseline, "
+            "to compare against the closest prior work named in the Prompt View when available; "
+            "use validation to name a baseline, "
             "observable outcome, and rejection condition without made-up target values. "
             f"Write every field in {output_language}. Do not include Combine or Other."
         )
-        prompt = json.dumps(
-            {
-                "required_output_language": output_language,
-                "confirmed_gap_statement": gap_statement,
-                "contribution_brief": brief,
-            },
-            default=str,
-            ensure_ascii=False,
-        )
+        prompt = json.dumps(prompt_payload, default=str, ensure_ascii=False)
         last_error: Exception | None = None
         previous_output = ""
         for attempt in range(2):

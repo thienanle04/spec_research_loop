@@ -5697,13 +5697,8 @@ def _gap_limitation_evidence(
     finding: dict[str, Any],
 ) -> GapClaimEvidence | None:
     key = str(finding.get("citation_key") or "").strip()
-    evidence = finding.get("evidence")
-    limitation_evidence = (
-        evidence.get("limitation")
-        if isinstance(evidence, dict)
-        and isinstance(evidence.get("limitation"), dict)
-        else {}
-    )
+    evidence = _dict_payload(finding.get("evidence"))
+    limitation_evidence = _dict_payload(evidence.get("limitation"))
     passage = str(
         limitation_evidence.get("passage")
         or finding.get("supporting_passage")

@@ -1,4 +1,4 @@
-import { FileText, Pin, PinOff } from "lucide-react";
+import { Pin, PinOff } from "lucide-react";
 
 import type { CitationResponse, RelatedWorkFindingResponse } from "@/lib/api/generated/model";
 
@@ -77,14 +77,13 @@ export function RelatedWorkMatrix({
         </p>
       ) : (
         <div className="overflow-x-auto rounded-xl border">
-          <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[900px] border-collapse text-left text-sm">
             <thead className="bg-muted/70">
               <tr>
                 <th className="w-[18%] border-r p-3 font-semibold">Study</th>
-                <th className="w-[25%] border-r p-3 font-semibold">What was done?</th>
-                <th className="w-[22%] border-r p-3 font-semibold">Method or feedback</th>
-                <th className="w-[27%] border-r p-3 font-semibold">Remaining limitation</th>
-                <th className="w-[8%] p-3 text-center font-semibold">Source</th>
+                <th className="w-[27%] border-r p-3 font-semibold">What was done?</th>
+                <th className="w-[24%] border-r p-3 font-semibold">Method or feedback</th>
+                <th className="w-[31%] p-3 font-semibold">Remaining limitation</th>
               </tr>
             </thead>
             <tbody>
@@ -153,24 +152,9 @@ export function RelatedWorkMatrix({
                       {finding.method_or_feedback || "Not stated in the source metadata"}
                       <EvidenceSupport evidence={evidenceFor(finding, "method_or_feedback")} />
                     </td>
-                    <td className="border-r p-3 leading-6">
+                    <td className="p-3 leading-6">
                       {finding.limitation}
                       <EvidenceSupport evidence={evidenceFor(finding, "limitation")} />
-                    </td>
-                    <td className="p-3 text-center">
-                      {href ? (
-                        <a
-                          aria-label={`Open source: ${title}`}
-                          className="inline-flex size-10 items-center justify-center rounded-xl border border-in-progress/25 bg-in-progress/10 text-in-progress transition-colors hover:bg-in-progress/15"
-                          href={href}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <FileText aria-hidden="true" className="size-5" />
-                        </a>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
                     </td>
                   </tr>
                 );
