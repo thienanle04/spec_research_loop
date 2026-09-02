@@ -66,7 +66,9 @@ def _fat_projection(*, with_plan: bool = False) -> dict:
                     ],
                     "related_work": [
                         {
+                            "citation_id": "cite-1",
                             "what_was_done": "x",
+                            "limitation": "Does not localize unsupported claims.",
                             "supporting_passage": "y",
                         }
                     ],
@@ -129,6 +131,17 @@ def test_prompt_view_keeps_cards_and_gap_drops_grilling_and_citations() -> None:
     assert "text_object_key" not in blob
     assert "idea_interpretation" not in blob
     assert "related_work" not in blob
+
+
+def test_contribution_prompt_view_adds_compact_related_work_studies() -> None:
+    view = prompt_view(WorkflowNode.CONTRIBUTION, _fat_projection())
+    studies = view["related_work"]["studies"]
+    assert studies[0]["source"]["title"] == "Paper"
+    assert studies[0]["limitation"] == "Does not localize unsupported claims."
+    blob = str(view)
+    assert "Very long abstract" not in blob
+    assert "text_object_key" not in blob
+    assert "long grilling transcript" not in blob
 
 
 def test_feasibility_prompt_view_adds_experiment_plan() -> None:

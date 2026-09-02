@@ -27,6 +27,8 @@ _SPEC_CARD_UPSTREAM: tuple[WorkflowNode, ...] = (
 )
 
 _SPEC_CARD_KINDS: frozenset[str] = frozenset(kind.value for kind in CardKind)
+_CONTRIBUTION_RELATED_WORK_LIMIT = 8
+_CONTRIBUTION_TEXT_LIMIT = 1_200
 
 
 def prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any]:
@@ -49,6 +51,8 @@ def prompt_view(node: WorkflowNode, projection: dict[str, Any]) -> dict[str, Any
         plan = _experiment_plan(projection)
         if plan:
             view["experiment_plan"] = plan
+    if node is WorkflowNode.CONTRIBUTION:
+        view["related_work"] = _compact_related_work(projection)
     return view
 
 
@@ -252,6 +256,84 @@ def _experiment_plan(projection: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(plan, dict) and plan:
         return plan
     return None
+
+
+def _compact_text(value: Any, *, limit: int = _CONTRIBUTION_TEXT_LIMIT) -> str:
+    if not isinstance(value, str):
+        return ""
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
+def _compact_related_work(projection: dict[str, Any]) -> dict[str, Any]:
+    upstream = projection.get("upstream")
+    if not isinstance(upstream, dict):
+        return {"studies": [], "coverage": {}}
+    node = upstream.get(WorkflowNode.RELATED_WORK.value)
+    if not isinstance(node, dict):
+        return {"studies": [], "coverage": {}}
+    projected = node.get("projected")
+    if not isinstance(projected, dict):
+        projected = {}
+    citations_by_id: dict[str, dict[str, Any]] = {}
+    citations = projected.get("citations")
+    if isinstance(citations, list):
+        for raw in citations:
+            if not isinstance(raw, dict):
+                continue
+            identifier = str(raw.get("id") or "")
+            if not identifier:
+                continue
+            source = {
+                "citation_key": _compact_text(raw.get("citation_key"), limit=200),
+                "title": _compact_text(raw.get("title"), limit=500),
+                "year": raw.get("year"),
+                "venue": _compact_text(raw.get("venue"), limit=300),
+                "verification_status": raw.get("verification_status"),
+            }
+            citations_by_id[identifier] = {
+                key: value for key, value in source.items() if value not in ("", None)
+            }
+    findings = projected.get("related_work")
+    if not isinstance(findings, list):
+        findings = []
+    studies: list[dict[str, Any]] = []
+    for raw in findings[:_CONTRIBUTION_RELATED_WORK_LIMIT]:
+        if not isinstance(raw, dict):
+            continue
+        citation_id = str(raw.get("citation_id") or "")
+        source = citations_by_id.get(citation_id, {})
+        study = {
+            "source": source,
+            "what_was_done": _compact_text(raw.get("what_was_done")),
+            "method_or_feedback": _compact_text(raw.get("method_or_feedback")),
+            "limitation": _compact_text(raw.get("limitation")),
+            "relevance": _compact_text(raw.get("relevance")),
+            "grounding_status": raw.get("grounding_status"),
+            "confidence": raw.get("confidence"),
+        }
+        studies.append(
+            {key: value for key, value in study.items() if value not in ("", None, {})}
+        )
+    if not studies:
+        for source in list(citations_by_id.values())[:_CONTRIBUTION_RELATED_WORK_LIMIT]:
+            studies.append({"source": source})
+    narrative = node.get("narrative")
+    if not isinstance(narrative, dict):
+        narrative = {}
+    coverage = {
+        key: narrative.get(key)
+        for key in (
+            "candidate_count",
+            "ranked_candidate_count",
+            "selected_count",
+            "skipped_inaccessible_count",
+        )
+        if narrative.get(key) is not None
+    }
+    return {"studies": studies, "coverage": coverage}
 
 
 def _related_work_passages(projection: dict[str, Any]) -> list[dict[str, Any]]:

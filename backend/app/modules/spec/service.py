@@ -244,6 +244,44 @@ def _compact_gap(upstream: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _related_work_from_prompt_view(context: dict[str, Any]) -> dict[str, Any]:
+    raw = context.get("related_work")
+    if isinstance(raw, dict):
+        return {
+            "studies": _list_value(raw.get("studies")),
+            "coverage": _dict_value(raw.get("coverage")),
+        }
+    return {"studies": _list_value(raw), "coverage": {}}
+
+
+def _spec_generate_system(node: WorkflowNode) -> str:
+    ground = (
+        "Ground every output only in the supplied Prompt View. "
+        "Do not invent datasets, numeric gains, citations, or capabilities absent from the Prompt View. "
+        "If a detail is missing, name the Account decision instead of fabricating it."
+    )
+    if node is WorkflowNode.CLAIMS:
+        return (
+            "You generate Claims for a Research Spec from the Prompt View. "
+            "Each Claim needs baseline, metric, expected evidence, and rejection_condition. "
+            + ground
+        )
+    if node is WorkflowNode.EXPERIMENT_PLAN:
+        return (
+            "You generate an experiment plan from the Prompt View. "
+            "For each Claim, emit one experiment with short claim, action, objective, "
+            "and significance fields. Do not copy baseline, metric, evidence, or "
+            "rejection_condition into the claim field. "
+            + ground
+        )
+    return (
+        "You assess Feasibility of the experiment_plan already present in the Prompt View. "
+        "Return is_feasible, conclusion, required_resources, potential_bottlenecks, "
+        "and mitigation_strategies. "
+        + ground
+    )
+
+
 def _contribution_brief(context: dict[str, Any]) -> dict[str, Any]:
     if "upstream" not in context:
         cards = [
@@ -257,10 +295,7 @@ def _contribution_brief(context: dict[str, Any]) -> dict[str, Any]:
                 "cards": [item for item in cards if item.get("kind") in idea_kinds]
             },
             "research_inputs": {},
-            "related_work": {
-                "studies": _list_value(context.get("related_work")),
-                "coverage": {},
-            },
+            "related_work": _related_work_from_prompt_view(context),
             "confirmed_gap": {
                 "statement": _compact_text(context.get("gap_statement"), limit=3_000),
                 "cards": [item for item in cards if item.get("kind") == "gap"],
@@ -570,14 +605,8 @@ class SpecService:
             node=WorkflowNode.CLAIMS,
         )
 
-        system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
-        prompt = f"""
-        Dựa vào Prompt View của dự án:
-        {json.dumps(view, default=str, ensure_ascii=False)}
-        
-        Hãy sinh ra các luận điểm (Claims) chứng minh cho các đóng góp (Contribution) đã chọn.
-        Mỗi Claim đi kèm Baseline, Metric cần đo, Bằng chứng kỳ vọng (evidence), và Điều kiện bác bỏ (rejection_condition).
-        """
+        system = _spec_generate_system(WorkflowNode.CLAIMS)
+        prompt = json.dumps(view, default=str, ensure_ascii=False)
         try:
             response_data = await self._llm.complete_structured(
                 system=system, prompt=prompt, schema=GenerateClaimsResponse
@@ -609,18 +638,8 @@ class SpecService:
             node=WorkflowNode.EXPERIMENT_PLAN,
         )
 
-        system = "Bạn là một AI hỗ trợ thiết kế Đặc tả Nghiên cứu (Research Spec)."
-        prompt = f"""
-        Dựa vào Prompt View sau của dự án (đặc biệt là các Claim đã chọn):
-        {json.dumps(view, default=str, ensure_ascii=False)}
-
-        Hãy lên kế hoạch thí nghiệm. Với MỖI claim, tạo đúng một thí nghiệm với 4 trường chuỗi ngắn (2–4 câu mỗi trường):
-        1. claim: một câu tóm tắt claim. Không copy baseline, metric, evidence, hay rejection_condition vào trường này.
-        2. action: làm gì, bao nhiêu mẫu/lần/thời gian
-        3. objective: mục tiêu đo của thí nghiệm
-        4. significance: ý nghĩa của thí nghiệm đối với claim
-        Trả về JSON đầy đủ cho mọi claim; không cắt giữa chừng.
-        """
+        system = _spec_generate_system(WorkflowNode.EXPERIMENT_PLAN)
+        prompt = json.dumps(view, default=str, ensure_ascii=False)
         try:
             response_data = await self._llm.complete_structured(
                 system=system,
@@ -653,24 +672,11 @@ class SpecService:
             node=WorkflowNode.FEASIBILITY,
         )
 
-        system = (
-            "Bạn là một AI đánh giá tài nguyên và tính khả thi cho Đặc tả Nghiên cứu."
-        )
-        plan_payload = plan if plan else view.get("experiment_plan", {})
-        prompt = f"""
-        Kế hoạch thử nghiệm: 
-        {json.dumps(plan_payload, default=str, ensure_ascii=False)}
-        
-        Prompt View hiện tại của dự án:
-        {json.dumps(view, default=str, ensure_ascii=False)}
-        
-        Hãy đánh giá tính khả thi (Feasibility) của kế hoạch thử nghiệm này. Trả về các thông tin sau:
-        - is_feasible: Kết luận chung có khả thi không
-        - conclusion: Lời giải thích tóm tắt cho kết luận
-        - required_resources: Danh sách các tài nguyên cần thiết (VD: VRAM, Data, Compute Time)
-        - potential_bottlenecks: Danh sách các nút thắt hoặc vấn đề tiềm ẩn có thể xảy ra
-        - mitigation_strategies: Danh sách các phương án giải quyết/giảm thiểu rủi ro
-        """
+        system = _spec_generate_system(WorkflowNode.FEASIBILITY)
+        payload = dict(view)
+        if plan:
+            payload["experiment_plan"] = plan
+        prompt = json.dumps(payload, default=str, ensure_ascii=False)
         try:
             report = await self._llm.complete_structured(
                 system=system, prompt=prompt, schema=FeasibilityReport
