@@ -29,6 +29,15 @@ def test_composer_copies_critical_and_does_not_majority_vote() -> None:
                             "severity": "CRITICAL",
                             "reason": "The cited passage does not entail the claim.",
                             "suggestion": "Cite a passage that entails the claim.",
+                            "grounds": {
+                                "subject": "Brass instruments improve soil nitrogen.",
+                                "excerpts": [
+                                    {
+                                        "citation_key": "large-language-models-as-optimizers-2023",
+                                        "passage": "An optimizer model proposes prompts.",
+                                    }
+                                ],
+                            },
                         }
                     ],
                 ),
@@ -41,6 +50,10 @@ def test_composer_copies_critical_and_does_not_majority_vote() -> None:
     assert report.scores == CONFERENCE_SCORES
     assert [item.severity for item in report.issues] == ["CRITICAL"]
     assert report.issues[0].cluster == "disagreement"
+    assert report.issues[0].source_node == "evidence_judge"
+    assert report.issues[0].grounds["subject"] == (
+        "Brass instruments improve soil nitrogen."
+    )
 
 
 def test_composer_lists_minor_without_handling_options() -> None:

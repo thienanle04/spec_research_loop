@@ -22,6 +22,7 @@ from app.modules.spec.schemas import (
     ContributionDirectionsResponse,
     ExperimentPlan,
     FeasibilityReport,
+    GeneratedClaims,
     GenerateClaimsResponse,
     GenerateExperimentResponse,
 )
@@ -610,13 +611,15 @@ class SpecService:
         prompt = json.dumps(view, default=str, ensure_ascii=False)
         try:
             response_data = await self._llm.complete_structured(
-                system=system, prompt=prompt, schema=GenerateClaimsResponse
+                system=system, prompt=prompt, schema=GeneratedClaims
             )
         except (LlmCompleteError, LlmProviderError) as exc:
             _raise_llm_operational(exc)
 
         narrative = {
-            "cards": [card.model_dump(mode="json") for card in response_data.cards]
+            **dict(session.working_draft_narrative),
+            "cards": [card.model_dump(mode="json") for card in response_data.cards],
+            "saved": False,
         }
         new_version = await self._update_narrative(
             session_id, account_id, expected_version, narrative, session
@@ -651,7 +654,8 @@ class SpecService:
             _raise_llm_operational(exc)
         
         narrative = {
-            "plan": response_data.model_dump(mode="json")
+            **dict(session.working_draft_narrative),
+            "plan": response_data.model_dump(mode="json"),
         }
         new_version = await self._update_narrative(session_id, account_id, expected_version, narrative, session)
         return GenerateExperimentResponse(version=new_version, plan=response_data)
@@ -685,7 +689,10 @@ class SpecService:
         except (LlmCompleteError, LlmProviderError) as exc:
             _raise_llm_operational(exc)
 
-        narrative = {"feasibility_report": report.model_dump(mode="json")}
+        narrative = {
+            **dict(session.working_draft_narrative),
+            "feasibility_report": report.model_dump(mode="json"),
+        }
         new_version = await self._update_narrative(
             session_id, account_id, expected_version, narrative, session
         )

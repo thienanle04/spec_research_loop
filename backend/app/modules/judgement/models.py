@@ -15,6 +15,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -88,6 +89,7 @@ class JudgeIssue(Base):
     target_card_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
     )
+    grounds: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     sort_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -218,6 +220,7 @@ class AggregatorIssue(Base):
     target_card_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
     )
+    grounds: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     cluster: Mapped[str] = mapped_column(String(32), nullable=False)
     sort_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(

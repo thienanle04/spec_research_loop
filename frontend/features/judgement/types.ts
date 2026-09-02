@@ -1,5 +1,10 @@
 export type JudgeSeverity = "CRITICAL" | "MAJOR" | "MINOR";
 
+export type JudgeIssueGrounds = {
+  subject: string;
+  excerpts: { citation_key: string; passage: string }[];
+};
+
 export type JudgeIssue = {
   id: string;
   finding_kind: string;
@@ -9,6 +14,7 @@ export type JudgeIssue = {
   target_card_id: string | null;
   source_node?: string | null;
   cluster?: "consensus" | "disagreement" | null;
+  grounds?: JudgeIssueGrounds | null;
 };
 
 export type ConferenceScores = {

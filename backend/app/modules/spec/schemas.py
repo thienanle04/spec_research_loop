@@ -33,9 +33,13 @@ class ClaimEvidenceCard(BaseModel):
 class GenerateClaimsRequest(BaseModel):
     expected_version: int = Field(ge=1)
 
+class GeneratedClaims(BaseModel):
+    cards: list[ClaimEvidenceCard] = Field(min_length=1)
+
+
 class GenerateClaimsResponse(BaseModel):
     version: int
-    cards: list[ClaimEvidenceCard]
+    cards: list[ClaimEvidenceCard] = Field(min_length=1)
 
 # --- EXPERIMENT ---
 class ExperimentItem(BaseModel):
@@ -45,7 +49,7 @@ class ExperimentItem(BaseModel):
     significance: str
 
 class ExperimentPlan(BaseModel):
-    experiments: list[ExperimentItem]
+    experiments: list[ExperimentItem] = Field(min_length=1)
 
 class GenerateExperimentRequest(BaseModel):
     expected_version: int = Field(ge=1)
