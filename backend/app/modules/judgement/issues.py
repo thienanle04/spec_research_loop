@@ -9,7 +9,7 @@ from app.modules.judgement.catalog import (
     parse_finding_kind,
     parse_severity,
 )
-from app.modules.judgement.schemas import JudgeIssueDraft
+from app.modules.judgement.schemas import JudgeIssueDraft, JudgeIssueGrounds
 
 
 def normalize_llm_issues(raw_issues: list[JudgeIssueDraft]) -> list[JudgeIssueDraft]:
@@ -32,6 +32,7 @@ def normalize_llm_issues(raw_issues: list[JudgeIssueDraft]) -> list[JudgeIssueDr
                 reason=item.reason,
                 suggestion=item.suggestion,
                 target_card_id=item.target_card_id,
+                grounds=JudgeIssueGrounds(),
             )
         )
     return normalized
@@ -53,5 +54,10 @@ def merge_issues(
         if existing is None or rank[existing.severity] < rank[issue.severity]:
             by_key[key] = issue
             continue
-        by_key[key] = existing.model_copy(update={"target_card_id": issue.target_card_id})
+        by_key[key] = existing.model_copy(
+            update={
+                "target_card_id": issue.target_card_id,
+                "grounds": issue.grounds,
+            }
+        )
     return list(by_key.values())

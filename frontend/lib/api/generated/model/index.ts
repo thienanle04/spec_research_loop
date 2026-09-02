@@ -63,6 +63,8 @@ export * from './healthApiLoopHealthGet200';
 export * from './healthApiResearchHealthGet200';
 export * from './healthApiSpecHealthGet200';
 export * from './hTTPValidationError';
+export * from './judgeIssueExcerpt';
+export * from './judgeIssueGrounds';
 export * from './judgeIssueResponse';
 export * from './judgementGenerateRequest';
 export * from './judgementNode';

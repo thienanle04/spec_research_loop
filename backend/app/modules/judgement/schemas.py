@@ -1,9 +1,10 @@
 """Judgement HTTP contracts."""
 
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.modules.loop.catalog import WorkflowNode
 
@@ -22,12 +23,38 @@ class JudgementGenerateRequest(BaseModel):
     stale_reaccept: bool = False
 
 
+class JudgeIssueExcerpt(BaseModel):
+    citation_key: str = ""
+    passage: str = ""
+
+
+class JudgeIssueGrounds(BaseModel):
+    subject: str = ""
+    excerpts: list[JudgeIssueExcerpt] = Field(default_factory=list)
+
+
+def parse_grounds(raw: Any) -> JudgeIssueGrounds:
+    if isinstance(raw, JudgeIssueGrounds):
+        return raw
+    if isinstance(raw, dict):
+        try:
+            return JudgeIssueGrounds.model_validate(raw)
+        except ValidationError:
+            return JudgeIssueGrounds()
+    return JudgeIssueGrounds()
+
+
+def grounds_payload(grounds: JudgeIssueGrounds | dict[str, Any] | None) -> dict[str, Any]:
+    return parse_grounds(grounds).model_dump()
+
+
 class JudgeIssueDraft(BaseModel):
     finding_kind: str
     severity: str
     reason: str = ""
     suggestion: str = ""
     target_card_id: UUID | None = None
+    grounds: JudgeIssueGrounds = Field(default_factory=JudgeIssueGrounds)
 
 
 class JudgeLlmResponse(BaseModel):
@@ -78,6 +105,7 @@ class JudgeIssueResponse(BaseModel):
     target_card_id: UUID | None = None
     source_node: str | None = None
     cluster: str | None = None
+    grounds: JudgeIssueGrounds = Field(default_factory=JudgeIssueGrounds)
 
     model_config = {"from_attributes": True}
 

@@ -466,6 +466,15 @@ describe("JudgementStageContainer", () => {
               target_card_id: null,
               source_node: "evidence_judge",
               cluster: "disagreement",
+              grounds: {
+                subject: "Brass instruments improve soil nitrogen fixation.",
+                excerpts: [
+                  {
+                    citation_key: "large-language-models-as-optimizers-2023",
+                    passage: "An optimizer model proposes prompts.",
+                  },
+                ],
+              },
             },
           ],
           scores: {
@@ -502,6 +511,10 @@ describe("JudgementStageContainer", () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText("Unsupported citation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Originating Judge")).toHaveTextContent("Evidence Judge");
+    expect(screen.getByText("Brass instruments improve soil nitrogen fixation.")).toBeInTheDocument();
+    expect(screen.getByText("large-language-models-as-optimizers-2023")).toBeInTheDocument();
+    expect(screen.getByText("An optimizer model proposes prompts.")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Disagreement" })).toBeInTheDocument();
     expect(screen.getByText("Revise the claim")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Pick Revise the claim" })).toBeInTheDocument();

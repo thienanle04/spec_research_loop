@@ -54,6 +54,8 @@ from app.modules.judgement.schemas import (
     JudgeRunResponse,
     ProgressEvent,
     ReadinessState,
+    grounds_payload,
+    parse_grounds,
 )
 from app.modules.judgement.verifiers import (
     gap_unsupported_by_sources,
@@ -486,6 +488,7 @@ class JudgementService:
                     reason=item.reason,
                     suggestion=item.suggestion,
                     target_card_id=item.target_card_id,
+                    grounds=grounds_payload(item.grounds),
                     sort_index=index,
                 )
                 for index, item in enumerate(issues)
@@ -551,6 +554,7 @@ class JudgementService:
                     reason=item.reason,
                     suggestion=item.suggestion,
                     target_card_id=item.target_card_id,
+                    grounds=item.grounds,
                     cluster=item.cluster,
                     sort_index=index,
                 )
@@ -723,6 +727,7 @@ def _issue_response(item: dict[str, Any]) -> JudgeIssueResponse:
         target_card_id=UUID(raw_card) if raw_card else None,
         source_node=item.get("source_node"),
         cluster=item.get("cluster"),
+        grounds=parse_grounds(item.get("grounds")),
     )
 
 
